@@ -116,7 +116,6 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
-  private var imeInsetsCallbackInstalled = false
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -146,82 +145,6 @@ constructor(
 
   private fun canShareOutput(fragment: Fragment?): Boolean {
     return fragment is ShareableOutputFragment
-  }
-
-  // TODO(EditorImePending): Replace MDC's InsetsAnimationCallback with an equivalent copy that
-  // fixes the folded-state end top. MDC reads endY from the view's on-screen position in onStart,
-  // which reflects the intermediate layout while the sheet is being pushed; the folded state must
-  // end at (parentScreenBottom - peek). All other states behave exactly like MDC.
-  private fun installCustomInsetsCallback() {
-    if (imeInsetsCallbackInstalled) {
-      return
-    }
-    imeInsetsCallbackInstalled = true
-    val location = IntArray(2)
-    var startY = 0
-    var startTranslationY = 0f
-    ViewCompat.setWindowInsetsAnimationCallback(
-        this,
-        object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
-        ) {
-          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
-              return
-            }
-            getLocationOnScreen(location)
-            startY = location[1]
-          }
-
-          override fun onStart(
-              animation: WindowInsetsAnimationCompat,
-              bounds: WindowInsetsAnimationCompat.BoundsCompat,
-          ): WindowInsetsAnimationCompat.BoundsCompat {
-            getLocationOnScreen(location)
-            val endY =
-                if (behavior.state == BottomSheetBehavior.STATE_COLLAPSED) {
-                  val parentTop = IntArray(2)
-                  (parent as? View)?.getLocationOnScreen(parentTop)
-                  val parentScreenBottom = parentTop[1] + ((parent as? View)?.height ?: 0)
-                  parentScreenBottom - collapsedHeight.roundToInt()
-                } else {
-                  location[1]
-                }
-            startTranslationY = (startY - endY).toFloat()
-            translationY = startTranslationY
-            log.warn(
-                "[EditorImeObserve] imeCustom start startY=$startY endY=$endY " +
-                    "startTranslationY=$startTranslationY state=${behavior.state}"
-            )
-            return bounds
-          }
-
-          override fun onProgress(
-              insets: WindowInsetsCompat,
-              runningAnimations: MutableList<WindowInsetsAnimationCompat>,
-          ): WindowInsetsCompat {
-            for (animation in runningAnimations) {
-              if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                val progress = animation.interpolatedFraction
-                translationY = startTranslationY * (1f - progress)
-                log.warn(
-                    "[EditorImeObserve] imeCustom progress fraction=$progress " +
-                        "translationY=$translationY state=${behavior.state}"
-                )
-                break
-              }
-            }
-            return insets
-          }
-
-          override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            translationY = 0f
-            log.warn(
-                "[EditorImeObserve] imeCustom end translationY=$translationY state=${behavior.state}"
-            )
-          }
-        },
-    )
   }
 
   private fun initialize(context: FragmentActivity) {
@@ -315,7 +238,6 @@ constructor(
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
-    installCustomInsetsCallback()
     val ime = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it).getInsets(WindowInsetsCompat.Type.ime()) }
     if (ime != null && (ime.bottom > 0 || isImeVisible)) {
       imeLogLayoutPass++
@@ -323,17 +245,23 @@ constructor(
       val rootLocation = IntArray(2)
       val headerLocation = IntArray(2)
       val pagerLocation = IntArray(2)
+      val parentLocation = IntArray(2)
       getLocationOnScreen(sheetLocation)
       binding.root.getLocationOnScreen(rootLocation)
       binding.headerContainer.getLocationOnScreen(headerLocation)
       binding.pager.getLocationOnScreen(pagerLocation)
+      val parentView = parent as? View
+      parentView?.getLocationOnScreen(parentLocation)
       log.warn(
           "[EditorImeObserve] layout pass=$imeLogLayoutPass changed=$changed " +
               "imeBottom=${ime.bottom} state=${behavior.state} " +
-              "sheetTop=${sheetLocation[1]} sheetHeight=$height translationY=$translationY " +
+              "setTop=$top sheetTop=${sheetLocation[1]} sheetHeight=$height " +
+              "translationY=$translationY " +
               "rootTop=${rootLocation[1]} rootHeight=${binding.root.height} " +
               "headerTop=${headerLocation[1]} headerHeight=${binding.headerContainer.height} " +
-              "pagerTop=${pagerLocation[1]} pagerHeight=${binding.pager.height}"
+              "pagerTop=${pagerLocation[1]} pagerHeight=${binding.pager.height} " +
+              "parentTop=${parentLocation[1]} parentHeight=${parentView?.height} " +
+              "peek=${behavior.peekHeight}"
       )
     }
   }
