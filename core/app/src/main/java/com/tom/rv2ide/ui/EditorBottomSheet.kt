@@ -116,14 +116,9 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
-  private var imeAnimationInstalled = false
-  private var imeAnimationActive = false
-  private var imeStartTop = 0
-  private var imeEndTop = 0
-  private var imeStartHeight = 0
-  private var imeEndHeight = 0
-  private var imeEndScreenTop = 0
-  private var imeTopDelta = 0f
+  private var imeLiftInstalled = false
+  private var imeLiftActive = false
+  private var lastImeBottom = 0
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -155,83 +150,43 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
-  // TODO(EditorImePending): replaces Material InsetsAnimationCallback (installed by
-  // BottomSheetBehavior on first layout). Requires device verification that dragging,
-  // half-expanded state and settle animations are unaffected.
-  private fun installImeAnimationCoordinator() {
-    if (imeAnimationInstalled) {
+  // TODO(EditorImePending): Route 1 experiment. Installed on the parent (CoordinatorLayout) with
+  // CONTINUE_ON_SUBTREE so the Material child callback on the bottom sheet itself is left intact.
+  // Applies a single rigid lift: translationY = -current IME bottom for the whole sheet, matching
+  // the Chat composer model (no window resize, no height animation, no per-target patches).
+  private fun installImeLiftCoordinator() {
+    if (imeLiftInstalled) {
       return
     }
-    imeAnimationInstalled = true
+    val host = parent as? View ?: return
+    imeLiftInstalled = true
     ViewCompat.setWindowInsetsAnimationCallback(
-        this,
+        host,
         object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
         ) {
           override fun onPrepare(animation: WindowInsetsAnimationCompat) {
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            imeAnimationActive = true
-            imeStartTop = getTop()
-            imeStartHeight = height
-            log.warn(
-                "[EditorImeObserve] imeTrack prepare startTop=$imeStartTop " +
-                    "startHeight=$imeStartHeight translationY=$translationY state=${behavior.state}"
-            )
-          }
-
-          override fun onStart(
-              animation: WindowInsetsAnimationCompat,
-              bounds: WindowInsetsAnimationCompat.BoundsCompat,
-          ): WindowInsetsAnimationCompat.BoundsCompat {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
-              return bounds
-            }
-            // TODO(EditorImePending): assumes the ADJUST_RESIZE layout has already been applied
-            // before onStart (same assumption as Material). Verify from device logs.
-            imeEndTop = getTop()
-            imeEndHeight = height
-            val location = IntArray(2)
-            getLocationOnScreen(location)
-            imeEndScreenTop = location[1]
-            imeTopDelta = (imeStartTop - imeEndTop).toFloat()
-            translationY = imeTopDelta
-            log.warn(
-                "[EditorImeObserve] imeTrack start endTop=$imeEndTop endHeight=$imeEndHeight " +
-                    "endScreenTop=$imeEndScreenTop topDelta=$imeTopDelta"
-            )
-            return bounds
+            imeLiftActive = true
+            lastImeBottom = 0
+            log.warn("[EditorImeObserve] imeLift prepare translationY=$translationY")
           }
 
           override fun onProgress(
               insets: WindowInsetsCompat,
               runningAnimations: MutableList<WindowInsetsAnimationCompat>,
           ): WindowInsetsCompat {
-            val animation = runningAnimations.firstOrNull {
-              (it.typeMask and WindowInsetsCompat.Type.ime()) != 0
-            } ?: return insets
-            if (!imeAnimationActive) {
+            if (!imeLiftActive) {
               return insets
             }
-            val fraction = animation.interpolatedFraction
-            val paintedTop = imeEndScreenTop + imeTopDelta * (1f - fraction)
-            translationY = imeTopDelta * (1f - fraction)
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-            val decorHeight = rootView?.height ?: 0
-            val keyboardTop = decorHeight - navBottom - imeBottom
-            val desiredHeight = (keyboardTop - paintedTop).roundToInt().coerceAtLeast(0)
-            if (layoutParams.height != desiredHeight) {
-              val lp = layoutParams
-              lp.height = desiredHeight
-              layoutParams = lp
-              requestLayout()
-            }
+            lastImeBottom = imeBottom
+            this@EditorBottomSheet.translationY = -imeBottom.toFloat()
             log.warn(
-                "[EditorImeObserve] imeTrack progress fraction=$fraction " +
-                    "paintedTop=$paintedTop translationY=$translationY height=$desiredHeight " +
-                    "imeBottom=$imeBottom keyboardTop=$keyboardTop decorHeight=$decorHeight"
+                "[EditorImeObserve] imeLift progress imeBottom=$imeBottom " +
+                    "translationY=${this@EditorBottomSheet.translationY}"
             )
             return insets
           }
@@ -240,16 +195,13 @@ constructor(
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            translationY = 0f
-            if (imeEndHeight > 0 && layoutParams.height != imeEndHeight) {
-              val lp = layoutParams
-              lp.height = imeEndHeight
-              layoutParams = lp
-              requestLayout()
-            }
-            imeAnimationActive = false
+            // Window is not resized (ADJUST_NOTHING); keep the final lift so the sheet bottom
+            // stays at the IME top instead of dropping back under the keyboard.
+            this@EditorBottomSheet.translationY = -lastImeBottom.toFloat()
+            imeLiftActive = false
             log.warn(
-                "[EditorImeObserve] imeTrack end height=$imeEndHeight translationY=$translationY"
+                "[EditorImeObserve] imeLift end lastImeBottom=$lastImeBottom " +
+                    "translationY=${this@EditorBottomSheet.translationY}"
             )
           }
         },
@@ -258,8 +210,7 @@ constructor(
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    // Installed after Material's first onLayoutChild so this replaces the Material callback.
-    post { installImeAnimationCoordinator() }
+    post { installImeLiftCoordinator() }
   }
 
   private fun initialize(context: FragmentActivity) {
