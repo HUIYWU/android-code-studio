@@ -125,11 +125,13 @@ constructor(
   // TODO(IME-FIX-EXPERIMENT): Collapsed offset follows the IME by changing Behavior geometry.
   private var imeOwnerInstalled = false
   private var imeOwnerActive = false
+  private var imeOwnerHalfActive = false
   private var imeOwnerImeRoutedToSidebar = false
   private var imeOwnerMdcStartY = 0
   private var imeOwnerMdcStartTranslation = 0
   private var imeOwnerBasePeekHeight = 0
   private var imeOwnerLastPeekHeight = 0
+  private var imeOwnerLastHalfRatio = 0.5f
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -279,12 +281,17 @@ constructor(
             if (!isIme(animation)) return bounds
             if (imeOwnerImeRoutedToSidebar) {
               imeOwnerActive = false
+              imeOwnerHalfActive = false
               return bounds
             }
             imeOwnerActive = behavior.state == BottomSheetBehavior.STATE_COLLAPSED
+            imeOwnerHalfActive = behavior.state == BottomSheetBehavior.STATE_HALF_EXPANDED
             if (imeOwnerActive) {
               imeOwnerBasePeekHeight = collapsedHeight.roundToInt()
               imeOwnerLastPeekHeight = imeOwnerBasePeekHeight
+              translationY = 0f
+            } else if (imeOwnerHalfActive) {
+              imeOwnerLastHalfRatio = behavior.halfExpandedRatio
               translationY = 0f
             } else {
               val location = IntArray(2)
@@ -315,6 +322,28 @@ constructor(
                       "imeBottom=$imeBottom systemBottom=$systemBottom " +
                       "peekHeight=$targetPeekHeight"
               )
+            } else if (imeOwnerHalfActive) {
+              val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+              val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+              val imeOffset = max(imeBottom - systemBottom, 0)
+              val dragParent = (parent as? View)
+              if (dragParent != null && dragParent.height > 0) {
+                val targetRatio = 0.5f + imeOffset / (2f * dragParent.height)
+                if (targetRatio != imeOwnerLastHalfRatio) {
+                  imeOwnerLastHalfRatio = targetRatio
+                  behavior.halfExpandedRatio = targetRatio
+                  dragParent.requestLayout()
+                }
+                log.warn(
+                    "[EditorImeTrace] half fraction=${running.interpolatedFraction} " +
+                        "imeBottom=$imeBottom systemBottom=$systemBottom " +
+                        "ratio=$targetRatio"
+                )
+              } else {
+                val fraction = running.interpolatedFraction
+                translationY =
+                    imeOwnerMdcStartTranslation.toFloat() * (1f - fraction)
+              }
             } else {
               val fraction = running.interpolatedFraction
               translationY =
@@ -325,6 +354,10 @@ constructor(
 
           override fun onEnd(animation: WindowInsetsAnimationCompat) {
             if (!isIme(animation) || imeOwnerImeRoutedToSidebar) return
+            if (imeOwnerHalfActive) {
+              imeOwnerHalfActive = false
+              imeOwnerLastHalfRatio = 0.5f
+            }
             if (!imeOwnerActive) {
               translationY = 0f
             }
@@ -517,6 +550,14 @@ constructor(
     if (routed) {
       imeOwnerActive = false
       imeOwnerLastPeekHeight = 0
+      if (imeOwnerHalfActive) {
+        imeOwnerHalfActive = false
+        imeOwnerLastHalfRatio = 0.5f
+        if (behavior.halfExpandedRatio != 0.5f) {
+          behavior.halfExpandedRatio = 0.5f
+          (parent as? View)?.requestLayout()
+        }
+      }
     }
   }
 
