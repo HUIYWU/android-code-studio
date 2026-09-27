@@ -18,6 +18,9 @@ import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.ImageView
 import android.widget.LinearLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.navigationrail.NavigationRailView
@@ -43,6 +46,9 @@ class TerminalFragment : Fragment() {
     private var settingsContent: View? = null
     private var emptyStateContent: View? = null
     private var sessionTabs: TabLayout? = null
+    // TODO(IME-FIX-EXPERIMENT): Terminal content owns the full-expanded bottom slot.
+    private var terminalImeCallbackInstalled = false
+    private var terminalBasePaddingBottom = 0
     
     private var serviceIsBound = false
     private lateinit var prefs: SharedPreferences
@@ -166,6 +172,7 @@ class TerminalFragment : Fragment() {
         emptyStateContent = rootView.findViewById(R.id.empty_state_content)
         terminalView = rootView.findViewById(R.id.terminal_view)
         sessionTabs = rootView.findViewById(R.id.session_tabs)
+        installImeContentSlot(rootView)
         
         // Initialize handlers
         sessionManager = SessionManager(
@@ -226,6 +233,59 @@ class TerminalFragment : Fragment() {
         return rootView
     }
     
+    // TODO(IME-FIX-EXPERIMENT): Apply the IME inset to the terminal content container so the
+    // weighted terminal view and the extra keys bar move together.
+    private fun installImeContentSlot(rootView: View) {
+        if (terminalImeCallbackInstalled) return
+        val content = rootView.findViewById<View>(R.id.terminal_content) ?: return
+        terminalBasePaddingBottom = content.paddingBottom
+        terminalImeCallbackInstalled = true
+        ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+            if (terminalContent?.visibility == View.VISIBLE && terminalView?.hasFocus() == true) {
+                val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                view.setPadding(
+                    view.paddingLeft,
+                    view.paddingTop,
+                    view.paddingRight,
+                    terminalBasePaddingBottom + maxOf(ime, bars),
+                )
+            } else {
+                view.setPadding(
+                    view.paddingLeft,
+                    view.paddingTop,
+                    view.paddingRight,
+                    terminalBasePaddingBottom,
+                )
+            }
+            insets
+        }
+        ViewCompat.setWindowInsetsAnimationCallback(
+            content,
+            object : WindowInsetsAnimationCompat.Callback(
+                WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+            ) {
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    runningAnimations: List<WindowInsetsAnimationCompat>,
+                ): WindowInsetsCompat {
+                    if (terminalContent?.visibility != View.VISIBLE || terminalView?.hasFocus() != true) {
+                        return insets
+                    }
+                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+                    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                    content.setPadding(
+                        content.paddingLeft,
+                        content.paddingTop,
+                        content.paddingRight,
+                        terminalBasePaddingBottom + maxOf(ime, bars),
+                    )
+                    return insets
+                }
+            }
+        )
+    }
+
     private fun handleNavigationItemSelected(itemId: Int): Boolean {
         return when (itemId) {
             R.id.nav_toggle_rail -> {
@@ -300,6 +360,8 @@ class TerminalFragment : Fragment() {
         settingsContent = null
         emptyStateContent = null
         sessionTabs = null
+        terminalImeCallbackInstalled = false
+        terminalBasePaddingBottom = 0
     }
     
     private fun bindTermuxServiceAndCreateSession() {

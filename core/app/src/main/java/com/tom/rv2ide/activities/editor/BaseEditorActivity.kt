@@ -669,7 +669,9 @@ abstract class BaseEditorActivity :
     val imeVisible = imeBottom > 0
     val sidebarInputFocused = isSidebarInputFocused(focusedView)
     val bottomSheetImeVisible = imeVisible && !sidebarInputFocused
-    val bottomSheetImeStateChanged = this.isBottomSheetImeVisible != bottomSheetImeVisible
+    val bottomSheetImeStateChanged =
+        !sidebarInputFocused && this.isBottomSheetImeVisible != bottomSheetImeVisible
+
     val imeDelta = imeBottom - lastTraceImeBottom
     lastTraceImeBottom = imeBottom
     val imeDir =
@@ -679,14 +681,10 @@ abstract class BaseEditorActivity :
           else -> "same"
         }
 
-    // TODO(EditorImeTrace): Keep the window mode split until sidebar and non-sidebar IME behavior is verified.
-    window.setSoftInputMode(
-        if (sidebarInputFocused) {
-          WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
-        } else {
-          WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        }
-    )
+    // TODO(IME-FIX-EXPERIMENT): Keep the editor window stable while each actual bottom slot
+    // consumes the IME animation in its own host.
+    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+    _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarInputFocused)
 
     log.warn(
         "[EditorImeTrace] activityInsets imeBottom=$imeBottom imeDelta=$imeDelta imeDir=$imeDir " +
@@ -754,6 +752,8 @@ override fun onApplySystemBarInsets(insets: Insets) {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
+    // TODO(IME-FIX-EXPERIMENT): Keep the editor window from resizing before slot hosts receive IME progress.
+    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     enableEdgeToEdge()
     WindowCompat.setDecorFitsSystemWindows(window, false)
 

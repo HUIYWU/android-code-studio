@@ -73,8 +73,8 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
 import java.util.concurrent.Callable
-import kotlin.math.roundToInt
 import kotlin.math.max
+import kotlin.math.roundToInt
 import org.slf4j.LoggerFactory
 import eightbitlab.com.blurview.RenderScriptBlur
 import android.view.ViewOutlineProvider
@@ -122,12 +122,14 @@ constructor(
   private var imeAnimEpoch = 0
   private var imeAnimPhase = IME_PHASE_IDLE
   private var imeTraceArmedAt = 0L
-  // TODO(IME-FIX-EXPERIMENT): 以下为"IME 动画期间用 imeBottom 逐帧钉贴底槽位"实验状态，未在设备验证前不视为最终实现。
-  private var imePinInstalled = false
-  private var imePinActive = false
-  private var mdcPinStartY = 0
-  private var mdcPinEndY = 0
-  private var mdcPinStartTranslation = 0f
+  // TODO(IME-FIX-EXPERIMENT): Collapsed offset follows the IME by changing Behavior geometry.
+  private var imeOwnerInstalled = false
+  private var imeOwnerActive = false
+  private var imeOwnerImeRoutedToSidebar = false
+  private var imeOwnerMdcStartY = 0
+  private var imeOwnerMdcStartTranslation = 0
+  private var imeOwnerBasePeekHeight = 0
+  private var imeOwnerLastPeekHeight = 0
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -252,37 +254,44 @@ constructor(
     )
   }
 
-  // TODO(IME-FIX-EXPERIMENT): 验证通过前为实验实现。覆盖 MDC 的 InsetsAnimationCallback（同一 view 只能有一个），
-  // 折叠态改为"IME 动画期间用 onProgress 的 imeBottom 逐帧钉 sheet 顶 = 底部参照 - 贴底组件高"，
-  // 使动画全程可见区恒为贴底 header（消除 header 下方空隙与 pager 顶部进入可见区的白缝）；
-  // 非折叠态完整复刻 MDC 的 startY/endY/startTranslationY + interpolatedFraction 驱动，保持半展开/展开基准。
-  private fun installImePinnedHeaderAnimation() {
+  // TODO(IME-FIX-EXPERIMENT): Use BottomSheetBehavior geometry for collapsed IME motion.
+  private fun installImeSheetOwner() {
     ViewCompat.setWindowInsetsAnimationCallback(
         this,
         object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
         ) {
-          private fun isImeMask(animation: WindowInsetsAnimationCompat): Boolean {
+          private fun isIme(animation: WindowInsetsAnimationCompat): Boolean {
             return (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
           }
 
           override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if (!isImeMask(animation)) return
-            val loc = IntArray(2)
-            getLocationOnScreen(loc)
-            mdcPinStartY = loc[1]
+            if (!isIme(animation) || imeOwnerImeRoutedToSidebar) return
+            val location = IntArray(2)
+            getLocationOnScreen(location)
+            imeOwnerMdcStartY = location[1]
           }
 
           override fun onStart(
               animation: WindowInsetsAnimationCompat,
               bounds: WindowInsetsAnimationCompat.BoundsCompat,
           ): WindowInsetsAnimationCompat.BoundsCompat {
-            if (!isImeMask(animation)) return bounds
-            val loc = IntArray(2)
-            getLocationOnScreen(loc)
-            mdcPinEndY = loc[1]
-            mdcPinStartTranslation = (mdcPinStartY - mdcPinEndY).toFloat()
-            imePinActive = behavior.state == BottomSheetBehavior.STATE_COLLAPSED
+            if (!isIme(animation)) return bounds
+            if (imeOwnerImeRoutedToSidebar) {
+              imeOwnerActive = false
+              return bounds
+            }
+            imeOwnerActive = behavior.state == BottomSheetBehavior.STATE_COLLAPSED
+            if (imeOwnerActive) {
+              imeOwnerBasePeekHeight = collapsedHeight.roundToInt()
+              imeOwnerLastPeekHeight = imeOwnerBasePeekHeight
+              translationY = 0f
+            } else {
+              val location = IntArray(2)
+              getLocationOnScreen(location)
+              imeOwnerMdcStartTranslation = imeOwnerMdcStartY - location[1]
+              translationY = imeOwnerMdcStartTranslation.toFloat()
+            }
             return bounds
           }
 
@@ -290,40 +299,37 @@ constructor(
               insets: WindowInsetsCompat,
               runningAnimations: List<WindowInsetsAnimationCompat>,
           ): WindowInsetsCompat {
-            val running =
-                runningAnimations.lastOrNull { animation ->
-                  (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
-                }
-                    ?: return insets
-            val fraction = running.interpolatedFraction
-            if (imePinActive) {
+            val running = runningAnimations.lastOrNull { isIme(it) } ?: return insets
+            if (imeOwnerImeRoutedToSidebar) return insets
+            if (imeOwnerActive) {
               val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-              val systemBottom =
-                  insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-              val bottomRef =
-                  resources.displayMetrics.heightPixels - max(imeBottom, systemBottom)
-              val headerVisible = binding.headerContainer.height.coerceAtLeast(1)
-              val desiredSheetTop = bottomRef - headerVisible
-              val loc = IntArray(2)
-              getLocationOnScreen(loc)
-              val layoutTop = loc[1] - translationY.roundToInt()
-              val targetTranslation = (desiredSheetTop - layoutTop).toFloat()
-              translationY = targetTranslation
+              val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+              val imeOffset = max(imeBottom - systemBottom, 0)
+              val targetPeekHeight = imeOwnerBasePeekHeight + imeOffset
+              if (targetPeekHeight != imeOwnerLastPeekHeight) {
+                imeOwnerLastPeekHeight = targetPeekHeight
+                behavior.peekHeight = targetPeekHeight
+              }
               log.warn(
-                  "[EditorImeTrace] pinned fraction=$fraction imeBottom=$imeBottom " +
-                      "systemBottom=$systemBottom desiredTop=$desiredSheetTop " +
-                      "layoutTop=$layoutTop targetTy=$targetTranslation"
+                  "[EditorImeTrace] owner fraction=${running.interpolatedFraction} " +
+                      "imeBottom=$imeBottom systemBottom=$systemBottom " +
+                      "peekHeight=$targetPeekHeight"
               )
             } else {
-              translationY = mdcPinStartTranslation * (1f - fraction)
+              val fraction = running.interpolatedFraction
+              translationY =
+                  imeOwnerMdcStartTranslation.toFloat() * (1f - fraction)
             }
             return insets
           }
 
           override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            if (!isImeMask(animation)) return
-            imePinActive = false
-            translationY = 0f
+            if (!isIme(animation) || imeOwnerImeRoutedToSidebar) return
+            if (!imeOwnerActive) {
+              translationY = 0f
+            }
+            imeOwnerActive = false
+            imeOwnerLastPeekHeight = 0
           }
         }
     )
@@ -423,11 +429,10 @@ constructor(
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
-    // TODO(IME-FIX-EXPERIMENT): 首帧布局时 MDC 已在 onLayoutChild 安装 InsetsAnimationCallback，
-    // 此处覆盖为实验回调（imeBottom 逐帧钉槽位）。验证通过前不视为最终实现。
-    if (!imePinInstalled) {
-      imePinInstalled = true
-      installImePinnedHeaderAnimation()
+    // TODO(IME-FIX-EXPERIMENT): Preserve MDC motion outside collapsed state; use Behavior geometry when collapsed.
+    if (!imeOwnerInstalled) {
+      imeOwnerInstalled = true
+      installImeSheetOwner()
     }
     if (imeAnimPhase != IME_PHASE_IDLE ||
         SystemClock.uptimeMillis() - imeTraceArmedAt < 500L
@@ -504,6 +509,15 @@ constructor(
 
     initialize(context)
     installImeGeoTrace()
+  }
+
+  // TODO(IME-FIX-EXPERIMENT): The activity routes sidebar IME separately from the editor slots.
+  fun setImeRoutedToSidebar(routed: Boolean) {
+    imeOwnerImeRoutedToSidebar = routed
+    if (routed) {
+      imeOwnerActive = false
+      imeOwnerLastPeekHeight = 0
+    }
   }
 
   /** Set whether the input method is visible. */
