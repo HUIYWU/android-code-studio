@@ -675,9 +675,7 @@ abstract class BaseEditorActivity :
         if (sidebarInputFocused) {
           WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         } else {
-          // TODO(EditorImePending): Route 1 experiment - window no longer resizes; the editor
-          // bottom sheet is lifted per-frame by the IME animation instead.
-          WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+          WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
     )
 
