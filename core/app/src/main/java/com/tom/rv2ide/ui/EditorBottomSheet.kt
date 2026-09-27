@@ -26,7 +26,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.animation.ValueAnimator
-import android.os.CancellationSignal
 import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
@@ -36,10 +35,7 @@ import androidx.core.graphics.Insets
 import androidx.core.animation.doOnEnd
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsAnimationControlListenerCompat
-import androidx.core.view.WindowInsetsAnimationControllerCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
@@ -120,12 +116,6 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
-  private var imeControlInstalled = false
-  private var imeControlActive = false
-  private var imeControlController: WindowInsetsAnimationControllerCompat? = null
-  private var imeControlAnimator: ValueAnimator? = null
-  private var imeControlStartBottom = 0
-  private var imeControlEndBottom = 0
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -157,15 +147,28 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
-  // TODO(EditorImePending): Geometry experiment - take over the IME insets animation via
-  // controlWindowInsetsAnimation and drive setInsetsAndAlpha per frame, letting the system
-  // re-layout the window (and thus the bottom sheet) with the current frame insets. Does not
-  // touch MDC, BottomSheetBehavior or the window soft input mode.
-  private fun installImeControlExperiment() {
-    if (imeControlInstalled) {
-      return
+  // TODO(EditorImePending): Folded-sheet IME smoothing. During an IME insets animation we pin
+  // the sheet top to (keyboardTop - peek) on every pre-draw frame so the bottom slot header
+  // (or the file-search bar that replaces it) follows the keyboard smoothly. Active only while
+  // behavior.state == STATE_COLLAPSED; other states are untouched.
+  private var imeFoldActive = false
+  private var imeFoldCurrentBottom = 0
+  private val imeFoldPreDraw = ViewTreeObserver.OnPreDrawListener {
+    if (imeFoldActive && behavior.state == BottomSheetBehavior.STATE_COLLAPSED) {
+      val location = IntArray(2)
+      getLocationOnScreen(location)
+      val screenHeight = resources.displayMetrics.heightPixels
+      val targetTop = screenHeight - imeFoldCurrentBottom - collapsedHeight
+      translationY += targetTop - location[1]
+      log.warn(
+          "[EditorImeObserve] imeFold preDraw imeBottom=$imeFoldCurrentBottom " +
+              "translationY=$translationY top=$location[1]"
+      )
     }
-    imeControlInstalled = true
+    true
+  }
+
+  private fun installImeFoldSmoother() {
     ViewCompat.setWindowInsetsAnimationCallback(
         rootView,
         object : WindowInsetsAnimationCompat.Callback(
@@ -175,24 +178,19 @@ constructor(
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            if (!imeControlActive) {
-              imeControlActive = true
-              tryControlImeAnimation()
-              log.warn("[EditorImeObserve] imeControl prepare state=${behavior.state}")
-            } else {
-              log.warn("[EditorImeObserve] imeControl prepare re-entrant ignored")
+            imeFoldActive = true
+            if (behavior.state == BottomSheetBehavior.STATE_COLLAPSED) {
+              viewTreeObserver.removeOnPreDrawListener(imeFoldPreDraw)
+              viewTreeObserver.addOnPreDrawListener(imeFoldPreDraw)
             }
+            log.warn("[EditorImeObserve] imeFold prepare state=${behavior.state}")
           }
 
           override fun onProgress(
               insets: WindowInsetsCompat,
               runningAnimations: MutableList<WindowInsetsAnimationCompat>,
           ): WindowInsetsCompat {
-            log.warn(
-                "[EditorImeObserve] imeControl progress imeBottom=" +
-                    "${insets.getInsets(WindowInsetsCompat.Type.ime()).bottom} " +
-                    "translationY=$translationY top=$top height=$height"
-            )
+            imeFoldCurrentBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             return insets
           }
 
@@ -200,72 +198,12 @@ constructor(
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            imeControlActive = false
+            imeFoldActive = false
+            viewTreeObserver.removeOnPreDrawListener(imeFoldPreDraw)
+            translationY = 0f
             log.warn(
-                "[EditorImeObserve] imeControl end translationY=$translationY top=$top height=$height"
+                "[EditorImeObserve] imeFold end translationY=$translationY top=$top height=$height"
             )
-          }
-        },
-    )
-  }
-
-  private fun tryControlImeAnimation() {
-    if (imeControlController != null || imeControlAnimator != null) {
-      return
-    }
-    val controller = ViewCompat.getWindowInsetsController(rootView) ?: return
-    controller.controlWindowInsetsAnimation(
-        WindowInsetsCompat.Type.ime(),
-        300L,
-        null,
-        null,
-        object : WindowInsetsAnimationControlListenerCompat {
-          override fun onReady(
-              controller: WindowInsetsAnimationControllerCompat,
-              types: Int,
-          ) {
-            imeControlController = controller
-            imeControlStartBottom = controller.currentInsets.bottom
-            val midBottom =
-                (controller.hiddenStateInsets.bottom + controller.shownStateInsets.bottom) / 2
-            imeControlEndBottom =
-                if (imeControlStartBottom < midBottom) controller.shownStateInsets.bottom
-                else controller.hiddenStateInsets.bottom
-            log.warn(
-                "[EditorImeObserve] imeControl ready startBottom=$imeControlStartBottom " +
-                    "endBottom=$imeControlEndBottom fraction=${controller.currentFraction}"
-            )
-            imeControlAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-              addUpdateListener {
-                val fraction = it.animatedFraction
-                val bottom =
-                    (imeControlStartBottom +
-                        (imeControlEndBottom - imeControlStartBottom) * fraction)
-                        .roundToInt()
-                controller.setInsetsAndAlpha(Insets.of(0, 0, 0, bottom), 1f, fraction)
-                log.warn("[EditorImeObserve] imeControl drive fraction=$fraction bottom=$bottom")
-              }
-              doOnEnd {
-                controller.finish(imeControlEndBottom > 0)
-                imeControlController = null
-                imeControlAnimator = null
-                log.warn("[EditorImeObserve] imeControl driveFinished")
-              }
-              duration = 300
-              start()
-            }
-          }
-
-          override fun onFinished(controller: WindowInsetsAnimationControllerCompat) {
-            imeControlController = null
-            log.warn("[EditorImeObserve] imeControl onFinished")
-          }
-
-          override fun onCancelled(controller: WindowInsetsAnimationControllerCompat?) {
-            imeControlController = null
-            imeControlAnimator = null
-            imeControlActive = false
-            log.warn("[EditorImeObserve] imeControl onCancelled")
           }
         },
     )
@@ -273,7 +211,7 @@ constructor(
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    post { installImeControlExperiment() }
+    post { installImeFoldSmoother() }
   }
 
   private fun initialize(context: FragmentActivity) {
