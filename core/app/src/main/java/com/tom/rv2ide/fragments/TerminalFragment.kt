@@ -242,14 +242,15 @@ class TerminalFragment : Fragment() {
         terminalImeCallbackInstalled = true
         ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
             if (terminalContent?.visibility == View.VISIBLE && terminalView?.hasFocus() == true) {
-                val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-                view.setPadding(
-                    view.paddingLeft,
-                    view.paddingTop,
-                    view.paddingRight,
-                    terminalBasePaddingBottom + maxOf(ime, bars),
-                )
+                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+                    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                    val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
+                    content.setPadding(
+                        view.paddingLeft,
+                        view.paddingTop,
+                        view.paddingRight,
+                        terminalBasePaddingBottom + imeBottom,
+                    )
             } else {
                 view.setPadding(
                     view.paddingLeft,
@@ -274,11 +275,12 @@ class TerminalFragment : Fragment() {
                     }
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                     val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                    val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
                     content.setPadding(
                         content.paddingLeft,
                         content.paddingTop,
                         content.paddingRight,
-                        terminalBasePaddingBottom + maxOf(ime, bars),
+                        terminalBasePaddingBottom + imeBottom,
                     )
                     return insets
                 }

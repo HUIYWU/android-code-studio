@@ -27,6 +27,10 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import android.widget.PopupMenu
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
+import androidx.core.view.WindowInsetsCompat
+import kotlin.math.max
 import com.tom.rv2ide.editor.databinding.LayoutFindInFileBinding
 import com.tom.rv2ide.editor.ui.ReplaceAction.doReplace
 import com.tom.rv2ide.resources.R
@@ -49,6 +53,12 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
   private var searchVisibilityListener: ((Boolean) -> Unit)? = null
 
   private var isSearching = false
+  // TODO(IME-FIX-EXPERIMENT): Search is a replacement for the collapsed header slot.
+  private var imeAnimationCallbackInstalled = false
+  private var imeSlotAnimating = false
+  private var imeSlotHasProgress = false
+  private var imeSlotBaseImeBottom = 0
+  private var imeSlotBaseTranslation = 0f
 
   init {
     findInFileBinding = LayoutFindInFileBinding.inflate(LayoutInflater.from(context))
@@ -92,6 +102,95 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
     addView(
         findInFileBinding.root,
         LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
+    )
+    installImeSlotAnimation()
+  }
+
+  // TODO(IME-FIX-EXPERIMENT): Drive the search replacement slot in its editor host.
+  private fun installImeSlotAnimation() {
+    if (imeAnimationCallbackInstalled) return
+    imeAnimationCallbackInstalled = true
+    ViewCompat.setWindowInsetsAnimationCallback(
+        this,
+        object : WindowInsetsAnimationCompat.Callback(
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+        ) {
+          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return
+            imeSlotAnimating = false
+          }
+
+          override fun onStart(
+              animation: WindowInsetsAnimationCompat,
+              bounds: WindowInsetsAnimationCompat.BoundsCompat,
+          ): WindowInsetsAnimationCompat.BoundsCompat {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return bounds
+            imeSlotHasProgress = false
+            imeSlotBaseTranslation = translationY
+            imeSlotAnimating = true
+            val location = IntArray(2)
+            getLocationOnScreen(location)
+            android.util.Log.w(
+                "EditorSearchImeTrace",
+                "start visible=${findInFileBinding.root.visibility == View.VISIBLE} " +
+                    "focused=${findInFileBinding.searchInput.hasFocus()} " +
+                    "translationY=$translationY top=${location[1]} height=$height",
+            )
+            return bounds
+          }
+
+          override fun onProgress(
+              insets: WindowInsetsCompat,
+              runningAnimations: List<WindowInsetsAnimationCompat>,
+          ): WindowInsetsCompat {
+            val runningIme =
+              runningAnimations.firstOrNull {
+                (it.typeMask and WindowInsetsCompat.Type.ime()) != 0
+              } ?: return insets
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            val bottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
+            val visible = findInFileBinding.root.visibility == View.VISIBLE
+            if (imeSlotAnimating && visible) {
+              if (!imeSlotHasProgress) {
+                imeSlotHasProgress = true
+                imeSlotBaseImeBottom = bottom
+                imeSlotBaseTranslation = translationY
+                android.util.Log.w(
+                    "EditorSearchImeTrace",
+                    "firstProgress ime=$ime bars=$bars bottom=$bottom visible=$visible " +
+                        "focused=${findInFileBinding.searchInput.hasFocus()} " +
+                        "baseTranslation=$imeSlotBaseTranslation",
+                )
+              }
+              translationY = imeSlotBaseTranslation + (imeSlotBaseImeBottom - bottom)
+              if (runningIme.interpolatedFraction >= 0.45f && runningIme.interpolatedFraction <= 0.55f) {
+                val location = IntArray(2)
+                getLocationOnScreen(location)
+                android.util.Log.w(
+                    "EditorSearchImeTrace",
+                    "midProgress fraction=${runningIme.interpolatedFraction} ime=$ime bars=$bars " +
+                        "translationY=$translationY top=${location[1]} height=$height",
+                )
+              }
+            }
+            return insets
+          }
+
+          override fun onEnd(animation: WindowInsetsAnimationCompat) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
+              val location = IntArray(2)
+              getLocationOnScreen(location)
+              android.util.Log.w(
+                  "EditorSearchImeTrace",
+                  "end visible=${findInFileBinding.root.visibility == View.VISIBLE} " +
+                      "translationY=$translationY top=${location[1]} height=$height",
+              )
+              imeSlotAnimating = false
+              imeSlotHasProgress = false
+            }
+          }
+        }
     )
   }
 
