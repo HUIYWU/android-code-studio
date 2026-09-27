@@ -116,6 +116,9 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
+  private var imePadInstalled = false
+  private var imePadActive = false
+  private var imePadBaseBottom = 0
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -145,6 +148,58 @@ constructor(
 
   private fun canShareOutput(fragment: Fragment?): Boolean {
     return fragment is ShareableOutputFragment
+  }
+
+  // TODO(EditorImePending): Route F - IME padding follow. During an IME insets animation we
+  // update the sheet content root's paddingBottom with the current frame imeBottom, so the
+  // bottom slot components (header / file-search / terminal+keys, which are all children of
+  // binding.root) follow the keyboard by layout re-measurement instead of translation.
+  private fun installImePadFollow() {
+    if (imePadInstalled) {
+      return
+    }
+    imePadInstalled = true
+    ViewCompat.setWindowInsetsAnimationCallback(
+        rootView,
+        object : WindowInsetsAnimationCompat.Callback(
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+        ) {
+          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
+              return
+            }
+            imePadActive = true
+            imePadBaseBottom = binding.root.paddingBottom
+            log.warn("[EditorImeObserve] imePad prepare base=$imePadBaseBottom state=${behavior.state}")
+          }
+
+          override fun onProgress(
+              insets: WindowInsetsCompat,
+              runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+          ): WindowInsetsCompat {
+            val bottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            if (imePadActive) {
+              binding.root.updatePadding(bottom = imePadBaseBottom + bottom)
+              log.warn(
+                  "[EditorImeObserve] imePad progress imeBottom=$bottom " +
+                      "rootPaddingBottom=${binding.root.paddingBottom}"
+              )
+            }
+            return insets
+          }
+
+          override fun onEnd(animation: WindowInsetsAnimationCompat) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
+              return
+            }
+            imePadActive = false
+            binding.root.updatePadding(bottom = imePadBaseBottom)
+            log.warn(
+                "[EditorImeObserve] imePad end restore=$imePadBaseBottom"
+            )
+          }
+        },
+    )
   }
 
   private fun initialize(context: FragmentActivity) {
@@ -238,6 +293,7 @@ constructor(
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
+    installImePadFollow()
     val ime = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it).getInsets(WindowInsetsCompat.Type.ime()) }
     if (ime != null && (ime.bottom > 0 || isImeVisible)) {
       imeLogLayoutPass++
