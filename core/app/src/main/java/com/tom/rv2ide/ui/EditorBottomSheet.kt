@@ -74,6 +74,7 @@ import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
 import java.util.concurrent.Callable
 import kotlin.math.roundToInt
+import kotlin.math.max
 import org.slf4j.LoggerFactory
 import eightbitlab.com.blurview.RenderScriptBlur
 import android.view.ViewOutlineProvider
@@ -121,6 +122,12 @@ constructor(
   private var imeAnimEpoch = 0
   private var imeAnimPhase = IME_PHASE_IDLE
   private var imeTraceArmedAt = 0L
+  // TODO(IME-FIX-EXPERIMENT): 以下为"IME 动画期间用 imeBottom 逐帧钉贴底槽位"实验状态，未在设备验证前不视为最终实现。
+  private var imePinInstalled = false
+  private var imePinActive = false
+  private var mdcPinStartY = 0
+  private var mdcPinEndY = 0
+  private var mdcPinStartTranslation = 0f
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -245,6 +252,83 @@ constructor(
     )
   }
 
+  // TODO(IME-FIX-EXPERIMENT): 验证通过前为实验实现。覆盖 MDC 的 InsetsAnimationCallback（同一 view 只能有一个），
+  // 折叠态改为"IME 动画期间用 onProgress 的 imeBottom 逐帧钉 sheet 顶 = 底部参照 - 贴底组件高"，
+  // 使动画全程可见区恒为贴底 header（消除 header 下方空隙与 pager 顶部进入可见区的白缝）；
+  // 非折叠态完整复刻 MDC 的 startY/endY/startTranslationY + interpolatedFraction 驱动，保持半展开/展开基准。
+  private fun installImePinnedHeaderAnimation() {
+    ViewCompat.setWindowInsetsAnimationCallback(
+        this,
+        object : WindowInsetsAnimationCompat.Callback(
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
+        ) {
+          private fun isImeMask(animation: WindowInsetsAnimationCompat): Boolean {
+            return (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
+          }
+
+          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+            if (!isImeMask(animation)) return
+            val loc = IntArray(2)
+            getLocationOnScreen(loc)
+            mdcPinStartY = loc[1]
+          }
+
+          override fun onStart(
+              animation: WindowInsetsAnimationCompat,
+              bounds: WindowInsetsAnimationCompat.BoundsCompat,
+          ): WindowInsetsAnimationCompat.BoundsCompat {
+            if (!isImeMask(animation)) return bounds
+            val loc = IntArray(2)
+            getLocationOnScreen(loc)
+            mdcPinEndY = loc[1]
+            mdcPinStartTranslation = (mdcPinStartY - mdcPinEndY).toFloat()
+            imePinActive = behavior.state == BottomSheetBehavior.STATE_COLLAPSED
+            return bounds
+          }
+
+          override fun onProgress(
+              insets: WindowInsetsCompat,
+              runningAnimations: List<WindowInsetsAnimationCompat>,
+          ): WindowInsetsCompat {
+            val running =
+                runningAnimations.lastOrNull { animation ->
+                  (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
+                }
+                    ?: return insets
+            val fraction = running.interpolatedFraction
+            if (imePinActive) {
+              val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+              val systemBottom =
+                  insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+              val bottomRef =
+                  resources.displayMetrics.heightPixels - max(imeBottom, systemBottom)
+              val headerVisible = binding.headerContainer.height.coerceAtLeast(1)
+              val desiredSheetTop = bottomRef - headerVisible
+              val loc = IntArray(2)
+              getLocationOnScreen(loc)
+              val layoutTop = loc[1] - translationY.roundToInt()
+              val targetTranslation = (desiredSheetTop - layoutTop).toFloat()
+              translationY = targetTranslation
+              log.warn(
+                  "[EditorImeTrace] pinned fraction=$fraction imeBottom=$imeBottom " +
+                      "systemBottom=$systemBottom desiredTop=$desiredSheetTop " +
+                      "layoutTop=$layoutTop targetTy=$targetTranslation"
+              )
+            } else {
+              translationY = mdcPinStartTranslation * (1f - fraction)
+            }
+            return insets
+          }
+
+          override fun onEnd(animation: WindowInsetsAnimationCompat) {
+            if (!isImeMask(animation)) return
+            imePinActive = false
+            translationY = 0f
+          }
+        }
+    )
+  }
+
   private fun initialize(context: FragmentActivity) {
     val mediator =
         TabLayoutMediator(binding.tabs, binding.pager, true, true) { tab, position ->
@@ -339,6 +423,12 @@ constructor(
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
+    // TODO(IME-FIX-EXPERIMENT): 首帧布局时 MDC 已在 onLayoutChild 安装 InsetsAnimationCallback，
+    // 此处覆盖为实验回调（imeBottom 逐帧钉槽位）。验证通过前不视为最终实现。
+    if (!imePinInstalled) {
+      imePinInstalled = true
+      installImePinnedHeaderAnimation()
+    }
     if (imeAnimPhase != IME_PHASE_IDLE ||
         SystemClock.uptimeMillis() - imeTraceArmedAt < 500L
     ) {
