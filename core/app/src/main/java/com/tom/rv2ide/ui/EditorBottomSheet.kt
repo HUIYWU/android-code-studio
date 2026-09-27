@@ -122,8 +122,7 @@ constructor(
   private var imeEndTop = 0
   private var imeStartHeight = 0
   private var imeEndHeight = 0
-  private var imeStartBottom = 0
-  private var imeEndBottom = 0
+  private var imeEndScreenTop = 0
   private var imeTopDelta = 0f
 
   private val insetBottom: Int
@@ -174,13 +173,11 @@ constructor(
               return
             }
             imeAnimationActive = true
-            imeStartTop = layoutTop()
+            imeStartTop = getTop()
             imeStartHeight = height
-            imeStartBottom = screenBottom()
             log.warn(
                 "[EditorImeObserve] imeTrack prepare startTop=$imeStartTop " +
-                    "startHeight=$imeStartHeight startBottom=$imeStartBottom " +
-                    "translationY=$translationY state=${behavior.state}"
+                    "startHeight=$imeStartHeight translationY=$translationY state=${behavior.state}"
             )
           }
 
@@ -193,14 +190,16 @@ constructor(
             }
             // TODO(EditorImePending): assumes the ADJUST_RESIZE layout has already been applied
             // before onStart (same assumption as Material). Verify from device logs.
-            imeEndTop = layoutTop()
+            imeEndTop = getTop()
             imeEndHeight = height
-            imeEndBottom = screenBottom()
+            val location = IntArray(2)
+            getLocationOnScreen(location)
+            imeEndScreenTop = location[1]
             imeTopDelta = (imeStartTop - imeEndTop).toFloat()
             translationY = imeTopDelta
             log.warn(
                 "[EditorImeObserve] imeTrack start endTop=$imeEndTop endHeight=$imeEndHeight " +
-                    "endBottom=$imeEndBottom topDelta=$imeTopDelta"
+                    "endScreenTop=$imeEndScreenTop topDelta=$imeTopDelta"
             )
             return bounds
           }
@@ -216,11 +215,13 @@ constructor(
               return insets
             }
             val fraction = animation.interpolatedFraction
-            val paintedTop = imeEndTop + imeTopDelta * (1f - fraction)
+            val paintedTop = imeEndScreenTop + imeTopDelta * (1f - fraction)
             translationY = imeTopDelta * (1f - fraction)
-            val targetBottom =
-                imeStartBottom + ((imeEndBottom - imeStartBottom) * fraction).roundToInt()
-            val desiredHeight = (targetBottom - paintedTop).roundToInt().coerceAtLeast(0)
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            val decorHeight = rootView?.height ?: 0
+            val keyboardTop = decorHeight - navBottom - imeBottom
+            val desiredHeight = (keyboardTop - paintedTop).roundToInt().coerceAtLeast(0)
             if (layoutParams.height != desiredHeight) {
               val lp = layoutParams
               lp.height = desiredHeight
@@ -229,8 +230,8 @@ constructor(
             }
             log.warn(
                 "[EditorImeObserve] imeTrack progress fraction=$fraction " +
-                    "translationY=$translationY height=$desiredHeight " +
-                    "imeBottom=${insets.getInsets(WindowInsetsCompat.Type.ime()).bottom}"
+                    "paintedTop=$paintedTop translationY=$translationY height=$desiredHeight " +
+                    "imeBottom=$imeBottom keyboardTop=$keyboardTop decorHeight=$decorHeight"
             )
             return insets
           }
@@ -253,16 +254,6 @@ constructor(
           }
         },
     )
-  }
-
-  private fun layoutTop(): Int {
-    return if (translationY != 0f) (top - translationY).roundToInt() else top
-  }
-
-  private fun screenBottom(): Int {
-    val location = IntArray(2)
-    getLocationOnScreen(location)
-    return location[1] + height
   }
 
   override fun onAttachedToWindow() {
