@@ -290,6 +290,7 @@ abstract class BaseEditorActivity :
         }
       }
   private var isBottomSheetImeVisible = false
+  private var lastTraceImeBottom = 0
   private var contentCardRealHeight: Int? = null
 
   private val editorSurfaceContainerBackground by lazy { resolveAttr(R.attr.colorSurfaceDim) }
@@ -669,6 +670,14 @@ abstract class BaseEditorActivity :
     val sidebarInputFocused = isSidebarInputFocused(focusedView)
     val bottomSheetImeVisible = imeVisible && !sidebarInputFocused
     val bottomSheetImeStateChanged = this.isBottomSheetImeVisible != bottomSheetImeVisible
+    val imeDelta = imeBottom - lastTraceImeBottom
+    lastTraceImeBottom = imeBottom
+    val imeDir =
+        when {
+          imeDelta > 0 -> "enter"
+          imeDelta < 0 -> "exit"
+          else -> "same"
+        }
 
     // TODO(EditorImeTrace): Keep the window mode split until sidebar and non-sidebar IME behavior is verified.
     window.setSoftInputMode(
@@ -680,7 +689,8 @@ abstract class BaseEditorActivity :
     )
 
     log.warn(
-        "[EditorImeTrace] activityInsets imeBottom=$imeBottom systemBarsBottom=${systemBars.bottom} " +
+        "[EditorImeTrace] activityInsets imeBottom=$imeBottom imeDelta=$imeDelta imeDir=$imeDir " +
+            "systemBarsBottom=${systemBars.bottom} " +
             "imeVisible=$imeVisible bottomSheetImeVisible=$bottomSheetImeVisible " +
             "sidebarInputFocused=$sidebarInputFocused focus=${focusedView?.javaClass?.simpleName} " +
             "bottomSheetImeStateChanged=$bottomSheetImeStateChanged"

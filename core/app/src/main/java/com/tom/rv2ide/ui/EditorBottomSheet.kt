@@ -19,6 +19,7 @@ package com.tom.rv2ide.ui
 
 import android.app.Activity
 import android.content.Context
+import android.os.SystemClock
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.LayoutInflater
@@ -116,9 +117,10 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
-  private var imePadInstalled = false
-  private var imePadActive = false
-  private var imePadBaseBottom = 0
+  private var lastImeBottom = 0
+  private var imeAnimEpoch = 0
+  private var imeAnimPhase = IME_PHASE_IDLE
+  private var imeTraceArmedAt = 0L
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -141,6 +143,11 @@ constructor(
     private const val START_HIDE_CONTAINER_AT_OFFSET = 0.82f
     private const val HIDE_CONTAINER_AT_OFFSET = 0.92f
 
+    private const val IME_PHASE_IDLE = 0
+    private const val IME_PHASE_START = 1
+    private const val IME_PHASE_PROGRESS = 2
+    private const val IME_PHASE_END = 3
+
     const val CHILD_HEADER = 0
     const val CHILD_SYMBOL_INPUT = 1
     const val CHILD_ACTION = 2
@@ -150,55 +157,91 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
-  // TODO(EditorImePending): Route F - IME padding follow. During an IME insets animation we
-  // update the sheet content root's paddingBottom with the current frame imeBottom, so the
-  // bottom slot components (header / file-search / terminal+keys, which are all children of
-  // binding.root) follow the keyboard by layout re-measurement instead of translation.
-  private fun installImePadFollow() {
-    if (imePadInstalled) {
-      return
-    }
-    imePadInstalled = true
-    ViewCompat.setWindowInsetsAnimationCallback(
-        rootView,
-        object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
-        ) {
-          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
-              return
+  private fun installImeGeoTrace() {
+    post {
+      val host = (parent as? View) ?: return@post
+      ViewCompat.setWindowInsetsAnimationCallback(
+          host,
+          object : WindowInsetsAnimationCompat.Callback(
+              WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+          ) {
+            private fun isIme(animation: WindowInsetsAnimationCompat): Boolean {
+              return (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
             }
-            imePadActive = true
-            imePadBaseBottom = binding.root.paddingBottom
-            log.warn("[EditorImeObserve] imePad prepare base=$imePadBaseBottom state=${behavior.state}")
-          }
 
-          override fun onProgress(
-              insets: WindowInsetsCompat,
-              runningAnimations: MutableList<WindowInsetsAnimationCompat>,
-          ): WindowInsetsCompat {
-            val bottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            if (imePadActive) {
-              binding.root.updatePadding(bottom = imePadBaseBottom + bottom)
-              log.warn(
-                  "[EditorImeObserve] imePad progress imeBottom=$bottom " +
-                      "rootPaddingBottom=${binding.root.paddingBottom}"
+            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
+              if (!isIme(animation)) return
+              imeAnimEpoch++
+            }
+
+            override fun onStart(
+                animation: WindowInsetsAnimationCompat,
+                bounds: WindowInsetsAnimationCompat.BoundsCompat,
+            ): WindowInsetsAnimationCompat.BoundsCompat {
+              if (!isIme(animation)) return bounds
+              imeAnimPhase = IME_PHASE_START
+              imeTraceArmedAt = SystemClock.uptimeMillis()
+              logImeGeoTrace("start", animation.interpolatedFraction, null)
+              return bounds
+            }
+
+            override fun onProgress(
+                insets: WindowInsetsCompat,
+                runningAnimations: List<WindowInsetsAnimationCompat>,
+            ): WindowInsetsCompat {
+              val running =
+                  runningAnimations.lastOrNull { animation ->
+                    (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
+                  }
+                      ?: return insets
+              imeAnimPhase = IME_PHASE_PROGRESS
+              imeTraceArmedAt = SystemClock.uptimeMillis()
+              logImeGeoTrace(
+                  "progress",
+                  running.interpolatedFraction,
+                  insets.getInsets(WindowInsetsCompat.Type.ime()).bottom,
               )
+              return insets
             }
-            return insets
-          }
 
-          override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
-              return
+            override fun onEnd(animation: WindowInsetsAnimationCompat) {
+              if (!isIme(animation)) return
+              imeAnimPhase = IME_PHASE_END
+              imeTraceArmedAt = SystemClock.uptimeMillis()
+              logImeGeoTrace("end", animation.interpolatedFraction, null)
+              imeAnimPhase = IME_PHASE_IDLE
             }
-            imePadActive = false
-            binding.root.updatePadding(bottom = imePadBaseBottom)
-            log.warn(
-                "[EditorImeObserve] imePad end restore=$imePadBaseBottom"
-            )
           }
-        },
+      )
+    }
+  }
+
+  private fun logImeGeoTrace(event: String, fraction: Float, imeBottomOverride: Int?) {
+    if (imeAnimEpoch == 0) return
+    val rootInsets = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
+    val imeBottom =
+        imeBottomOverride ?: (rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0)
+    val sheetLocation = IntArray(2)
+    val headerLocation = IntArray(2)
+    val pagerLocation = IntArray(2)
+    val shellLocation = IntArray(2)
+    getLocationOnScreen(sheetLocation)
+    binding.headerContainer.getLocationOnScreen(headerLocation)
+    binding.pager.getLocationOnScreen(pagerLocation)
+    binding.quickInputShell.getLocationOnScreen(shellLocation)
+    val imeDelta = imeBottom - lastImeBottom
+    lastImeBottom = imeBottom
+    log.warn(
+        "[EditorImeTrace] anim epoch=$imeAnimEpoch event=$event phase=$imeAnimPhase " +
+            "fraction=$fraction imeBottom=$imeBottom imeDelta=$imeDelta state=${behavior.state} " +
+            "sheetTop=${sheetLocation[1]} sheetBottom=${sheetLocation[1] + height} sheetH=$height " +
+            "translationY=$translationY " +
+            "headerTop=${headerLocation[1]} headerBottom=${headerLocation[1] + binding.headerContainer.height} " +
+            "headerH=${binding.headerContainer.height} " +
+            "pagerTop=${pagerLocation[1]} pagerBottom=${pagerLocation[1] + binding.pager.height} " +
+            "pagerH=${binding.pager.height} " +
+            "shellTop=${shellLocation[1]} shellH=${binding.quickInputShell.height} " +
+            "slide=$currentSheetOffset"
     )
   }
 
@@ -281,8 +324,11 @@ constructor(
       this.windowInsets = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
       val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+      val imeDelta = ime.bottom - lastImeBottom
+      lastImeBottom = ime.bottom
       log.warn(
-          "[EditorImeObserve] sheetInsets imeBottom=${ime.bottom} " +
+          "[EditorImeTrace] sheetInsets imeBottom=${ime.bottom} imeDelta=$imeDelta " +
+              "phase=$imeAnimPhase epoch=$imeAnimEpoch " +
               "systemBottom=${bars.bottom} gestureBottom=${windowInsets?.bottom ?: 0} " +
               "imeVisible=$isImeVisible translationY=$translationY state=${behavior.state} " +
               "top=$top height=$height paddingBottom=$paddingBottom"
@@ -293,32 +339,11 @@ constructor(
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
-    installImePadFollow()
-    val ime = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it).getInsets(WindowInsetsCompat.Type.ime()) }
-    if (ime != null && (ime.bottom > 0 || isImeVisible)) {
+    if (imeAnimPhase != IME_PHASE_IDLE ||
+        SystemClock.uptimeMillis() - imeTraceArmedAt < 500L
+    ) {
       imeLogLayoutPass++
-      val sheetLocation = IntArray(2)
-      val rootLocation = IntArray(2)
-      val headerLocation = IntArray(2)
-      val pagerLocation = IntArray(2)
-      val parentLocation = IntArray(2)
-      getLocationOnScreen(sheetLocation)
-      binding.root.getLocationOnScreen(rootLocation)
-      binding.headerContainer.getLocationOnScreen(headerLocation)
-      binding.pager.getLocationOnScreen(pagerLocation)
-      val parentView = parent as? View
-      parentView?.getLocationOnScreen(parentLocation)
-      log.warn(
-          "[EditorImeObserve] layout pass=$imeLogLayoutPass changed=$changed " +
-              "imeBottom=${ime.bottom} state=${behavior.state} " +
-              "setTop=$top sheetTop=${sheetLocation[1]} sheetHeight=$height " +
-              "translationY=$translationY " +
-              "rootTop=${rootLocation[1]} rootHeight=${binding.root.height} " +
-              "headerTop=${headerLocation[1]} headerHeight=${binding.headerContainer.height} " +
-              "pagerTop=${pagerLocation[1]} pagerHeight=${binding.pager.height} " +
-              "parentTop=${parentLocation[1]} parentHeight=${parentView?.height} " +
-              "peek=${behavior.peekHeight}"
-      )
+      logImeGeoTrace("layout#$imeLogLayoutPass", -1f, null)
     }
   }
 
@@ -388,6 +413,7 @@ constructor(
     addView(binding.root)
 
     initialize(context)
+    installImeGeoTrace()
   }
 
   /** Set whether the input method is visible. */
@@ -435,18 +461,21 @@ constructor(
           else -> currentSheetOffset
         }
     log.warn(
-        "[EditorImeObserve] behaviorState state=$newState offset=$currentSheetOffset " +
-            "imeVisible=$isImeVisible top=$top height=$height translationY=$translationY"
+        "[EditorImeTrace] behaviorState state=$newState offset=$currentSheetOffset " +
+            "imeVisible=$isImeVisible phase=$imeAnimPhase epoch=$imeAnimEpoch " +
+            "top=$top height=$height translationY=$translationY"
     )
     applyTopContainerState(animated = true)
   }
 
   fun onSlide(sheetOffset: Float) {
     currentSheetOffset = sheetOffset
-    log.warn(
-        "[EditorImeObserve] behaviorSlide offset=$sheetOffset imeVisible=$isImeVisible " +
-            "top=$top height=$height translationY=$translationY"
-    )
+    if (imeAnimPhase != IME_PHASE_IDLE) {
+      log.warn(
+          "[EditorImeTrace] slideDuringIme offset=$sheetOffset phase=$imeAnimPhase " +
+              "imeVisible=$isImeVisible top=$top height=$height translationY=$translationY"
+      )
+    }
     updateQuickInputExpandDirection()
     binding.symbolInput.collapse()
     binding.headerContainer.updatePaddingRelative(bottom = 0)
