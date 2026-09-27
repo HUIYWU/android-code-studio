@@ -54,7 +54,6 @@ import com.tom.rv2ide.adapters.DiagnosticsAdapter
 import com.tom.rv2ide.adapters.EditorBottomSheetTabAdapter
 import com.tom.rv2ide.adapters.SearchListAdapter
 import com.tom.rv2ide.databinding.LayoutEditorBottomSheetBinding
-import com.tom.rv2ide.editor.ui.EditorSearchLayout
 import com.tom.rv2ide.fragments.output.ShareableOutputFragment
 import com.tom.rv2ide.models.LogLine
 import com.tom.rv2ide.preferences.internal.EditorPreferences
@@ -117,16 +116,15 @@ constructor(
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
   private var imeLogLayoutPass = 0
+  private var imeAnimationInstalled = false
   private var imeAnimationActive = false
-  private val imeTargets = LinkedHashMap<String, ImeTarget>()
-  private var imeAnimationCallbackInstalled = false
-
-  private data class ImeTarget(
-      val view: View,
-      var startLayoutY: Int = 0,
-      var endLayoutY: Int = 0,
-      var startTranslationY: Float = 0f,
-  )
+  private var imeStartTop = 0
+  private var imeEndTop = 0
+  private var imeStartHeight = 0
+  private var imeEndHeight = 0
+  private var imeStartBottom = 0
+  private var imeEndBottom = 0
+  private var imeTopDelta = 0f
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -158,33 +156,31 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
+  // TODO(EditorImePending): replaces Material InsetsAnimationCallback (installed by
+  // BottomSheetBehavior on first layout). Requires device verification that dragging,
+  // half-expanded state and settle animations are unaffected.
   private fun installImeAnimationCoordinator() {
-    if (imeAnimationCallbackInstalled) {
+    if (imeAnimationInstalled) {
       return
     }
-    val host = parent as? View ?: run {
-      log.warn("[EditorImeObserve] TODO(EditorImePending): parent host unavailable")
-      return
-    }
-    imeAnimationCallbackInstalled = true
+    imeAnimationInstalled = true
     ViewCompat.setWindowInsetsAnimationCallback(
-        host,
+        this,
         object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
         ) {
           override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0 || !isImeVisible) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            refreshImeTargets()
             imeAnimationActive = true
-            imeTargets.values.forEach { target ->
-              target.startLayoutY = layoutScreenY(target.view)
-              target.view.translationY = 0f
-            }
+            imeStartTop = layoutTop()
+            imeStartHeight = height
+            imeStartBottom = screenBottom()
             log.warn(
-                "[EditorImeObserve] coordinatorPrepare targets=${imeTargets.keys} " +
-                    "sheetTranslationY=$translationY"
+                "[EditorImeObserve] imeTrack prepare startTop=$imeStartTop " +
+                    "startHeight=$imeStartHeight startBottom=$imeStartBottom " +
+                    "translationY=$translationY state=${behavior.state}"
             )
           }
 
@@ -192,21 +188,19 @@ constructor(
               animation: WindowInsetsAnimationCompat,
               bounds: WindowInsetsAnimationCompat.BoundsCompat,
           ): WindowInsetsAnimationCompat.BoundsCompat {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0 || !imeAnimationActive) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return bounds
             }
-            imeTargets.values.forEach { target ->
-              target.endLayoutY = layoutScreenY(target.view)
-              target.startTranslationY =
-                  (target.startLayoutY - target.endLayoutY).toFloat()
-              target.view.translationY = target.startTranslationY
-            }
+            // TODO(EditorImePending): assumes the ADJUST_RESIZE layout has already been applied
+            // before onStart (same assumption as Material). Verify from device logs.
+            imeEndTop = layoutTop()
+            imeEndHeight = height
+            imeEndBottom = screenBottom()
+            imeTopDelta = (imeStartTop - imeEndTop).toFloat()
+            translationY = imeTopDelta
             log.warn(
-                "[EditorImeObserve] coordinatorStart " +
-                    imeTargets.entries.joinToString { (name, target) ->
-                      "$name:start=${target.startLayoutY},end=${target.endLayoutY}," +
-                          "translation=${target.startTranslationY}"
-                    }
+                "[EditorImeObserve] imeTrack start endTop=$imeEndTop endHeight=$imeEndHeight " +
+                    "endBottom=$imeEndBottom topDelta=$imeTopDelta"
             )
             return bounds
           }
@@ -222,74 +216,59 @@ constructor(
               return insets
             }
             val fraction = animation.interpolatedFraction
-            imeTargets.values.forEach { target ->
-              target.view.translationY =
-                  target.startTranslationY + (0f - target.startTranslationY) * fraction
+            val paintedTop = imeEndTop + imeTopDelta * (1f - fraction)
+            translationY = imeTopDelta * (1f - fraction)
+            val targetBottom =
+                imeStartBottom + ((imeEndBottom - imeStartBottom) * fraction).roundToInt()
+            val desiredHeight = (targetBottom - paintedTop).roundToInt().coerceAtLeast(0)
+            if (layoutParams.height != desiredHeight) {
+              val lp = layoutParams
+              lp.height = desiredHeight
+              layoutParams = lp
+              requestLayout()
             }
             log.warn(
-                "[EditorImeObserve] coordinatorProgress fraction=$fraction " +
-                    imeTargets.entries.joinToString { (name, target) ->
-                      "$name:translation=${target.view.translationY}"
-                    }
+                "[EditorImeObserve] imeTrack progress fraction=$fraction " +
+                    "translationY=$translationY height=$desiredHeight " +
+                    "imeBottom=${insets.getInsets(WindowInsetsCompat.Type.ime()).bottom}"
             )
             return insets
           }
 
           override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0 || !imeAnimationActive) {
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            imeTargets.values.forEach { it.view.translationY = 0f }
+            translationY = 0f
+            if (imeEndHeight > 0 && layoutParams.height != imeEndHeight) {
+              val lp = layoutParams
+              lp.height = imeEndHeight
+              layoutParams = lp
+              requestLayout()
+            }
             imeAnimationActive = false
-            log.warn("[EditorImeObserve] coordinatorEnd targets=${imeTargets.keys}")
+            log.warn(
+                "[EditorImeObserve] imeTrack end height=$imeEndHeight translationY=$translationY"
+            )
           }
         },
     )
   }
 
-  private fun refreshImeTargets() {
-    imeTargets.clear()
-    imeTargets["header"] = ImeTarget(binding.quickInputShell)
-    findSearchTarget()?.let { imeTargets["search"] = ImeTarget(it) }
-    findTerminalTarget()?.let { imeTargets["terminal"] = ImeTarget(it) }
-    if (imeTargets.size != 3) {
-      log.warn(
-          "[EditorImeObserve] TODO(EditorImePending): expected three targets, " +
-              "found=${imeTargets.keys}"
-      )
-    }
+  private fun layoutTop(): Int {
+    return if (translationY != 0f) (top - translationY).roundToInt() else top
   }
 
-  private fun findSearchTarget(): View? {
-    return findDescendant(this) { it is EditorSearchLayout && it.isShown }
-  }
-
-  private fun findTerminalTarget(): View? {
-    return findDescendant(this) { it.id == R.id.terminal_content && it.isShown }
-  }
-
-  private fun findDescendant(root: View, predicate: (View) -> Boolean): View? {
-    if (predicate(root)) {
-      return root
-    }
-    if (root !is ViewGroup) {
-      return null
-    }
-    for (index in 0 until root.childCount) {
-      findDescendant(root.getChildAt(index), predicate)?.let { return it }
-    }
-    return null
-  }
-
-  private fun layoutScreenY(view: View): Int {
+  private fun screenBottom(): Int {
     val location = IntArray(2)
-    view.getLocationOnScreen(location)
-    return (location[1] - view.translationY).roundToInt()
+    getLocationOnScreen(location)
+    return location[1] + height
   }
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    installImeAnimationCoordinator()
+    // Installed after Material's first onLayoutChild so this replaces the Material callback.
+    post { installImeAnimationCoordinator() }
   }
 
   private fun initialize(context: FragmentActivity) {
