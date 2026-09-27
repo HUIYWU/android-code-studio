@@ -175,9 +175,13 @@ constructor(
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
               return
             }
-            imeControlActive = true
-            tryControlImeAnimation()
-            log.warn("[EditorImeObserve] imeControl prepare state=${behavior.state}")
+            if (!imeControlActive) {
+              imeControlActive = true
+              tryControlImeAnimation()
+              log.warn("[EditorImeObserve] imeControl prepare state=${behavior.state}")
+            } else {
+              log.warn("[EditorImeObserve] imeControl prepare re-entrant ignored")
+            }
           }
 
           override fun onProgress(
@@ -260,6 +264,7 @@ constructor(
           override fun onCancelled(controller: WindowInsetsAnimationControllerCompat?) {
             imeControlController = null
             imeControlAnimator = null
+            imeControlActive = false
             log.warn("[EditorImeObserve] imeControl onCancelled")
           }
         },
