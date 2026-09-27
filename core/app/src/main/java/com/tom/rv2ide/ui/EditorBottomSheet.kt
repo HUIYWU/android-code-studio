@@ -150,20 +150,20 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
-  // TODO(EditorImePending): Route 1 experiment. Installed on the parent (CoordinatorLayout) with
-  // CONTINUE_ON_SUBTREE so the Material child callback on the bottom sheet itself is left intact.
-  // Applies a single rigid lift: translationY = -current IME bottom for the whole sheet, matching
-  // the Chat composer model (no window resize, no height animation, no per-target patches).
+  // TODO(EditorImePending): Route 1 experiment (take 2). Installed on the sheet itself with
+  // DISPATCH_MODE_STOP so it replaces the Material InsetsAnimationCallback (which otherwise
+  // zeroes translationY on every frame). Applies a single rigid lift: translationY = -current
+  // IME bottom for the whole sheet, matching the Chat composer model (no window resize, no
+  // height animation, no per-target patches).
   private fun installImeLiftCoordinator() {
     if (imeLiftInstalled) {
       return
     }
-    val host = parent as? View ?: return
     imeLiftInstalled = true
     ViewCompat.setWindowInsetsAnimationCallback(
-        host,
+        this,
         object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
+            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP
         ) {
           override fun onPrepare(animation: WindowInsetsAnimationCompat) {
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) {
