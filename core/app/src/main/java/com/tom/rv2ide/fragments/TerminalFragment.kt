@@ -47,7 +47,7 @@ class TerminalFragment : Fragment() {
     private var settingsContent: View? = null
     private var emptyStateContent: View? = null
     private var sessionTabs: TabLayout? = null
-    // TODO(IME-FIX-EXPERIMENT): Terminal content owns the full-expanded bottom slot.
+    // The terminal content owns the full-expanded bottom slot and follows the IME by padding.
     private var terminalImeCallbackInstalled = false
     private var terminalBasePaddingBottom = 0
     
@@ -234,8 +234,8 @@ class TerminalFragment : Fragment() {
         return rootView
     }
     
-    // TODO(IME-FIX-EXPERIMENT): Apply the IME inset to the terminal content container so the
-    // weighted terminal view and the extra keys bar move together.
+    // Apply the IME inset to the terminal content container so the weighted terminal view and
+    // the extra keys bar move together.
     private fun installImeContentSlot(rootView: View) {
         if (terminalImeCallbackInstalled) return
         val content = rootView.findViewById<View>(R.id.terminal_content) ?: return
@@ -255,15 +255,15 @@ class TerminalFragment : Fragment() {
                     terminalBasePaddingBottom,
                 )
             } else {
-                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-                    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-                    val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-                    content.setPadding(
-                        view.paddingLeft,
-                        view.paddingTop,
-                        view.paddingRight,
-                        terminalBasePaddingBottom + imeBottom,
-                    )
+                val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+                val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
+                view.setPadding(
+                    view.paddingLeft,
+                    view.paddingTop,
+                    view.paddingRight,
+                    terminalBasePaddingBottom + imeBottom,
+                )
             }
             insets
         }

@@ -19,7 +19,6 @@ package com.tom.rv2ide.ui
 
 import android.app.Activity
 import android.content.Context
-import android.os.SystemClock
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.LayoutInflater
@@ -117,12 +116,8 @@ constructor(
   private var basicContainerChild = CHILD_HEADER
   private var windowInsets: Insets? = null
   private var currentSymbolInputEditor: CodeEditorView? = null
-  private var imeLogLayoutPass = 0
-  private var lastImeBottom = 0
-  private var imeAnimEpoch = 0
-  private var imeAnimPhase = IME_PHASE_IDLE
-  private var imeTraceArmedAt = 0L
-  // TODO(IME-FIX-EXPERIMENT): Collapsed offset follows the IME by changing Behavior geometry.
+  // Collapsed sheets follow the IME by changing the Behavior geometry: peekHeight for the
+  // collapsed state and halfExpandedRatio for the half-expanded state.
   private var imeOwnerInstalled = false
   private var imeOwnerActive = false
   private var imeOwnerHalfActive = false
@@ -144,7 +139,6 @@ constructor(
   private var quickInputOverlayActive = false
   private var headerExternallyHidden = false
 
-
   private enum class TopContainerMode {
     BASIC,
     SYMBOL_INPUT,
@@ -157,11 +151,6 @@ constructor(
     private const val START_HIDE_CONTAINER_AT_OFFSET = 0.82f
     private const val HIDE_CONTAINER_AT_OFFSET = 0.92f
 
-    private const val IME_PHASE_IDLE = 0
-    private const val IME_PHASE_START = 1
-    private const val IME_PHASE_PROGRESS = 2
-    private const val IME_PHASE_END = 3
-
     const val CHILD_HEADER = 0
     const val CHILD_SYMBOL_INPUT = 1
     const val CHILD_ACTION = 2
@@ -171,95 +160,7 @@ constructor(
     return fragment is ShareableOutputFragment
   }
 
-  private fun installImeGeoTrace() {
-    post {
-      val host = (parent as? View) ?: return@post
-      ViewCompat.setWindowInsetsAnimationCallback(
-          host,
-          object : WindowInsetsAnimationCompat.Callback(
-              WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
-          ) {
-            private fun isIme(animation: WindowInsetsAnimationCompat): Boolean {
-              return (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
-            }
-
-            override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-              if (!isIme(animation)) return
-              imeAnimEpoch++
-            }
-
-            override fun onStart(
-                animation: WindowInsetsAnimationCompat,
-                bounds: WindowInsetsAnimationCompat.BoundsCompat,
-            ): WindowInsetsAnimationCompat.BoundsCompat {
-              if (!isIme(animation)) return bounds
-              imeAnimPhase = IME_PHASE_START
-              imeTraceArmedAt = SystemClock.uptimeMillis()
-              logImeGeoTrace("start", animation.interpolatedFraction, null)
-              return bounds
-            }
-
-            override fun onProgress(
-                insets: WindowInsetsCompat,
-                runningAnimations: List<WindowInsetsAnimationCompat>,
-            ): WindowInsetsCompat {
-              val running =
-                  runningAnimations.lastOrNull { animation ->
-                    (animation.typeMask and WindowInsetsCompat.Type.ime()) != 0
-                  }
-                      ?: return insets
-              imeAnimPhase = IME_PHASE_PROGRESS
-              imeTraceArmedAt = SystemClock.uptimeMillis()
-              logImeGeoTrace(
-                  "progress",
-                  running.interpolatedFraction,
-                  insets.getInsets(WindowInsetsCompat.Type.ime()).bottom,
-              )
-              return insets
-            }
-
-            override fun onEnd(animation: WindowInsetsAnimationCompat) {
-              if (!isIme(animation)) return
-              imeAnimPhase = IME_PHASE_END
-              imeTraceArmedAt = SystemClock.uptimeMillis()
-              logImeGeoTrace("end", animation.interpolatedFraction, null)
-              imeAnimPhase = IME_PHASE_IDLE
-            }
-          }
-      )
-    }
-  }
-
-  private fun logImeGeoTrace(event: String, fraction: Float, imeBottomOverride: Int?) {
-    if (imeAnimEpoch == 0) return
-    val rootInsets = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
-    val imeBottom =
-        imeBottomOverride ?: (rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0)
-    val sheetLocation = IntArray(2)
-    val headerLocation = IntArray(2)
-    val pagerLocation = IntArray(2)
-    val shellLocation = IntArray(2)
-    getLocationOnScreen(sheetLocation)
-    binding.headerContainer.getLocationOnScreen(headerLocation)
-    binding.pager.getLocationOnScreen(pagerLocation)
-    binding.quickInputShell.getLocationOnScreen(shellLocation)
-    val imeDelta = imeBottom - lastImeBottom
-    lastImeBottom = imeBottom
-    log.warn(
-        "[EditorImeTrace] anim epoch=$imeAnimEpoch event=$event phase=$imeAnimPhase " +
-            "fraction=$fraction imeBottom=$imeBottom imeDelta=$imeDelta state=${behavior.state} " +
-            "sheetTop=${sheetLocation[1]} sheetBottom=${sheetLocation[1] + height} sheetH=$height " +
-            "translationY=$translationY " +
-            "headerTop=${headerLocation[1]} headerBottom=${headerLocation[1] + binding.headerContainer.height} " +
-            "headerH=${binding.headerContainer.height} " +
-            "pagerTop=${pagerLocation[1]} pagerBottom=${pagerLocation[1] + binding.pager.height} " +
-            "pagerH=${binding.pager.height} " +
-            "shellTop=${shellLocation[1]} shellH=${binding.quickInputShell.height} " +
-            "slide=$currentSheetOffset"
-    )
-  }
-
-  // TODO(IME-FIX-EXPERIMENT): Use BottomSheetBehavior geometry for collapsed IME motion.
+  // The collapsed sheet follows the IME by changing the BottomSheetBehavior geometry.
   private fun installImeSheetOwner() {
     ViewCompat.setWindowInsetsAnimationCallback(
         this,
@@ -335,19 +236,9 @@ constructor(
                 dragParent?.requestLayout()
               }
             }
-            if (imeOwnerActive) {
-              log.warn(
-                  "[EditorImeTrace] owner fraction=${running.interpolatedFraction} " +
-                      "imeBottom=$imeBottom systemBottom=$systemBottom " +
-                      "peekHeight=$targetPeekHeight ratio=$targetRatio"
-              )
-            } else if (imeOwnerHalfActive) {
-              log.warn(
-                  "[EditorImeTrace] half fraction=${running.interpolatedFraction} " +
-                      "imeBottom=$imeBottom systemBottom=$systemBottom " +
-                      "peekHeight=$targetPeekHeight ratio=$targetRatio"
-              )
-            } else {
+            if (!imeOwnerActive && !imeOwnerHalfActive) {
+              // Only the non-collapsed/half states need an explicit translation; collapsed and
+              // half-expanded sheets are already driven by the Behavior geometry updates above.
               val fraction = running.interpolatedFraction
               translationY =
                   imeOwnerMdcStartTranslation.toFloat() * (1f - fraction)
@@ -359,11 +250,9 @@ constructor(
             if (!isIme(animation)) return
             imeOwnerStartedWhileSidebar = false
             if (imeOwnerSidebarReleasePending) {
-              // TODO(IME-FIX-EXPERIMENT): Release only when the IME is truly gone. The inset
-              // dispatch with imeBottom=0 arrives before the exit animation callbacks, so
-              // releasing here is safe for the whole animation while an enter animation onEnd
-              // still keeps the route. rootWindowInsets here may be the final or a transitional
-              // state; confirm against the exit timeline logs.
+              // The IME is gone only when its exit animation fully ended; the final inset
+              // dispatch with imeBottom=0 arrives before the animation callbacks, so the route
+              // must stay until this onEnd to keep the sheet from taking over the exit.
               val imeStillVisible =
                   (rootWindowInsets?.let {
                     WindowInsetsCompat.toWindowInsetsCompat(it)
@@ -467,33 +356,17 @@ constructor(
 
     ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
       this.windowInsets = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
-      val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-      val imeDelta = ime.bottom - lastImeBottom
-      lastImeBottom = ime.bottom
-      log.warn(
-          "[EditorImeTrace] sheetInsets imeBottom=${ime.bottom} imeDelta=$imeDelta " +
-              "phase=$imeAnimPhase epoch=$imeAnimEpoch " +
-              "systemBottom=${bars.bottom} gestureBottom=${windowInsets?.bottom ?: 0} " +
-              "imeVisible=$isImeVisible translationY=$translationY state=${behavior.state} " +
-              "top=$top height=$height paddingBottom=$paddingBottom"
-      )
       insets
     }
   }
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     super.onLayout(changed, left, top, right, bottom)
-    // TODO(IME-FIX-EXPERIMENT): Preserve MDC motion outside collapsed state; use Behavior geometry when collapsed.
+    // MDC keeps its own motion outside the collapsed/half states; the Behavior geometry path
+    // above is only used while the sheet is collapsed or half-expanded.
     if (!imeOwnerInstalled) {
       imeOwnerInstalled = true
       installImeSheetOwner()
-    }
-    if (imeAnimPhase != IME_PHASE_IDLE ||
-        SystemClock.uptimeMillis() - imeTraceArmedAt < 500L
-    ) {
-      imeLogLayoutPass++
-      logImeGeoTrace("layout#$imeLogLayoutPass", -1f, null)
     }
   }
 
@@ -563,10 +436,10 @@ constructor(
     addView(binding.root)
 
     initialize(context)
-    installImeGeoTrace()
   }
 
-  // TODO(IME-FIX-EXPERIMENT): The activity routes sidebar IME separately from the editor slots.
+  // The activity routes sidebar IME separately from the editor slots; while the sidebar owns
+  // the current IME session the sheet must not consume its animation.
   fun isImeRoutedToSidebar(): Boolean = imeOwnerImeRoutedToSidebar
 
   fun setImeRoutedToSidebar(routed: Boolean) {
@@ -574,9 +447,9 @@ constructor(
       imeOwnerSidebarReleasePending = false
       imeOwnerImeRoutedToSidebar = true
     } else if (imeOwnerImeRoutedToSidebar) {
-      // TODO(IME-FIX-EXPERIMENT): Defer the route release to the IME exit animation onEnd.
-      // The final inset frame with imeBottom=0 arrives before the animation onStart, so
-      // releasing here would let the sheet take over the exit and jump to the top.
+      // Defer the route release to the IME exit animation onEnd; the final inset frame with
+      // imeBottom=0 arrives before the animation onStart, so releasing here would let the sheet
+      // take over the exit and jump to the top.
       imeOwnerSidebarReleasePending = true
       return
     } else {
@@ -658,22 +531,11 @@ constructor(
           BottomSheetBehavior.STATE_COLLAPSED -> 0f
           else -> currentSheetOffset
         }
-    log.warn(
-        "[EditorImeTrace] behaviorState state=$newState offset=$currentSheetOffset " +
-            "imeVisible=$isImeVisible phase=$imeAnimPhase epoch=$imeAnimEpoch " +
-            "top=$top height=$height translationY=$translationY"
-    )
     applyTopContainerState(animated = true)
   }
 
   fun onSlide(sheetOffset: Float) {
     currentSheetOffset = sheetOffset
-    if (imeAnimPhase != IME_PHASE_IDLE) {
-      log.warn(
-          "[EditorImeTrace] slideDuringIme offset=$sheetOffset phase=$imeAnimPhase " +
-              "imeVisible=$isImeVisible top=$top height=$height translationY=$translationY"
-      )
-    }
     updateQuickInputExpandDirection()
     binding.symbolInput.collapse()
     binding.headerContainer.updatePaddingRelative(bottom = 0)

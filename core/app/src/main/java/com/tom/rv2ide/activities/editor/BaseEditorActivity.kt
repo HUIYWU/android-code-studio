@@ -290,11 +290,9 @@ abstract class BaseEditorActivity :
         }
       }
   private var isBottomSheetImeVisible = false
-  // TODO(IME-FIX-EXPERIMENT): While the sidebar owns the current IME session, the bottom sheet must
-  // not be notified about that session; only a session that starts after routing is released may
-  // drive the sheet again.
+  // While the sidebar owns the current IME session, the bottom sheet must not be notified about
+  // it; only a session that starts after the route is released may drive the sheet again.
   private var sidebarImeSession = false
-  private var lastTraceImeBottom = 0
   private var contentCardRealHeight: Int? = null
 
   private val editorSurfaceContainerBackground by lazy { resolveAttr(R.attr.colorSurfaceDim) }
@@ -669,7 +667,6 @@ abstract class BaseEditorActivity :
 
   private fun updateImeState(insets: WindowInsetsCompat, focusedView: View?) {
     val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-    val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
     val imeVisible = imeBottom > 0
     val sidebarInputFocused = isSidebarInputFocused(focusedView)
     if (sidebarInputFocused && imeVisible) {
@@ -683,31 +680,12 @@ abstract class BaseEditorActivity :
     val bottomSheetImeStateChanged =
         !sidebarImeOwner && this.isBottomSheetImeVisible != bottomSheetImeVisible
 
-    val imeDelta = imeBottom - lastTraceImeBottom
-    lastTraceImeBottom = imeBottom
-    val imeDir =
-        when {
-          imeDelta > 0 -> "enter"
-          imeDelta < 0 -> "exit"
-          else -> "same"
-        }
-
-    // TODO(IME-FIX-EXPERIMENT): Keep the editor window stable while each actual bottom slot
-    // consumes the IME animation in its own host. Route changes here are deferred to the
-    // bottom sheet's IME exit onEnd; releasing early (on imeBottom==0) precedes the animation
-    // onStart and makes the sheet take over the exit.
+    // Keep the editor window stable while each actual bottom slot consumes the IME animation in
+    // its own host. Route changes are deferred to the bottom sheet's IME exit onEnd; releasing
+    // early (on imeBottom==0) precedes the animation onStart and makes the sheet take over the
+    // exit animation.
     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarImeOwner)
-
-    log.warn(
-        "[EditorImeTrace] activityInsets imeBottom=$imeBottom imeDelta=$imeDelta imeDir=$imeDir " +
-            "systemBarsBottom=${systemBars.bottom} " +
-            "imeVisible=$imeVisible bottomSheetImeVisible=$bottomSheetImeVisible " +
-            "sidebarInputFocused=$sidebarInputFocused sidebarImeOwner=$sidebarImeOwner " +
-            "sidebarImeSession=$sidebarImeSession " +
-            "focus=${focusedView?.javaClass?.simpleName} " +
-            "bottomSheetImeStateChanged=$bottomSheetImeStateChanged"
-    )
 
     if (bottomSheetImeStateChanged) {
       this.isBottomSheetImeVisible = bottomSheetImeVisible
@@ -767,7 +745,8 @@ override fun onApplySystemBarInsets(insets: Insets) {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    // TODO(IME-FIX-EXPERIMENT): Keep the editor window from resizing before slot hosts receive IME progress.
+    // The editor window must never be resized by the IME; each bottom slot (sheet / terminal /
+    // editor search) consumes the IME inset itself.
     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     enableEdgeToEdge()
     WindowCompat.setDecorFitsSystemWindows(window, false)

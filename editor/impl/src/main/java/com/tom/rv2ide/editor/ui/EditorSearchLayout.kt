@@ -30,7 +30,6 @@ import android.widget.PopupMenu
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
-import kotlin.math.max
 import com.tom.rv2ide.editor.databinding.LayoutFindInFileBinding
 import com.tom.rv2ide.editor.ui.ReplaceAction.doReplace
 import com.tom.rv2ide.resources.R
@@ -52,8 +51,8 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
   private val optionsMenu: PopupMenu
   private var searchVisibilityListener: ((Boolean) -> Unit)? = null
 
-  private var isSearching = false
-  // TODO(IME-FIX-EXPERIMENT): Search is a replacement for the collapsed header slot.
+  // The search bar is the replacement for the collapsed header slot; it follows the IME by
+  // offsetting itself while the sheet stays in its collapsed position.
   private var imeAnimationCallbackInstalled = false
   private var imeSlotAnimating = false
   private var imeSlotHasProgress = false
@@ -113,7 +112,7 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
     installImeSlotAnimation()
   }
 
-  // TODO(IME-FIX-EXPERIMENT): Drive the search replacement slot in its editor host.
+  // Drive the search slot offset from the IME animation in its editor host.
   private fun installImeSlotAnimation() {
     if (imeAnimationCallbackInstalled) return
     imeAnimationCallbackInstalled = true
@@ -187,10 +186,9 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
       }
       false
     }
-    // TODO(IME-FIX-EXPERIMENT): The host can be opened while the IME is already present or its
-    // animation is still running. Sync to the current IME offset so a later exit animation can
-    // fold back from the correct base, and let a running animation capture a fresh base on its
-    // next progress frame.
+    // The host can be opened while the IME is already present or its animation is still running.
+    // Sync to the current IME offset so a later exit animation can fold back from the correct
+    // base, and let a running animation capture a fresh base on its next progress frame.
     imeSlotHasProgress = false
     syncTranslationToIme()
     val wasVisible = findInFileBinding.root.visibility == View.VISIBLE
@@ -200,9 +198,9 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
     }
   }
 
-  // TODO(IME-FIX-EXPERIMENT): Establish a baseline translation from the current IME state when
-  // search is opened while the IME is already on screen; verify the exit fold-back and the
-  // reopen-after-close reuse of translationY.
+  // Establish a baseline translation from the current IME state when search is opened while the
+  // IME is already on screen, so the exit fold-back and the reopen after close both start from
+  // the current position instead of reusing a stale translationY.
   private fun syncTranslationToIme() {
     if (imeSlotAnimating) {
       // A running IME animation drives the per-frame offsets; keep the current position and let
