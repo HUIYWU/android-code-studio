@@ -293,6 +293,7 @@ abstract class BaseEditorActivity :
   // While the sidebar owns the current IME session, the bottom sheet must not be notified about
   // it; only a session that starts after the route is released may drive the sheet again.
   private var sidebarImeSession = false
+  private var sidebarWasFocused = false
   private var contentCardRealHeight: Int? = null
 
   private val editorSurfaceContainerBackground by lazy { resolveAttr(R.attr.colorSurfaceDim) }
@@ -676,14 +677,24 @@ abstract class BaseEditorActivity :
       sidebarImeSession = false
     }
     val sidebarImeOwner = sidebarInputFocused || sidebarImeSession
+
+    // Decide the sidebar route release on a focus edge instead of per-frame inset values: the
+    // IME exit animation keeps sidebarImeSession alive until the final imeBottom=0 frame, which
+    // is indistinguishable from an already-closed IME by that frame. The focus edge carries the
+    // actual IME state at the moment the sidebar lost focus.
+    if (sidebarInputFocused && !sidebarWasFocused) {
+      _binding?.content?.bottomSheet?.onSidebarFocusGained()
+    } else if (!sidebarInputFocused && sidebarWasFocused) {
+      _binding?.content?.bottomSheet?.onSidebarFocusLost(imeVisible)
+    }
+    sidebarWasFocused = sidebarInputFocused
     val bottomSheetImeVisible = imeVisible && !sidebarImeOwner
     val bottomSheetImeStateChanged =
         !sidebarImeOwner && this.isBottomSheetImeVisible != bottomSheetImeVisible
 
     // Keep the editor window stable while each actual bottom slot consumes the IME animation in
-    // its own host. Route changes are deferred to the bottom sheet's IME exit onEnd; releasing
-    // early (on imeBottom==0) precedes the animation onStart and makes the sheet take over the
-    // exit animation.
+    // its own host. The route is confirmed per frame here, but never released here; release is
+    // decided by the focus edge above and the bottom sheet's IME exit onEnd.
     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarImeOwner)
 

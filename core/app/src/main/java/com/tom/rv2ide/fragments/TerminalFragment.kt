@@ -273,12 +273,18 @@ class TerminalFragment : Fragment() {
                 WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
             ) {
                 var startedWhileSidebar = false
+                // TODO(IME-FIX-EXPERIMENT): Whether the terminal content is already pushed up
+                // when this animation starts. If so, the animation belongs to a session that
+                // began on the terminal and the terminal must follow it smoothly even if the
+                // route was transferred to the sidebar in the meantime.
+                var pushedByIme = false
 
                 override fun onStart(
                     animation: WindowInsetsAnimationCompat,
                     bounds: WindowInsetsAnimationCompat.BoundsCompat,
                 ): WindowInsetsAnimationCompat.BoundsCompat {
                     startedWhileSidebar = isRoutedToSidebar()
+                    pushedByIme = content.paddingBottom > terminalBasePaddingBottom
                     return bounds
                 }
 
@@ -287,7 +293,10 @@ class TerminalFragment : Fragment() {
                     runningAnimations: List<WindowInsetsAnimationCompat>,
                 ): WindowInsetsCompat {
                     if (startedWhileSidebar || isRoutedToSidebar()) {
-                        return insets
+                        // TODO(IME-FIX-EXPERIMENT): A sidebar-owned session must not move the
+                        // terminal unless this session started on the terminal (content already
+                        // pushed up) and now returns.
+                        if (!pushedByIme) return insets
                     }
                     if (terminalContent?.visibility != View.VISIBLE) {
                         return insets
@@ -306,6 +315,30 @@ class TerminalFragment : Fragment() {
 
                 override fun onEnd(animation: WindowInsetsAnimationCompat) {
                     startedWhileSidebar = false
+                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return
+                    // TODO(IME-FIX-EXPERIMENT): The whole IME animation may be bypassed while the
+                    // sidebar owns the session, so the resting state is only reachable here; sync
+                    // the padding to the final insets instead of waiting for another
+                    // onApplyWindowInsets dispatch after the exit animation ends.
+                    val rootInsets =
+                        content.rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
+                    val imeBottom =
+                        rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                    val bars =
+                        rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
+                    val offset = if (imeBottom > 0) (imeBottom - bars).coerceAtLeast(0) else 0
+                    val paddingBottom =
+                        if (isRoutedToSidebar() || terminalContent?.visibility != View.VISIBLE) {
+                            terminalBasePaddingBottom
+                        } else {
+                            terminalBasePaddingBottom + offset
+                        }
+                    content.setPadding(
+                        content.paddingLeft,
+                        content.paddingTop,
+                        content.paddingRight,
+                        paddingBottom,
+                    )
                 }
             }
         )

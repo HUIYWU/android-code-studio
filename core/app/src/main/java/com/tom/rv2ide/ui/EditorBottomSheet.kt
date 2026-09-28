@@ -444,12 +444,16 @@ constructor(
 
   fun setImeRoutedToSidebar(routed: Boolean) {
     if (routed) {
-      imeOwnerSidebarReleasePending = false
+      // Keep-alive frames during an exit animation must not cancel a pending release; only a
+      // fresh session (route switching from false) or an explicit onSidebarFocusGained() clears it.
+      if (!imeOwnerImeRoutedToSidebar) {
+        imeOwnerSidebarReleasePending = false
+      }
       imeOwnerImeRoutedToSidebar = true
     } else if (imeOwnerImeRoutedToSidebar) {
-      // Defer the route release to the IME exit animation onEnd; the final inset frame with
-      // imeBottom=0 arrives before the animation onStart, so releasing here would let the sheet
-      // take over the exit and jump to the top.
+      // Never release here: keep the route until the IME exit animation ends. The release is
+      // decided by onSidebarFocusLost() when no exit animation can follow, or by the animation
+      // onEnd() when the IME was still on screen at the focus loss.
       imeOwnerSidebarReleasePending = true
       return
     } else {
@@ -469,6 +473,28 @@ constructor(
           (parent as? View)?.requestLayout()
         }
       }
+    }
+  }
+
+  /** The sidebar regained focus; a fresh IME session is confirmed and any stale release is dropped. */
+  fun onSidebarFocusGained() {
+    imeOwnerSidebarReleasePending = false
+    imeOwnerImeRoutedToSidebar = true
+  }
+
+  /** The sidebar lost focus. When its IME is still visible an exit animation will follow, so the
+   *  route must be kept until that animation fully ends; when the IME is already gone no
+   *  animation can be taken over, so the route is released immediately. */
+  fun onSidebarFocusLost(imeVisible: Boolean) {
+    if (!imeOwnerImeRoutedToSidebar) return
+    if (imeVisible) {
+      // The sidebar closes while its IME is still on screen; the sheet must keep the route
+      // through the whole exit animation, otherwise it takes over the exit and jumps to the
+      // top / breaks the search host. The release happens in the animation onEnd.
+      imeOwnerSidebarReleasePending = true
+    } else {
+      imeOwnerSidebarReleasePending = false
+      imeOwnerImeRoutedToSidebar = false
     }
   }
 
