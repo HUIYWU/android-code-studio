@@ -127,6 +127,7 @@ constructor(
   private var imeOwnerActive = false
   private var imeOwnerHalfActive = false
   private var imeOwnerImeRoutedToSidebar = false
+  private var imeOwnerStartedWhileSidebar = false
   private var imeOwnerMdcStartY = 0
   private var imeOwnerMdcStartTranslation = 0
   private var imeOwnerBasePeekHeight = 0
@@ -140,6 +141,7 @@ constructor(
   var requestHideQuickInputOverlay: (() -> Unit)? = null
   var onQuickInputActionClick: ((String) -> Unit)? = null
   private var quickInputOverlayActive = false
+  private var headerExternallyHidden = false
 
 
   private enum class TopContainerMode {
@@ -282,8 +284,10 @@ constructor(
             if (imeOwnerImeRoutedToSidebar) {
               imeOwnerActive = false
               imeOwnerHalfActive = false
+              imeOwnerStartedWhileSidebar = true
               return bounds
             }
+            imeOwnerStartedWhileSidebar = false
             imeOwnerActive = behavior.state == BottomSheetBehavior.STATE_COLLAPSED
             imeOwnerHalfActive = behavior.state == BottomSheetBehavior.STATE_HALF_EXPANDED
             imeOwnerBasePeekHeight = collapsedHeight.roundToInt()
@@ -307,7 +311,7 @@ constructor(
               runningAnimations: List<WindowInsetsAnimationCompat>,
           ): WindowInsetsCompat {
             val running = runningAnimations.lastOrNull { isIme(it) } ?: return insets
-            if (imeOwnerImeRoutedToSidebar) return insets
+            if (imeOwnerImeRoutedToSidebar || imeOwnerStartedWhileSidebar) return insets
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
             val imeOffset = max(imeBottom - systemBottom, 0)
@@ -351,7 +355,9 @@ constructor(
           }
 
           override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            if (!isIme(animation) || imeOwnerImeRoutedToSidebar) return
+            if (!isIme(animation)) return
+            imeOwnerStartedWhileSidebar = false
+            if (imeOwnerImeRoutedToSidebar) return
             if (imeOwnerHalfActive) {
               imeOwnerHalfActive = false
               imeOwnerLastHalfRatio = 0.5f
@@ -502,12 +508,12 @@ constructor(
       if (direction == SymbolInputView.ExpandDirection.DOWN) {
         quickInputOverlayActive = false
       }
-      binding.quickInputToggle.text =
+      binding.quickInputToggle.rotation =
           if ((expanded && direction == SymbolInputView.ExpandDirection.DOWN) ||
               quickInputOverlayActive) {
-            "⌄"
+            90f
           } else {
-            "⌃"
+            -90f
           }
     }
     binding.quickInputToggle.setOnClickListener {
@@ -542,6 +548,8 @@ constructor(
   }
 
   // TODO(IME-FIX-EXPERIMENT): The activity routes sidebar IME separately from the editor slots.
+  fun isImeRoutedToSidebar(): Boolean = imeOwnerImeRoutedToSidebar
+
   fun setImeRoutedToSidebar(routed: Boolean) {
     imeOwnerImeRoutedToSidebar = routed
     if (routed) {
@@ -559,6 +567,12 @@ constructor(
         }
       }
     }
+  }
+
+  fun setExternallyHeaderHidden(hidden: Boolean) {
+    if (headerExternallyHidden == hidden) return
+    headerExternallyHidden = hidden
+    applyTopContainerState()
   }
 
   /** Set whether the input method is visible. */
@@ -657,7 +671,7 @@ constructor(
   }
 
   private fun resolveTopContainerMode(): TopContainerMode {
-    return if (shouldHideTopContainer()) {
+    return if (headerExternallyHidden || shouldHideTopContainer()) {
       TopContainerMode.HIDDEN
     } else if (isImeVisible && !shouldSuppressSymbolInputForTerminal()) {
       TopContainerMode.SYMBOL_INPUT
@@ -767,7 +781,7 @@ constructor(
     binding.cardView.scaleY = 1f
     updateQuickInputExpandDirection()
     if (quickInputOverlayActive) {
-      binding.quickInputToggle.text = "⌄"
+      binding.quickInputToggle.rotation = 90f
     }
     setTopContainerHeight(height)
   }
@@ -909,9 +923,9 @@ constructor(
     binding.quickInputToggle.isEnabled = true
     binding.quickInputToggle.alpha = 1f
     if (active) {
-      binding.quickInputToggle.text = "⌄"
+      binding.quickInputToggle.rotation = 90f
     } else if (!binding.symbolInput.isExpanded) {
-      binding.quickInputToggle.text = "⌃"
+      binding.quickInputToggle.rotation = -90f
     }
     binding.cardView.alpha = if (active) 0f else 1f
   }

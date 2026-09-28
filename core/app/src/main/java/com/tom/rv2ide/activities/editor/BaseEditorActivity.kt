@@ -290,6 +290,10 @@ abstract class BaseEditorActivity :
         }
       }
   private var isBottomSheetImeVisible = false
+  // TODO(IME-FIX-EXPERIMENT): While the sidebar owns the current IME session, the bottom sheet must
+  // not be notified about that session; only a session that starts after routing is released may
+  // drive the sheet again.
+  private var sidebarImeSession = false
   private var lastTraceImeBottom = 0
   private var contentCardRealHeight: Int? = null
 
@@ -668,9 +672,16 @@ abstract class BaseEditorActivity :
     val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
     val imeVisible = imeBottom > 0
     val sidebarInputFocused = isSidebarInputFocused(focusedView)
+    if (sidebarInputFocused && imeVisible) {
+      sidebarImeSession = true
+    }
+    if (!imeVisible) {
+      sidebarImeSession = false
+    }
     val bottomSheetImeVisible = imeVisible && !sidebarInputFocused
+    val canNotifyBottomSheetIme = !sidebarInputFocused && !sidebarImeSession
     val bottomSheetImeStateChanged =
-        !sidebarInputFocused && this.isBottomSheetImeVisible != bottomSheetImeVisible
+        canNotifyBottomSheetIme && this.isBottomSheetImeVisible != bottomSheetImeVisible
 
     val imeDelta = imeBottom - lastTraceImeBottom
     lastTraceImeBottom = imeBottom
@@ -690,7 +701,8 @@ abstract class BaseEditorActivity :
         "[EditorImeTrace] activityInsets imeBottom=$imeBottom imeDelta=$imeDelta imeDir=$imeDir " +
             "systemBarsBottom=${systemBars.bottom} " +
             "imeVisible=$imeVisible bottomSheetImeVisible=$bottomSheetImeVisible " +
-            "sidebarInputFocused=$sidebarInputFocused focus=${focusedView?.javaClass?.simpleName} " +
+            "sidebarInputFocused=$sidebarInputFocused sidebarImeSession=$sidebarImeSession " +
+            "focus=${focusedView?.javaClass?.simpleName} " +
             "bottomSheetImeStateChanged=$bottomSheetImeStateChanged"
     )
 
@@ -1340,6 +1352,7 @@ override fun onApplySystemBarInsets(insets: Insets) {
       bottomSheetHeaderVisibilitySnapshot = bottomSheetBinding.headerContainer.visibility
       bottomSheetBinding.cardView.visibility = View.INVISIBLE
       bottomSheetBinding.headerContainer.visibility = View.INVISIBLE
+      content.bottomSheet.setExternallyHeaderHidden(true)
     }
   }
 
@@ -1355,6 +1368,7 @@ override fun onApplySystemBarInsets(insets: Insets) {
       val bottomSheetBinding = content.bottomSheet.binding
       bottomSheetBinding.cardView.visibility = bottomSheetCardVisibilitySnapshot
       bottomSheetBinding.headerContainer.visibility = bottomSheetHeaderVisibilitySnapshot
+      content.bottomSheet.setExternallyHeaderHidden(false)
     }
   }
 

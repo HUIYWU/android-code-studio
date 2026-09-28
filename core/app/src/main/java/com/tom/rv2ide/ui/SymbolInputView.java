@@ -19,9 +19,10 @@ package com.tom.rv2ide.ui;
 
 import android.content.Context;
 import android.util.AttributeSet;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
-import android.widget.TextView;
+import android.widget.ImageView;
 import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -53,7 +54,7 @@ public class SymbolInputView extends FrameLayout {
 
   private final RecyclerView collapsedList;
   private final RecyclerView expandedGrid;
-  @Nullable private TextView toggleButton;
+  @Nullable private View toggleButton;
   @Nullable private ExpansionChangeListener expansionChangeListener;
   @Nullable private ActionClickListener actionClickListener;
   private ExpandDirection expandDirection = ExpandDirection.UP;
@@ -98,7 +99,7 @@ public class SymbolInputView extends FrameLayout {
     setExpanded(false);
   }
 
-  public void bindToggleButton(@Nullable TextView button) {
+  public void bindToggleButton(@Nullable View button) {
     toggleButton = button;
     if (toggleButton != null) {
       toggleButton.setOnClickListener(__ -> toggleExpanded());
@@ -222,8 +223,8 @@ public class SymbolInputView extends FrameLayout {
   }
 
   private void updateToggleButton() {
-    if (toggleButton != null) {
-      toggleButton.setText(expanded ? "⌄" : "⌃");
+    if (toggleButton instanceof ImageView) {
+      ((ImageView) toggleButton).setRotation(expanded ? 90f : -90f);
     }
   }
 

@@ -26,6 +26,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.navigationrail.NavigationRailView
 import com.google.android.material.tabs.TabLayout
 import com.tom.rv2ide.R
+import com.tom.rv2ide.activities.editor.BaseEditorActivity
 import com.tom.rv2ide.fragments.terminal.*
 import com.termux.app.TermuxService
 import com.termux.shared.logger.Logger
@@ -240,8 +241,20 @@ class TerminalFragment : Fragment() {
         val content = rootView.findViewById<View>(R.id.terminal_content) ?: return
         terminalBasePaddingBottom = content.paddingBottom
         terminalImeCallbackInstalled = true
+        // The sidebar owns the IME session while its input is focused; the terminal slot must not
+        // consume the IME inset in that period, otherwise the terminal content gets pushed up.
+        val isRoutedToSidebar: () -> Boolean = {
+            (rootView.context as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
+        }
         ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-            if (terminalContent?.visibility == View.VISIBLE) {
+            if (isRoutedToSidebar() || terminalContent?.visibility != View.VISIBLE) {
+                view.setPadding(
+                    view.paddingLeft,
+                    view.paddingTop,
+                    view.paddingRight,
+                    terminalBasePaddingBottom,
+                )
+            } else {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                     val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
                     val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
@@ -251,13 +264,6 @@ class TerminalFragment : Fragment() {
                         view.paddingRight,
                         terminalBasePaddingBottom + imeBottom,
                     )
-            } else {
-                view.setPadding(
-                    view.paddingLeft,
-                    view.paddingTop,
-                    view.paddingRight,
-                    terminalBasePaddingBottom,
-                )
             }
             insets
         }
@@ -266,10 +272,23 @@ class TerminalFragment : Fragment() {
             object : WindowInsetsAnimationCompat.Callback(
                 WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
             ) {
+                var startedWhileSidebar = false
+
+                override fun onStart(
+                    animation: WindowInsetsAnimationCompat,
+                    bounds: WindowInsetsAnimationCompat.BoundsCompat,
+                ): WindowInsetsAnimationCompat.BoundsCompat {
+                    startedWhileSidebar = isRoutedToSidebar()
+                    return bounds
+                }
+
                 override fun onProgress(
                     insets: WindowInsetsCompat,
                     runningAnimations: List<WindowInsetsAnimationCompat>,
                 ): WindowInsetsCompat {
+                    if (startedWhileSidebar || isRoutedToSidebar()) {
+                        return insets
+                    }
                     if (terminalContent?.visibility != View.VISIBLE) {
                         return insets
                     }
@@ -283,6 +302,10 @@ class TerminalFragment : Fragment() {
                         terminalBasePaddingBottom + imeBottom,
                     )
                     return insets
+                }
+
+                override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                    startedWhileSidebar = false
                 }
             }
         )
