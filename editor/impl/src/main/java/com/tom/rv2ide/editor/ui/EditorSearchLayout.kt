@@ -187,11 +187,33 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
       }
       false
     }
+    // TODO(IME-FIX-EXPERIMENT): The host can be opened while the IME is already present or its
+    // animation is still running. Sync to the current IME offset so a later exit animation can
+    // fold back from the correct base, and let a running animation capture a fresh base on its
+    // next progress frame.
+    imeSlotHasProgress = false
+    syncTranslationToIme()
     val wasVisible = findInFileBinding.root.visibility == View.VISIBLE
     findInFileBinding.root.visibility = View.VISIBLE
     if (!wasVisible) {
       searchVisibilityListener?.invoke(true)
     }
+  }
+
+  // TODO(IME-FIX-EXPERIMENT): Establish a baseline translation from the current IME state when
+  // search is opened while the IME is already on screen; verify the exit fold-back and the
+  // reopen-after-close reuse of translationY.
+  private fun syncTranslationToIme() {
+    if (imeSlotAnimating) {
+      // A running IME animation drives the per-frame offsets; keep the current position and let
+      // the next progress frame capture the new base.
+      return
+    }
+    val insets = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
+    val ime = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+    val bars = insets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
+    val offset = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
+    translationY = -offset.toFloat()
   }
 
   private fun onSearchActionClick(v: View) {

@@ -359,8 +359,21 @@ constructor(
             if (!isIme(animation)) return
             imeOwnerStartedWhileSidebar = false
             if (imeOwnerSidebarReleasePending) {
-              imeOwnerSidebarReleasePending = false
-              imeOwnerImeRoutedToSidebar = false
+              // TODO(IME-FIX-EXPERIMENT): Release only when the IME is truly gone. The inset
+              // dispatch with imeBottom=0 arrives before the exit animation callbacks, so
+              // releasing here is safe for the whole animation while an enter animation onEnd
+              // still keeps the route. rootWindowInsets here may be the final or a transitional
+              // state; confirm against the exit timeline logs.
+              val imeStillVisible =
+                  (rootWindowInsets?.let {
+                    WindowInsetsCompat.toWindowInsetsCompat(it)
+                        .getInsets(WindowInsetsCompat.Type.ime())
+                        .bottom
+                  } ?: 0) > 0
+              if (!imeStillVisible) {
+                imeOwnerSidebarReleasePending = false
+                imeOwnerImeRoutedToSidebar = false
+              }
               return
             }
             if (imeOwnerImeRoutedToSidebar) return
@@ -561,6 +574,9 @@ constructor(
       imeOwnerSidebarReleasePending = false
       imeOwnerImeRoutedToSidebar = true
     } else if (imeOwnerImeRoutedToSidebar) {
+      // TODO(IME-FIX-EXPERIMENT): Defer the route release to the IME exit animation onEnd.
+      // The final inset frame with imeBottom=0 arrives before the animation onStart, so
+      // releasing here would let the sheet take over the exit and jump to the top.
       imeOwnerSidebarReleasePending = true
       return
     } else {

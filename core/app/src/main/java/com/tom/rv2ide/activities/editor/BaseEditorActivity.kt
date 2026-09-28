@@ -693,7 +693,9 @@ abstract class BaseEditorActivity :
         }
 
     // TODO(IME-FIX-EXPERIMENT): Keep the editor window stable while each actual bottom slot
-    // consumes the IME animation in its own host.
+    // consumes the IME animation in its own host. Route changes here are deferred to the
+    // bottom sheet's IME exit onEnd; releasing early (on imeBottom==0) precedes the animation
+    // onStart and makes the sheet take over the exit.
     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarImeOwner)
 

@@ -94,9 +94,10 @@
       android:background="@drawable/bg_quick_input_toggle"
       android:clickable="true"
       android:focusable="true"
-      android:padding="12dp"
-      android:scaleType="center"
+      android:padding="10dp"
+      android:scaleType="centerInside"
       android:src="@drawable/ic_arrow_right"
+      android:tint="?attr/colorOnSurface"
       android:visibility="gone" />
 
   </LinearLayout>
