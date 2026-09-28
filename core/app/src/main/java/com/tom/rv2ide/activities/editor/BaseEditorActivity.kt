@@ -678,10 +678,10 @@ abstract class BaseEditorActivity :
     if (!imeVisible) {
       sidebarImeSession = false
     }
-    val bottomSheetImeVisible = imeVisible && !sidebarInputFocused
-    val canNotifyBottomSheetIme = !sidebarInputFocused && !sidebarImeSession
+    val sidebarImeOwner = sidebarInputFocused || sidebarImeSession
+    val bottomSheetImeVisible = imeVisible && !sidebarImeOwner
     val bottomSheetImeStateChanged =
-        canNotifyBottomSheetIme && this.isBottomSheetImeVisible != bottomSheetImeVisible
+        !sidebarImeOwner && this.isBottomSheetImeVisible != bottomSheetImeVisible
 
     val imeDelta = imeBottom - lastTraceImeBottom
     lastTraceImeBottom = imeBottom
@@ -695,13 +695,14 @@ abstract class BaseEditorActivity :
     // TODO(IME-FIX-EXPERIMENT): Keep the editor window stable while each actual bottom slot
     // consumes the IME animation in its own host.
     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-    _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarInputFocused)
+    _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarImeOwner)
 
     log.warn(
         "[EditorImeTrace] activityInsets imeBottom=$imeBottom imeDelta=$imeDelta imeDir=$imeDir " +
             "systemBarsBottom=${systemBars.bottom} " +
             "imeVisible=$imeVisible bottomSheetImeVisible=$bottomSheetImeVisible " +
-            "sidebarInputFocused=$sidebarInputFocused sidebarImeSession=$sidebarImeSession " +
+            "sidebarInputFocused=$sidebarInputFocused sidebarImeOwner=$sidebarImeOwner " +
+            "sidebarImeSession=$sidebarImeSession " +
             "focus=${focusedView?.javaClass?.simpleName} " +
             "bottomSheetImeStateChanged=$bottomSheetImeStateChanged"
     )

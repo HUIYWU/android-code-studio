@@ -127,6 +127,7 @@ constructor(
   private var imeOwnerActive = false
   private var imeOwnerHalfActive = false
   private var imeOwnerImeRoutedToSidebar = false
+  private var imeOwnerSidebarReleasePending = false
   private var imeOwnerStartedWhileSidebar = false
   private var imeOwnerMdcStartY = 0
   private var imeOwnerMdcStartTranslation = 0
@@ -357,6 +358,11 @@ constructor(
           override fun onEnd(animation: WindowInsetsAnimationCompat) {
             if (!isIme(animation)) return
             imeOwnerStartedWhileSidebar = false
+            if (imeOwnerSidebarReleasePending) {
+              imeOwnerSidebarReleasePending = false
+              imeOwnerImeRoutedToSidebar = false
+              return
+            }
             if (imeOwnerImeRoutedToSidebar) return
             if (imeOwnerHalfActive) {
               imeOwnerHalfActive = false
@@ -551,7 +557,15 @@ constructor(
   fun isImeRoutedToSidebar(): Boolean = imeOwnerImeRoutedToSidebar
 
   fun setImeRoutedToSidebar(routed: Boolean) {
-    imeOwnerImeRoutedToSidebar = routed
+    if (routed) {
+      imeOwnerSidebarReleasePending = false
+      imeOwnerImeRoutedToSidebar = true
+    } else if (imeOwnerImeRoutedToSidebar) {
+      imeOwnerSidebarReleasePending = true
+      return
+    } else {
+      imeOwnerImeRoutedToSidebar = false
+    }
     if (routed) {
       imeOwnerActive = false
       if (imeOwnerLastPeekHeight != imeOwnerBasePeekHeight) {
@@ -572,7 +586,16 @@ constructor(
   fun setExternallyHeaderHidden(hidden: Boolean) {
     if (headerExternallyHidden == hidden) return
     headerExternallyHidden = hidden
-    applyTopContainerState()
+    if (hidden) {
+      // Hide only the visible surface. The top container geometry (quickInputShell/cardView/
+      // headerContainer heights) must stay intact so the tabs/pager never shift under the
+      // search replacement host; only the expand toggle is suppressed.
+      binding.symbolInput.collapse()
+      binding.quickInputToggle.visibility = View.GONE
+      binding.quickInputToggle.translationY = 0f
+    } else {
+      applyTopContainerState()
+    }
   }
 
   /** Set whether the input method is visible. */
@@ -671,7 +694,7 @@ constructor(
   }
 
   private fun resolveTopContainerMode(): TopContainerMode {
-    return if (headerExternallyHidden || shouldHideTopContainer()) {
+    return if (shouldHideTopContainer()) {
       TopContainerMode.HIDDEN
     } else if (isImeVisible && !shouldSuppressSymbolInputForTerminal()) {
       TopContainerMode.SYMBOL_INPUT
@@ -755,6 +778,9 @@ constructor(
     binding.cardView.scaleY = 0.9f
     binding.cardView.translationY = 0f
     binding.quickInputToggle.translationY = 0f
+    if (headerExternallyHidden) {
+      binding.headerContainer.visibility = View.INVISIBLE
+    }
     setTopContainerHeight(height)
   }
 
@@ -782,6 +808,12 @@ constructor(
     updateQuickInputExpandDirection()
     if (quickInputOverlayActive) {
       binding.quickInputToggle.rotation = 90f
+    }
+    if (headerExternallyHidden) {
+      // The search replacement host owns the top area; keep the header and the expand toggle
+      // hidden even when IME state would normally select the symbol input container.
+      binding.headerContainer.visibility = View.INVISIBLE
+      binding.quickInputToggle.visibility = View.GONE
     }
     setTopContainerHeight(height)
   }

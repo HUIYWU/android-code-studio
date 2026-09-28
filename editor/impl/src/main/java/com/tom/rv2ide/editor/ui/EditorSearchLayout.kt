@@ -57,8 +57,15 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
   private var imeAnimationCallbackInstalled = false
   private var imeSlotAnimating = false
   private var imeSlotHasProgress = false
+  private var imeSlotStartedWhileSidebar = false
   private var imeSlotBaseImeBottom = 0
   private var imeSlotBaseTranslation = 0f
+  private var imeRouteProvider: (() -> Boolean)? = null
+
+  /** Lets the host decide whether the current IME session belongs to the sidebar. */
+  fun setImeRouteProvider(provider: () -> Boolean) {
+    imeRouteProvider = provider
+  }
 
   init {
     findInFileBinding = LayoutFindInFileBinding.inflate(LayoutInflater.from(context))
@@ -128,6 +135,7 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
             imeSlotHasProgress = false
             imeSlotBaseTranslation = translationY
             imeSlotAnimating = true
+            imeSlotStartedWhileSidebar = imeRouteProvider?.invoke() == true
             return bounds
           }
 
@@ -138,6 +146,10 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
             if (runningAnimations.none {
                   (it.typeMask and WindowInsetsCompat.Type.ime()) != 0
                 }) {
+              return insets
+            }
+            if (imeSlotStartedWhileSidebar || imeRouteProvider?.invoke() == true) {
+              // The sidebar owns this IME session; the search host must not consume it.
               return insets
             }
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
@@ -159,6 +171,7 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
               imeSlotAnimating = false
               imeSlotHasProgress = false
+              imeSlotStartedWhileSidebar = false
             }
           }
         }

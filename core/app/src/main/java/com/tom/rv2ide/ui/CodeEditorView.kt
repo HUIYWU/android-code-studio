@@ -198,6 +198,9 @@ class CodeEditorView(context: Context, file: File, selection: Range) :
   private fun ensureSearchLayout(): EditorSearchLayout {
     _binding ?: error("Binding has been destroyed")
     return _searchLayout ?: EditorSearchLayout(context, binding.editor).apply {
+      setImeRouteProvider {
+        (context as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
+      }
       setOnSearchVisibilityChangeListener { isVisible ->
         val activity = context as? BaseEditorActivity ?: return@setOnSearchVisibilityChangeListener
         activity.onEditorSearchVisibilityChanged(isVisible)

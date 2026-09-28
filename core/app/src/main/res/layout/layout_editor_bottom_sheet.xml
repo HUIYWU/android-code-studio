@@ -94,7 +94,7 @@
       android:background="@drawable/bg_quick_input_toggle"
       android:clickable="true"
       android:focusable="true"
-      android:padding="10dp"
+      android:padding="12dp"
       android:scaleType="center"
       android:src="@drawable/ic_arrow_right"
       android:visibility="gone" />
