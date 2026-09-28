@@ -241,7 +241,7 @@ class TerminalFragment : Fragment() {
         terminalBasePaddingBottom = content.paddingBottom
         terminalImeCallbackInstalled = true
         ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-            if (terminalContent?.visibility == View.VISIBLE && terminalView?.hasFocus() == true) {
+            if (terminalContent?.visibility == View.VISIBLE) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                     val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
                     val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
@@ -270,7 +270,7 @@ class TerminalFragment : Fragment() {
                     insets: WindowInsetsCompat,
                     runningAnimations: List<WindowInsetsAnimationCompat>,
                 ): WindowInsetsCompat {
-                    if (terminalContent?.visibility != View.VISIBLE || terminalView?.hasFocus() != true) {
+                    if (terminalContent?.visibility != View.VISIBLE) {
                         return insets
                     }
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
