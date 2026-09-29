@@ -785,10 +785,14 @@ override fun onApplySystemBarInsets(insets: Insets) {
     setupDiagnosticInfo()
 
     binding.root.viewTreeObserver.addOnGlobalFocusChangeListener { _, newFocus ->
+      // This listener can still fire while the Activity is tearing down (e.g. a theme-driven
+      // relaunch clears the focused fragment view during destroy); guard the binding instead
+      // of using the non-null getter, which would throw here.
+      val root = _binding?.root ?: return@addOnGlobalFocusChangeListener
       if (contentCardRealHeight == null) {
         return@addOnGlobalFocusChangeListener
       }
-      val rootInsets = binding.root.rootWindowInsets ?: return@addOnGlobalFocusChangeListener
+      val rootInsets = root.rootWindowInsets ?: return@addOnGlobalFocusChangeListener
       updateImeState(WindowInsetsCompat.toWindowInsetsCompat(rootInsets), newFocus)
     }
 
