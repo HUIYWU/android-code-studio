@@ -1322,7 +1322,6 @@ Add a remote to push/pull changes</string>
   <string name="file_icon">File icon</string>
   <string name="search_logs">Search logs</string>
   <string name="no_terminal_session">No Terminal Session</string>
-  <string name="create_your_first_terminal_session">Create your first terminal session</string>
   <string name="initialize_terminal">Initialize Terminal</string>
   <string name="build_variant">Build Variant</string>
   <string name="color">Color</string>

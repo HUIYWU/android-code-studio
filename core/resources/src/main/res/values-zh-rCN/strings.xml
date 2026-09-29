@@ -929,7 +929,6 @@
   <string name="file_icon">文件图标</string>
   <string name="search_logs">搜索日志</string>
   <string name="no_terminal_session">没有终端会话</string>
-  <string name="create_your_first_terminal_session">创建你的第一个终端会话</string>
   <string name="initialize_terminal">初始化终端</string>
   <string name="build_variant">构建变体</string>
   <string name="color">颜色</string>

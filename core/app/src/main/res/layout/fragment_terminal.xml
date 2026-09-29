@@ -39,7 +39,7 @@
                         android:layout_width="80dp"
                         android:layout_height="80dp"
                         android:layout_marginBottom="16dp"
-                        android:src="@drawable/ic_add"
+                        android:src="@drawable/ic_terminal"
                         android:tint="?attr/colorPrimary"
                         android:alpha="0.6"
                         tools:ignore="ContentDescription" />
@@ -52,14 +52,6 @@
                         android:textStyle="bold"
                         android:textColor="?attr/colorOnSurface"
                         android:layout_marginBottom="8dp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/create_your_first_terminal_session"
-                        android:textSize="14sp"
-                        android:textColor="?attr/colorOnSurfaceVariant"
-                        android:layout_marginBottom="24dp" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/create_terminal_button"
