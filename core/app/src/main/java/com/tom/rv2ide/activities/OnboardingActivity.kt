@@ -40,7 +40,6 @@ import com.tom.rv2ide.fragments.onboarding.StatisticsFragment
 import com.tom.rv2ide.models.JdkDistribution
 import com.tom.rv2ide.preferences.internal.StatPreferences
 import com.tom.rv2ide.preferences.internal.prefManager
-import com.tom.rv2ide.tasks.launchAsyncWithProgress
 import com.tom.rv2ide.ui.themes.IThemeManager
 import com.tom.rv2ide.utils.Environment
 import kotlinx.coroutines.CoroutineName
@@ -48,6 +47,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class OnboardingActivity : AppIntro2() {
@@ -204,17 +204,14 @@ class OnboardingActivity : AppIntro2() {
 
     listJdkInstallationsJob =
         activityScope
-            .launchAsyncWithProgress(
-                Dispatchers.Default,
-                configureFlashbar = { builder, _ -> builder.message(string.please_wait) },
-            ) { _, _ ->
+            .launch(Dispatchers.Default) {
               val distributionProvider = IJdkDistributionProvider.getInstance()
               distributionProvider.loadDistributions()
               withContext(Dispatchers.Main) {
                 distConsumer(distributionProvider.installedDistributions)
               }
             }
-            .also { it?.invokeOnCompletion { listJdkInstallationsJob = null } }
+            .also { job -> job.invokeOnCompletion { listJdkInstallationsJob = null } }
   }
 
   private fun isInstalledOnSdCard(): Boolean {

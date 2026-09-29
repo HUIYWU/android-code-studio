@@ -20,8 +20,14 @@ package com.tom.rv2ide.activities
 import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.drawable.Animatable2
+import android.graphics.drawable.AnimatedVectorDrawable
+import android.graphics.drawable.Drawable
 import android.os.Bundle
+import android.view.ViewTreeObserver
+import android.widget.ImageView
 import androidx.appcompat.app.AppCompatDelegate
+import com.tom.rv2ide.R
 import com.tom.rv2ide.preferences.internal.GeneralPreferences
 
 /** @author Akash Yadav */
@@ -35,6 +41,41 @@ class SplashActivity : Activity() {
     applyUserNightMode()
 
     super.onCreate(savedInstanceState)
+
+    setContentView(R.layout.activity_splash)
+
+    val icon = findViewById<ImageView>(R.id.splash_icon)
+    val animation = icon.drawable as? AnimatedVectorDrawable
+    if (animation == null) {
+      openNextScreen()
+      return
+    }
+
+    animation.registerAnimationCallback(
+        object : Animatable2.AnimationCallback() {
+          override fun onAnimationEnd(drawable: Drawable) {
+            animation.unregisterAnimationCallback(this)
+            openNextScreen()
+          }
+        }
+    )
+
+    icon.viewTreeObserver.addOnPreDrawListener(
+        object : ViewTreeObserver.OnPreDrawListener {
+          override fun onPreDraw(): Boolean {
+            icon.viewTreeObserver.removeOnPreDrawListener(this)
+            animation.start()
+            return true
+          }
+        }
+    )
+  }
+
+  private fun openNextScreen() {
+    if (isFinishing) {
+      return
+    }
+
     startActivity(Intent(this, OnboardingActivity::class.java))
     finish()
   }

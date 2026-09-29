@@ -15,6 +15,8 @@ import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.WindowManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.tom.rv2ide.flashbar.util.NavigationBarPosition.BOTTOM
 import com.tom.rv2ide.flashbar.util.NavigationBarPosition.LEFT
 import com.tom.rv2ide.flashbar.util.NavigationBarPosition.RIGHT
@@ -22,6 +24,16 @@ import com.tom.rv2ide.flashbar.util.NavigationBarPosition.TOP
 import kotlin.math.roundToInt
 
 internal fun Activity.getStatusBarHeightInPx(): Int {
+  // The window level insets are already available once the decor view is attached, which is
+  // earlier than the visible display frame of a window that has not been laid out yet.
+  val rootInsetTop =
+      ViewCompat.getRootWindowInsets(window.decorView)
+          ?.getInsets(WindowInsetsCompat.Type.statusBars())
+          ?.top ?: 0
+  if (rootInsetTop > 0) {
+    return rootInsetTop
+  }
+
   val rectangle = Rect()
 
   window.decorView.getWindowVisibleDisplayFrame(rectangle)

@@ -158,7 +158,6 @@ class IDEApplication : TermuxApplication() {
 
     // Initialize memory management
     // initializeMemoryManagement()
-    extractLoggerRuntime()
     extractJetbrainsMono()
 
     // DISABLED: Plugin system completely disabled to prevent Tooling API issues
@@ -244,6 +243,9 @@ class IDEApplication : TermuxApplication() {
         fontsDir.mkdirs()
       }
       val targetFont = File(fontsDir, "jetbrains-mono.ttf")
+      if (targetFont.exists()) {
+        return
+      }
 
       assets.open("fonts/jetbrains-mono.ttf").use { input ->
         FileOutputStream(targetFont).use { output -> input.copyTo(output) }
@@ -253,26 +255,6 @@ class IDEApplication : TermuxApplication() {
     }
   }
   
-  private fun extractLoggerRuntime() {
-    try {
-      val pluginsDir = File(Environment.HOME, "plugins/logger")
-
-      if (!pluginsDir.exists()) {
-        pluginsDir.mkdirs()
-        log.info("Created directory: ${pluginsDir.absolutePath}")
-      }
-
-      val targetFile = File(pluginsDir, "logger-runtime.aar")
-
-      assets.open("logger-runtime.aar").use { input ->
-        FileOutputStream(targetFile).use { output -> input.copyTo(output) }
-      }
-
-      log.info("Successfully extracted logger-runtime.aar to: ${targetFile.absolutePath}")
-    } catch (e: Exception) {
-      log.error("Failed to extract logger-runtime.aar", e)
-    }
-  }
   private fun handleCrash(thread: Thread, th: Throwable) {
     RuntimeProbe.mark("uncaught:${thread.name}:${th::class.java.simpleName}")
     RuntimeProbe.dump("uncaught thread=${thread.name}", th)

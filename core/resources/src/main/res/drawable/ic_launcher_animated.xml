@@ -32,7 +32,9 @@
         <group
           android:name="android"
           android:pivotX="12"
-          android:pivotY="12">
+          android:pivotY="12"
+          android:scaleX="0"
+          android:scaleY="0">
           <path
             android:name="android_path"
             android:fillColor="@color/splash_icon_tint"
@@ -42,7 +44,9 @@
         <group
           android:name="lbrace"
           android:pivotX="12"
-          android:pivotY="12">
+          android:pivotY="12"
+          android:scaleX="0"
+          android:scaleY="0">
           <path
             android:name="lbrace_path"
             android:fillColor="@color/splash_icon_tint"
@@ -52,7 +56,9 @@
         <group
           android:name="rbrace"
           android:pivotX="12"
-          android:pivotY="12">
+          android:pivotY="12"
+          android:scaleX="0"
+          android:scaleY="0">
           <path
             android:name="rbrace_path"
             android:fillColor="@color/splash_icon_tint"
