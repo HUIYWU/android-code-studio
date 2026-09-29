@@ -520,19 +520,23 @@ constructor(
   }
 
   fun setOffsetAnchor(view: View, excludedChild: View? = null) {
-    val listener =
+    // TODO(IME-FIX-EXPERIMENT): Keep the expanded anchor in sync with the current app bar
+    // geometry instead of computing it once on the first layout: the first layout can run before
+    // the app bar has its final height (e.g. after a theme-driven recreate while the sidebar AI
+    // page is open), which would lock a wrong expandedOffset and let the sheet cover the toolbar.
+    view.viewTreeObserver.addOnGlobalLayoutListener(
         object : ViewTreeObserver.OnGlobalLayoutListener {
           override fun onGlobalLayout() {
-            view.viewTreeObserver.removeOnGlobalLayoutListener(this)
-
             val excludedHeight =
                 if (excludedChild != null && excludedChild.visibility != View.GONE) {
                   excludedChild.height
                 } else {
                   0
                 }
-            anchorOffset = (view.height - excludedHeight) + SizeUtils.dp2px(1f)
+            val newAnchor = (view.height - excludedHeight) + SizeUtils.dp2px(1f)
+            if (newAnchor == anchorOffset) return
 
+            anchorOffset = newAnchor
             behavior.peekHeight = collapsedHeight.roundToInt()
             behavior.expandedOffset = anchorOffset
             behavior.isGestureInsetBottomIgnored = isImeVisible
@@ -546,8 +550,7 @@ constructor(
             }
           }
         }
-
-    view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+    )
   }
 
   fun onStateChanged(newState: Int) {
