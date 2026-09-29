@@ -185,8 +185,16 @@ constructor(
             if (!isIme(animation)) return bounds
             if (imeOwnerImeRoutedToSidebar) {
               imeOwnerActive = false
-              imeOwnerHalfActive = false
-              imeOwnerStartedWhileSidebar = true
+              // A half-expanded sheet pushed up by this IME session keeps following it (including
+              // the exit animation) so the sheet slides back to the normal half position smoothly
+              // instead of snapping on onEnd; any other sidebar-owned session stays bypassed.
+              imeOwnerHalfActive =
+                  behavior.state == BottomSheetBehavior.STATE_HALF_EXPANDED &&
+                      behavior.halfExpandedRatio > 0.5f
+              if (imeOwnerHalfActive) {
+                imeOwnerLastHalfRatio = behavior.halfExpandedRatio
+              }
+              imeOwnerStartedWhileSidebar = !imeOwnerHalfActive
               return bounds
             }
             imeOwnerStartedWhileSidebar = false
@@ -213,7 +221,10 @@ constructor(
               runningAnimations: List<WindowInsetsAnimationCompat>,
           ): WindowInsetsCompat {
             val running = runningAnimations.lastOrNull { isIme(it) } ?: return insets
-            if (imeOwnerImeRoutedToSidebar || imeOwnerStartedWhileSidebar) return insets
+            if (imeOwnerStartedWhileSidebar) return insets
+            // Let the pushed-up half-expanded sheet follow its own IME session even while the
+            // sidebar holds the route, so its exit stays smooth.
+            if (imeOwnerImeRoutedToSidebar && !imeOwnerHalfActive) return insets
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
             val imeOffset = max(imeBottom - systemBottom, 0)
@@ -262,6 +273,7 @@ constructor(
               if (!imeStillVisible) {
                 imeOwnerSidebarReleasePending = false
                 imeOwnerImeRoutedToSidebar = false
+                restoreHalfExpandedAnchor()
               }
               return
             }
@@ -465,14 +477,9 @@ constructor(
         imeOwnerLastPeekHeight = imeOwnerBasePeekHeight
         behavior.peekHeight = imeOwnerBasePeekHeight
       }
-      if (imeOwnerHalfActive) {
-        imeOwnerHalfActive = false
-        imeOwnerLastHalfRatio = 0.5f
-        if (behavior.halfExpandedRatio != 0.5f) {
-          behavior.halfExpandedRatio = 0.5f
-          (parent as? View)?.requestLayout()
-        }
-      }
+      // Keep the current sheet position: the IME may still be on screen, so the half anchor must
+      // stay at its pushed-up position until the sidebar session releases the route.
+      imeOwnerHalfActive = false
     }
   }
 
@@ -495,6 +502,21 @@ constructor(
     } else {
       imeOwnerSidebarReleasePending = false
       imeOwnerImeRoutedToSidebar = false
+      restoreHalfExpandedAnchor()
+    }
+  }
+
+  // A half-expanded sheet is pushed up by the IME through a modified halfExpandedRatio. While a
+  // sidebar session owns the route the value must stay untouched so the sheet keeps its
+  // pushed-up position; once the route is released the ratio must be restored, otherwise the
+  // half anchor would stay at the pushed-up position and the sheet could no longer settle at
+  // the normal half-expanded spot.
+  private fun restoreHalfExpandedAnchor() {
+    imeOwnerHalfActive = false
+    imeOwnerLastHalfRatio = 0.5f
+    if (behavior.halfExpandedRatio != 0.5f) {
+      behavior.halfExpandedRatio = 0.5f
+      (parent as? View)?.requestLayout()
     }
   }
 

@@ -383,11 +383,10 @@ class TerminalFragment : Fragment() {
         syncTerminalImePadding()
     }
 
-    // TODO(IME-FIX-EXPERIMENT): The terminal can become visible while the IME is already on
-    // screen (initialised after an IME was shown); the GONE->VISIBLE switch does not re-dispatch
-    // insets, so apply the current inset once here to establish the pushed-up baseline. Without
-    // it the IME exit animation would first jump the terminal up from the resting padding and
-    // only then animate it back down.
+    // The terminal can become visible while the IME is already on screen (initialised after an
+    // IME was shown); the GONE->VISIBLE switch does not re-dispatch insets, so apply the current
+    // inset once here to establish the pushed-up baseline. Without it the IME exit animation
+    // would first jump the terminal up from the resting padding and only then animate it back.
     private fun syncTerminalImePadding() {
         val content = terminalContent ?: return
         val routedToSidebar =
