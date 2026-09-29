@@ -380,6 +380,30 @@ class TerminalFragment : Fragment() {
         terminalContent?.visibility = View.VISIBLE
         emptyStateContent?.visibility = View.GONE
         settingsContent?.visibility = View.GONE
+        syncTerminalImePadding()
+    }
+
+    // TODO(IME-FIX-EXPERIMENT): The terminal can become visible while the IME is already on
+    // screen (initialised after an IME was shown); the GONE->VISIBLE switch does not re-dispatch
+    // insets, so apply the current inset once here to establish the pushed-up baseline. Without
+    // it the IME exit animation would first jump the terminal up from the resting padding and
+    // only then animate it back down.
+    private fun syncTerminalImePadding() {
+        val content = terminalContent ?: return
+        val routedToSidebar =
+            (requireContext() as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
+        val rootInsets = content.rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
+        val ime = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+        val bars = rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
+        val offset = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
+        val paddingBottom =
+            if (routedToSidebar) terminalBasePaddingBottom else terminalBasePaddingBottom + offset
+        content.setPadding(
+            content.paddingLeft,
+            content.paddingTop,
+            content.paddingRight,
+            paddingBottom,
+        )
     }
     
     private fun showSettings() {
