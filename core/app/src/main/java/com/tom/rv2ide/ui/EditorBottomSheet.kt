@@ -520,10 +520,10 @@ constructor(
   }
 
   fun setOffsetAnchor(view: View, excludedChild: View? = null) {
-    // TODO(IME-FIX-EXPERIMENT): Keep the expanded anchor in sync with the current app bar
-    // geometry instead of computing it once on the first layout: the first layout can run before
-    // the app bar has its final height (e.g. after a theme-driven recreate while the sidebar AI
-    // page is open), which would lock a wrong expandedOffset and let the sheet cover the toolbar.
+    // Keep the expanded anchor in sync with the current app bar geometry instead of computing
+    // it once on the first layout: the first layout can run before the app bar has its final
+    // height (e.g. after a theme-driven recreate while the sidebar AI page is open), which
+    // would lock a wrong expandedOffset and let the sheet cover the toolbar.
     view.viewTreeObserver.addOnGlobalLayoutListener(
         object : ViewTreeObserver.OnGlobalLayoutListener {
           override fun onGlobalLayout() {
