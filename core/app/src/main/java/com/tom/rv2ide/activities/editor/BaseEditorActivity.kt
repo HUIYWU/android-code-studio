@@ -1016,6 +1016,8 @@ override fun onApplySystemBarInsets(insets: Insets) {
       isDragEnabled = false
       description.isEnabled = false
       legend.form = Legend.LegendForm.CIRCLE
+      legend.setWordWrapEnabled(true)
+      legend.setMaxSizePercent(0.95f)
       xAxis.axisLineColor = colorAccent
       axisRight.axisLineColor = colorAccent
 
@@ -1060,12 +1062,12 @@ override fun onApplySystemBarInsets(insets: Insets) {
   }
 
   private fun getMemUsageLineColorFor(proc: MemoryUsageWatcher.ProcessMemoryInfo): Int {
-    return when (proc.pname) {
-      PROC_IDE -> Color.BLUE
-      PROC_GRADLE_TOOLING -> Color.RED
-      GradleProcessScanner.NAME_GRADLE_DAEMON -> Color.GREEN
-      GradleProcessScanner.NAME_GRADLE_WORKER -> Color.rgb(255, 152, 0)
-      GradleProcessScanner.NAME_KOTLIN_DAEMON -> Color.MAGENTA
+    return when {
+      proc.pname == PROC_IDE -> Color.BLUE
+      proc.pname == PROC_GRADLE_TOOLING -> Color.RED
+      proc.pname.startsWith(GradleProcessScanner.NAME_GRADLE_DAEMON) -> Color.GREEN
+      proc.pname.startsWith(GradleProcessScanner.NAME_GRADLE_WORKER) -> Color.rgb(255, 152, 0)
+      proc.pname.startsWith(GradleProcessScanner.NAME_KOTLIN_DAEMON) -> Color.MAGENTA
       else -> Color.GRAY
     }
   }

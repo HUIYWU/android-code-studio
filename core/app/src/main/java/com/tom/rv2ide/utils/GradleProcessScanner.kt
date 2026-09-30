@@ -66,7 +66,7 @@ internal object GradleProcessScanner {
 
       val cmdline = readCmdline(File(entry, CMDLINE)) ?: continue
       val name = nameFor(cmdline) ?: continue
-      processes.add(FoundProcess(pid, name))
+      processes.add(FoundProcess(pid, "$name (PID $pid)"))
     }
 
     return processes
@@ -81,10 +81,14 @@ internal object GradleProcessScanner {
   }
 
   private fun nameFor(cmdline: String): String? {
+    val arguments = cmdline.split(Regex("\\s+"))
     return when {
-      cmdline.contains("GradleDaemon") -> NAME_GRADLE_DAEMON
-      cmdline.contains("GradleWorkerMain") -> NAME_GRADLE_WORKER
-      cmdline.contains("KotlinCompileDaemon") -> NAME_KOTLIN_DAEMON
+      arguments.any { it == "org.gradle.launcher.daemon.bootstrap.GradleDaemon" } ->
+          NAME_GRADLE_DAEMON
+      arguments.any { it == "org.gradle.process.internal.worker.GradleWorkerMain" } ->
+          NAME_GRADLE_WORKER
+      arguments.any { it == "org.jetbrains.kotlin.daemon.KotlinCompileDaemon" } ->
+          NAME_KOTLIN_DAEMON
       else -> null
     }
   }
