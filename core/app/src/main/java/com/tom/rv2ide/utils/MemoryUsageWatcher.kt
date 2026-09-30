@@ -17,14 +17,11 @@
 
 package com.tom.rv2ide.utils
 
-import android.app.ActivityManager
 import android.os.Debug
 import android.os.Debug.MemoryInfo
 import androidx.collection.IntObjectMap
 import androidx.collection.MutableIntObjectMap
-import androidx.core.content.getSystemService
 import com.termux.shared.reflection.ReflectionUtils
-import com.tom.rv2ide.app.BaseApplication
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
@@ -52,6 +49,7 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
   private val coroutineDispatcher = newSingleThreadContext("MemoryUsageWatcher")
   private val coroutineScope = CoroutineScope(coroutineDispatcher)
   private val memoryUsage = ConcurrentHashMap<Int, ProcessMemoryInfo>()
+  private val discoveredGradleProcesses = mutableSetOf<Int>()
   private val watching = AtomicBoolean(false)
   private var watcherJob: Job? = null
 
@@ -79,7 +77,8 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
 
     const val MAX_USAGE_ENTRIES = 30
     const val DEFAULT_UPDATE_INTERVAL = 1000L
-    const val MEMORY_PRESSURE_THRESHOLD = 85 // Percentage
+    const val NO_VALUE = -1L
+    private const val GRADLE_DISCOVERY_INTERVAL_TICKS = 5
     private val log = LoggerFactory.getLogger(MemoryUsageWatcher::class.java)
   }
 
@@ -93,16 +92,28 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
     watching.set(true)
 
     watcherJob = coroutineScope.launch(context = SupervisorJob() + coroutineDispatcher) {
+      var tick = 0
       while (isWatching) {
-        readUsages()
-
-        // don't bother to update if no listeners are set
-        listener?.also { listener ->
-          val usages = MutableIntObjectMap<ProcessMemoryInfo>(memoryUsage.size)
-          for ((pid, usage) in this@MemoryUsageWatcher.memoryUsage) {
-            usages[pid] = usage
+        try {
+          if (tick % GRADLE_DISCOVERY_INTERVAL_TICKS == 0) {
+            refreshGradleProcesses()
           }
-          withContext(Dispatchers.Main.immediate) { listener.onMemoryUsageChanged(usages) }
+          tick++
+
+          readUsages()
+
+          // don't bother to update if no listeners are set
+          listener?.also { listener ->
+            val usages = MutableIntObjectMap<ProcessMemoryInfo>(memoryUsage.size)
+            for ((pid, usage) in this@MemoryUsageWatcher.memoryUsage) {
+              usages[pid] = usage
+            }
+            withContext(Dispatchers.Main.immediate) { listener.onMemoryUsageChanged(usages) }
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          log.error("Failed to update memory usages", e)
         }
 
         delay(updateInterval)
@@ -111,25 +122,6 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
   }
 
   private fun readUsages() {
-    // Check memory pressure before reading usage
-    val runtime = Runtime.getRuntime()
-    val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-    val maxMemory = runtime.maxMemory()
-    val memoryUsagePercent = (usedMemory.toFloat() / maxMemory.toFloat()) * 100
-
-    if (memoryUsagePercent > MEMORY_PRESSURE_THRESHOLD) {
-      log.warn(
-          "High memory pressure detected: ${memoryUsagePercent.toInt()}%, skipping memory reading"
-      )
-      return
-    }
-
-    val activityManager = BaseApplication.getBaseInstance().getSystemService<ActivityManager>()
-    if (activityManager == null) {
-      log.error("ActivityManager is null")
-      return
-    }
-
     val pids = memoryUsage.keys.toIntArray()
     pids.forEach { pid ->
 
@@ -146,34 +138,66 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
                 return@forEach
               }
 
-      if (!ReflectionUtils.invokeVoidMethod(android_os_Debug_getMemoryInfo, null, pid, proc.memInfo)) {
+      val read =
+          ReflectionUtils.invokeVoidMethod(
+              android_os_Debug_getMemoryInfo,
+              null,
+              pid,
+              proc.memInfo,
+          )
+
+      if (!read) {
         log.warn("Failed to read memory info for process {} ({})", pid, proc.pname)
-        return@forEach
       }
 
       // From https://developer.android.com/tools/dumpsys#meminfo
       // "PSS is a good measure for the actual RAM weight of a process and for comparison against
       // the RAM use of other processes and the total available RAM."
-      val usage = proc.memInfo.totalPss
-
+      //
       // values are in kB, convert to bytes
-      val usageBytes = usage * 1024L
-      memoryUsage[pid]!!.apply {
-        // we insert the usage entry at the start of the array, then increment the shift amount by 1
-        // this makes the newly inserted usage entry the last element in the array
-        // and the oldest usage entry the first element in the array
+      //
+      // we insert the usage entry at the start of the array, then increment the shift amount by 1
+      // this makes the newly inserted usage entry the last element in the array
+      // and the oldest usage entry the first element in the array
+      //
+      // this means that _history[_history.size - 1] will be the newest usage entry
+      //
+      // the "shift" amount basically indicates what is the start index of the array
+      // for example, if shift is 1, then _history[0] will actually return _history[1] (index
+      // shifted by 1 to the right)
+      // when the shift amount exceeds the size of the array, it will be reset to 0 (wrapped
+      // around)
+      // A failed read is recorded as NO_VALUE and still advances the history, so that all watched
+      // processes stay on the same tick and a missing sample shows up as a gap in the chart
+      // instead of a stale value.
+      proc._history[0] = if (read) proc.memInfo.totalPss * 1024L else NO_VALUE
+      proc._history.shift(1)
+    }
+  }
 
-        // this means that _history[_history.size - 1] will be the newest usage entry
+  private fun refreshGradleProcesses() {
+    val found = GradleProcessScanner.scan()
+    val foundPids = found.map { it.pid }.toSet()
 
-        // the "shift" amount basically indicates what is the start index of the array
-        // for example, if shift is 1, then _history[0] will actually return _history[1] (index
-        // shifted by 1 to the right)
-        // when the shift amount exceeds the size of the array, it will be reset to 0 (wrapped
-        // around)
-
-        _history[0] = usageBytes
-        _history.shift(1)
+    // Only processes discovered by this scanner are unwatched here; processes registered by the
+    // IDE itself (e.g. the tooling server) are managed by their own registration points.
+    val removed = ArrayList<Int>()
+    for (pid in discoveredGradleProcesses) {
+      if (pid !in foundPids) {
+        removed.add(pid)
       }
+    }
+    for (pid in removed) {
+      discoveredGradleProcesses.remove(pid)
+      unwatchProcess(pid)
+    }
+
+    for (process in found) {
+      if (memoryUsage.containsKey(process.pid)) {
+        continue
+      }
+      watchProcess(process.pid, process.name, unique = false)
+      discoveredGradleProcesses.add(process.pid)
     }
   }
 
@@ -195,17 +219,12 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
       unwatchProcess(pname)
     }
 
-    memoryUsage[pid] = ProcessMemoryInfo(pid, pname, MutableShiftedLongArray(MAX_USAGE_ENTRIES))
-  }
-
-  /** Returns the memory usage of all the registered processes. */
-  fun getMemoryUsages(): Array<ProcessMemoryInfo> {
-    return memoryUsage.values.toTypedArray()
-  }
-
-  /** Returns the memory usage of the given process (in bytes). */
-  fun getMemoryUsage(processId: Int): ProcessMemoryInfo? {
-    return memoryUsage[processId]
+    memoryUsage[pid] =
+        ProcessMemoryInfo(
+            pid,
+            pname,
+            MutableShiftedLongArray(MAX_USAGE_ENTRIES, init = { NO_VALUE }),
+        )
   }
 
   /** Removes the given process from the watch list. */
@@ -225,6 +244,7 @@ class MemoryUsageWatcher(private val updateInterval: Long = DEFAULT_UPDATE_INTER
   /** Unwatches all the registered processes. */
   fun unwatchAll() {
     memoryUsage.clear()
+    discoveredGradleProcesses.clear()
   }
 
   /** Stop watching processes for their memory usage. */

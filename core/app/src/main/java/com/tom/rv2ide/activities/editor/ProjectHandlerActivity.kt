@@ -514,8 +514,8 @@ fun initializeProject(buildVariants: Map<String, String>) {
     if (!service.isToolingServerStarted()) {
       service.startToolingServer { pid ->
         try {
+          // The chart picks the new process up on the next sampling tick.
           memoryUsageWatcher.watchProcess(pid, PROC_GRADLE_TOOLING)
-          resetMemUsageChart()
         } catch (e: Exception) {
           log.warn("Failed to watch tooling server process: ${e.message}")
         }
@@ -533,8 +533,8 @@ fun initializeProject(buildVariants: Map<String, String>) {
                 metadata.pid,
             )
             try {
+              // The chart picks the new process up on the next sampling tick.
               memoryUsageWatcher.watchProcess(metadata.pid, PROC_GRADLE_TOOLING)
-              resetMemUsageChart()
             } catch (e: Exception) {
               log.warn("Failed to watch tooling server process (metadata): ${e.message}")
             }

@@ -46,7 +46,7 @@ import androidx.annotation.GravityInt
 import androidx.annotation.StringRes
 import androidx.appcompat.app.ActionBar
 import androidx.appcompat.app.ActionBarDrawerToggle
-import androidx.collection.MutableIntIntMap
+import androidx.collection.MutableIntObjectMap
 import androidx.core.graphics.Insets
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.core.view.GravityCompat
@@ -62,6 +62,7 @@ import com.blankj.utilcode.util.ConvertUtils.byte2MemorySize
 import com.blankj.utilcode.util.FileUtils
 import com.blankj.utilcode.util.ThreadUtils
 import com.github.mikephil.charting.components.AxisBase
+import com.github.mikephil.charting.components.Legend
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
@@ -111,11 +112,13 @@ import com.tom.rv2ide.templates.android.etc.NativeCpp.Check
 import com.tom.rv2ide.ui.CodeEditorView
 import com.tom.rv2ide.ui.ContentTranslatingDrawerLayout
 import com.tom.rv2ide.ui.EditorQuickInputOverlayController
+import com.tom.rv2ide.ui.MemoryUsageLineChartRenderer
 import com.tom.rv2ide.ui.SwipeRevealLayout
 import com.tom.rv2ide.uidesigner.UIDesignerActivity
 import com.tom.rv2ide.utils.ActionMenuUtils.createMenu
 import com.tom.rv2ide.utils.ApkInstallationSessionCallback
 import com.tom.rv2ide.utils.DialogUtils.newMaterialDialogBuilder
+import com.tom.rv2ide.utils.GradleProcessScanner
 import com.tom.rv2ide.utils.InstallationResultHandler.onResult
 import com.tom.rv2ide.utils.IntentUtils
 import com.tom.rv2ide.utils.MemoryUsageWatcher
@@ -163,7 +166,7 @@ abstract class BaseEditorActivity :
   protected var filesTreeFragment: FileTreeFragment? = null
   protected var editorBottomSheet: BottomSheetBehavior<out View?>? = null
   protected val memoryUsageWatcher = MemoryUsageWatcher()
-  protected val pidToDatasetIdxMap = MutableIntIntMap(initialCapacity = 3)
+  private val pidToDatasetMap = MutableIntObjectMap<LineDataSet>()
   private val bottomSheetHeaderHideReasons = mutableSetOf<String>()
   private var bottomSheetCardVisibilitySnapshot: Int = View.VISIBLE
   private var bottomSheetHeaderVisibilitySnapshot: Int = View.VISIBLE
@@ -219,76 +222,102 @@ abstract class BaseEditorActivity :
         }
       }
 
-  private var isReinitializingChart = false
-
   private val memoryUsageListener =
       MemoryUsageWatcher.MemoryUsageListener { memoryUsage ->
-        // Check available memory before updating chart
-        val runtime = Runtime.getRuntime()
-        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-        val maxMemory = runtime.maxMemory()
-        val memoryUsagePercent = (usedMemory.toFloat() / maxMemory.toFloat()) * 100
+        val chart = _binding?.memUsageView?.chart ?: return@MemoryUsageListener
 
-        // Skip if already reinitializing to prevent loops
-        if (isReinitializingChart) {
-          return@MemoryUsageListener
+        // Drop datasets of processes that are no longer watched. The chart keeps its history
+        // otherwise, so an already drawn series is only removed when its process actually
+        // disappears.
+        val stalePids = ArrayList<Int>()
+        pidToDatasetMap.forEach { pid, _ ->
+          if (memoryUsage[pid] == null) {
+            stalePids.add(pid)
+          }
+        }
+        for (pid in stalePids) {
+          pidToDatasetMap.remove(pid)?.also { chart.data?.removeDataSet(it) }
         }
 
         memoryUsage.forEachValue { proc ->
-          _binding?.memUsageView?.chart?.apply {
-            try {
-              val datasetIndex = pidToDatasetIdxMap[proc.pid]
-              if (datasetIndex == null) {
-                log.debug(
-                    "Process ${proc.pid} (${proc.pname}) not found in dataset mapping, reinitializing chart"
-                )
-                // Reinitialize the chart with current processes
-                isReinitializingChart = true
-                resetMemUsageChart()
-                isReinitializingChart = false
+          try {
+            var dataset = pidToDatasetMap[proc.pid]
+            if (dataset == null) {
+              // Processes that have not produced a single sample yet are not added to the chart.
+              // Their all-zero line would otherwise look like real memory usage.
+              if (proc.usageHistory.none { it != MemoryUsageWatcher.NO_VALUE }) {
                 return@forEachValue
               }
 
-              val dataset =
-                  (data.getDataSetByIndex(datasetIndex) as LineDataSet?)
-                      ?: run {
-                        log.warn(
-                            "Dataset not found for process: ${proc.pid} (${proc.pname}) at index $datasetIndex, reinitializing chart"
-                        )
-                        // Reinitialize the chart with current processes
-                        isReinitializingChart = true
-                        resetMemUsageChart()
-                        isReinitializingChart = false
-                        return@forEachValue
-                      }
-
-              // Optimize memory usage by reusing entries
-              val entries = dataset.entries
-              val usageHistory = proc.usageHistory
-              for (index in entries.indices) {
-                if (index < usageHistory.size) {
-                  entries[index].y =
-                      byte2MemorySize(usageHistory[index], MemoryConstants.MB).toFloat()
-                }
-              }
-
-              // Use StringBuilder to reduce string allocations
-              val labelBuilder = StringBuilder(proc.pname.length + 20)
-              labelBuilder.append(proc.pname)
-              labelBuilder.append(" - ")
-              labelBuilder.append(String.format("%.2fMB", entries.lastOrNull()?.y ?: 0f))
-              dataset.label = labelBuilder.toString()
-
-              dataset.notifyDataSetChanged()
-              data.notifyDataChanged()
-              notifyDataSetChanged()
-              invalidate()
-            } catch (e: Exception) {
-              log.error("Error updating chart for process: ${proc.pname}", e)
+              dataset = createMemUsageDataset(proc)
+              val chartData = chart.data ?: LineData().also { chart.data = it }
+              chartData.addDataSet(dataset)
+              pidToDatasetMap[proc.pid] = dataset
             }
+
+            updateMemUsageDataset(proc, dataset)
+          } catch (e: Exception) {
+            log.error("Error updating chart for process: ${proc.pname}", e)
           }
         }
+
+        chart.data?.notifyDataChanged()
+        chart.notifyDataSetChanged()
+        chart.invalidate()
       }
+
+  /**
+   * Creates the dataset of a process. Slots that hold no sample are initialized to `NaN` so that
+   * the renderer leaves them blank instead of drawing them at zero.
+   */
+  private fun createMemUsageDataset(proc: MemoryUsageWatcher.ProcessMemoryInfo): LineDataSet {
+    val dataset =
+        LineDataSet(
+            List(MemoryUsageWatcher.MAX_USAGE_ENTRIES) { Entry(it.toFloat(), Float.NaN) },
+            proc.pname,
+        )
+
+    dataset.color = getMemUsageLineColorFor(proc)
+    dataset.setDrawIcons(false)
+    dataset.setDrawCircles(false)
+    dataset.setDrawCircleHole(false)
+    dataset.setDrawValues(false)
+    dataset.formLineWidth = 1f
+    dataset.isHighlightEnabled = false
+
+    return dataset
+  }
+
+  private fun updateMemUsageDataset(
+      proc: MemoryUsageWatcher.ProcessMemoryInfo,
+      dataset: LineDataSet,
+  ) {
+    val entries = dataset.entries
+    val usageHistory = proc.usageHistory
+    for (index in entries.indices) {
+      val usage =
+          if (index < usageHistory.size) usageHistory[index] else MemoryUsageWatcher.NO_VALUE
+      entries[index].y =
+          if (usage == MemoryUsageWatcher.NO_VALUE) {
+            Float.NaN
+          } else {
+            byte2MemorySize(usage, MemoryConstants.MB).toFloat()
+          }
+    }
+
+    // Recomputes the min/max of the data set. Without it the axes keep the values captured when
+    // the data set was created and all series end up mapped outside the visible area.
+    dataset.notifyDataSetChanged()
+
+    val latestY = entries.lastOrNull()?.y
+    dataset.label =
+        if (latestY == null || latestY.isNaN()) {
+          "${proc.pname} - --"
+        } else {
+          "${proc.pname} - ${String.format("%.2fMB", latestY)}"
+        }
+  }
+
   private var isBottomSheetImeVisible = false
   // While the sidebar owns the current IME session, the bottom sheet must not be notified about
   // it; only a session that starts after the route is released may drive the sheet again.
@@ -308,8 +337,6 @@ abstract class BaseEditorActivity :
     @JvmStatic protected val PROC_IDE = "IDE"
 
     @JvmStatic protected val PROC_GRADLE_TOOLING = "Gradle Tooling"
-
-    @JvmStatic protected val PROC_GRADLE_DAEMON = "Gradle Daemon"
 
     @JvmStatic protected val log: Logger = LoggerFactory.getLogger(BaseEditorActivity::class.java)
 
@@ -983,24 +1010,38 @@ override fun onApplySystemBarInsets(insets: Insets) {
   private fun setupMemUsageChart() {
     binding.memUsageView.chart.apply {
       val colorAccent = resolveAttr(R.attr.colorAccent)
+      val textColor = resolveAttr(R.attr.colorOnSurface)
+      val bgColor = editorSurfaceContainerBackground
 
       isDragEnabled = false
       description.isEnabled = false
+      legend.form = Legend.LegendForm.CIRCLE
       xAxis.axisLineColor = colorAccent
       axisRight.axisLineColor = colorAccent
 
       setPinchZoom(false)
-      setBackgroundColor(editorSurfaceContainerBackground)
+      setBackgroundColor(bgColor)
       setDrawGridBackground(true)
+      setGridBackgroundColor(bgColor)
       setScaleEnabled(true)
+      setNoDataText("")
 
       axisLeft.isEnabled = false
+      axisLeft.textColor = textColor
+      axisRight.textColor = textColor
+      legend.textColor = textColor
+      legend.textSize = 8f
+      legend.formSize = 8f
       axisRight.valueFormatter =
           object : IAxisValueFormatter {
             override fun getFormattedValue(value: Float, axis: AxisBase?): String {
               return "%dMB".format(value.roundToLong())
             }
           }
+
+      // The default renderer has no dependable way of showing slots without a sample, so the chart
+      // uses a renderer that leaves those segments blank instead.
+      setRenderer(MemoryUsageLineChartRenderer(this, animator, viewPortHandler))
 
       // Register chart for memory cleanup
       (application as? com.tom.rv2ide.app.IDEApplication)
@@ -1016,82 +1057,16 @@ override fun onApplySystemBarInsets(insets: Insets) {
     } catch (e: Exception) {
       log.warn("Failed to start memory monitoring: ${e.message}")
     }
-
-    // Watch for gradle tooling processes
-    watchGradleProcesses()
-
-    resetMemUsageChart()
-  }
-
-  private fun watchGradleProcesses() {
-    log.info("Gradle process monitoring disabled")
-  }
-
-  protected fun resetMemUsageChart() {
-    try {
-      val processes = memoryUsageWatcher.getMemoryUsages()
-
-      // Clear existing dataset mapping
-      pidToDatasetIdxMap.clear()
-
-      val datasets =
-          Array(processes.size) { index ->
-            LineDataSet(
-                List(MemoryUsageWatcher.MAX_USAGE_ENTRIES) { Entry(it.toFloat(), 0f) },
-                processes[index].pname,
-            )
-          }
-
-      val bgColor = editorSurfaceContainerBackground
-      val textColor = resolveAttr(R.attr.colorOnSurface)
-
-      for ((index, proc) in processes.withIndex()) {
-        val dataset = datasets[index]
-        dataset.color = getMemUsageLineColorFor(proc)
-        dataset.setDrawIcons(false)
-        dataset.setDrawCircles(false)
-        dataset.setDrawCircleHole(false)
-        dataset.setDrawValues(false)
-        dataset.formLineWidth = 1f
-        dataset.formSize = 15f
-        dataset.isHighlightEnabled = false
-
-        // Map process ID to dataset index
-        pidToDatasetIdxMap[proc.pid] = index
-        log.debug("Mapped process ${proc.pid} (${proc.pname}) to dataset index $index")
-      }
-
-      binding.memUsageView.chart.setBackgroundColor(bgColor)
-
-      binding.memUsageView.chart.apply {
-        data = LineData(*datasets)
-        axisRight.textColor = textColor
-        axisLeft.textColor = textColor
-        legend.textColor = textColor
-
-        data.setValueTextColor(textColor)
-        setBackgroundColor(bgColor)
-        setGridBackgroundColor(bgColor)
-        notifyDataSetChanged()
-        invalidate()
-      }
-
-      log.info("Memory usage chart initialized with ${processes.size} processes")
-    } catch (e: Exception) {
-      log.warn("Failed to reset memory usage chart: ${e.message}")
-    }
   }
 
   private fun getMemUsageLineColorFor(proc: MemoryUsageWatcher.ProcessMemoryInfo): Int {
     return when (proc.pname) {
       PROC_IDE -> Color.BLUE
       PROC_GRADLE_TOOLING -> Color.RED
-      PROC_GRADLE_DAEMON -> Color.GREEN
-      "Gradle" -> Color.YELLOW // Handle Gradle processes
-      "GradleDaemon" -> Color.GREEN // Handle Gradle daemon processes
-      "GradleJava" -> Color.MAGENTA // Handle Gradle Java processes
-      "Java" -> Color.CYAN // Handle Java processes
-      else -> Color.GRAY // Default color for unknown processes
+      GradleProcessScanner.NAME_GRADLE_DAEMON -> Color.GREEN
+      GradleProcessScanner.NAME_GRADLE_WORKER -> Color.rgb(255, 152, 0)
+      GradleProcessScanner.NAME_KOTLIN_DAEMON -> Color.MAGENTA
+      else -> Color.GRAY
     }
   }
 
@@ -1122,9 +1097,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
     } catch (e: Exception) {
       log.warn("Failed to resume memory monitoring: ${e.message}")
     }
-
-    // Watch for gradle processes
-    watchGradleProcesses()
 
     // Restart auto-save if it was stopped
     if (autoSaveCoroutineJob?.isActive != true) {
