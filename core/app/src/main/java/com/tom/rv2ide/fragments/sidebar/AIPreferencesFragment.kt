@@ -97,7 +97,9 @@ class AIPreferencesFragment : Fragment() {
         val providerNames = allProviderIds.map { ModelSources.providerName(it) }
 
         val adapter = ArrayAdapter(requireContext(), R.layout.item_dropdown_single_line, providerNames)
+        providerDropdown.threshold = Int.MAX_VALUE
         providerDropdown.setAdapter(adapter)
+        providerDropdown.setOnClickListener { providerDropdown.showDropDown() }
         
         updateProviderDropdownSelection()
         
@@ -148,7 +150,9 @@ class AIPreferencesFragment : Fragment() {
         val models = agents.getModelsForProvider(currentProvider)
         
         val adapter = ArrayAdapter(requireContext(), R.layout.item_dropdown_single_line, models)
+        modelDropdown.threshold = Int.MAX_VALUE
         modelDropdown.setAdapter(adapter)
+        modelDropdown.setOnClickListener { modelDropdown.showDropDown() }
         
         val currentModel = agents.getAgent()
         // The stored model takes precedence over the first catalogue entry. Substituting another
