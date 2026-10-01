@@ -24,7 +24,6 @@ import com.tom.rv2ide.build.config.VersionUtils
 import com.tom.rv2ide.build.config.downloadVersion
 import com.tom.rv2ide.build.config.replaceContents
 import com.tom.rv2ide.build.config.simpleVersionName
-
 plugins {
   //noinspection JavaPluginLanguageLevel
   id("java-library")
@@ -71,7 +70,8 @@ tasks.create("generateBuildInfo") {
         "AGP_VERSION_GRADLE_LATEST" to SdkConstants.GRADLE_LATEST_VERSION,
 
         "SNAPSHOTS_REPOSITORY" to VersionUtils.SONATYPE_SNAPSHOTS_REPO,
-        "PUBLIC_REPOSITORY" to VersionUtils.SONATYPE_PUBLIC_REPO
+        "PUBLIC_REPOSITORY" to VersionUtils.SONATYPE_PUBLIC_REPO,
+        "GITHUB_PACKAGES_REPOSITORY" to VersionUtils.GITHUB_PACKAGES_REPO
       )
     )
   }

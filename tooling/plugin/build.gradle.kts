@@ -18,6 +18,7 @@
 import com.tom.rv2ide.build.config.AGP_VERSION_MINIMUM
 import com.tom.rv2ide.build.config.BuildConfig
 import com.tom.rv2ide.build.config.ProjectConfig
+import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.publish.maven.MavenPublication
 
 plugins {
@@ -42,11 +43,21 @@ configurations {
 }
 
 dependencies {
-    implementation(projects.tooling.model)
-    implementation(projects.tooling.pluginConfig)
-    implementation(projects.utilities.buildInfo)
-
+    compileOnly(projects.tooling.pluginConfig)
+    compileOnly(projects.utilities.buildInfo)
     add("androidBuildTool", "com.android.tools.build:gradle:${AGP_VERSION_MINIMUM}")
+}
+
+evaluationDependsOn(":tooling:plugin-config")
+evaluationDependsOn(":utilities:build-info")
+
+val bundledClasses =
+    listOf(":tooling:plugin-config", ":utilities:build-info").map { path ->
+        project(path).extensions.getByType<JavaPluginExtension>().sourceSets.getByName("main").output
+    }
+
+tasks.named<Jar>("jar") {
+    from(bundledClasses)
 }
 
 gradlePlugin {
@@ -79,7 +90,7 @@ publishing {
                     ?: providers.gradleProperty("gpr.user").orNull
                     ?: ""
                 password = providers.environmentVariable("GITHUB_TOKEN").orNull
-                    ?: providers.gradleProperty("gpr.key").orNull
+                    ?: providers.gradleProperty("gpr.token").orNull
                     ?: ""
             }
         }

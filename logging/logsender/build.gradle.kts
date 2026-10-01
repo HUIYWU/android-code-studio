@@ -56,7 +56,7 @@ publishing {
                     ?: providers.gradleProperty("gpr.user").orNull
                     ?: ""
                 password = providers.environmentVariable("GITHUB_TOKEN").orNull
-                    ?: providers.gradleProperty("gpr.key").orNull
+                    ?: providers.gradleProperty("gpr.token").orNull
                     ?: ""
             }
         }

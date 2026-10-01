@@ -77,7 +77,7 @@ dependencyResolutionManagement {
         username = providers.gradleProperty("gpr.user").orNull
           ?: System.getenv("GPR_USER")
           ?: System.getenv("GITHUB_ACTOR")
-        password = providers.gradleProperty("gpr.key").orNull
+        password = providers.gradleProperty("gpr.token").orNull
           ?: System.getenv("GPR_TOKEN")
           ?: System.getenv("GITHUB_TOKEN")
       }

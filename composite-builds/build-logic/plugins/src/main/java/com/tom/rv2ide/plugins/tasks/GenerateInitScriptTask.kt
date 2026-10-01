@@ -47,9 +47,30 @@ abstract class GenerateInitScriptTask : DefaultTask() {
       it.write(
           """
              initscript {
+                 def gprProps = new Properties()
+                 def gprUserHome = System.getenv('GRADLE_USER_HOME')
+                 if (!gprUserHome) {
+                     gprUserHome = new File(System.getProperty('user.home'), '.gradle').absolutePath
+                 }
+                 def gprPropsFile = new File(gprUserHome, 'gradle.properties')
+                 if (gprPropsFile.isFile()) {
+                     gprPropsFile.withInputStream { gprProps.load(it) }
+                 }
+                 def gprUser = System.getProperty('gpr.user') ?: gprProps.getProperty('gpr.user') ?: System.getenv('GPR_USER') ?: System.getenv('GITHUB_ACTOR')
+                 def gprToken = System.getProperty('gpr.token') ?: gprProps.getProperty('gpr.token') ?: System.getenv('GPR_TOKEN') ?: System.getenv('GITHUB_TOKEN')
+
                  repositories {
                      maven { url '${com.tom.rv2ide.build.config.VersionUtils.SONATYPE_SNAPSHOTS_REPO}' }
                      maven { url '${com.tom.rv2ide.build.config.VersionUtils.SONATYPE_PUBLIC_REPO}' }
+                     maven {
+                         url '${com.tom.rv2ide.build.config.VersionUtils.GITHUB_PACKAGES_REPO}'
+                         if (gprUser && gprToken) {
+                             credentials {
+                                 username gprUser
+                                 password gprToken
+                             }
+                         }
+                     }
                      mavenCentral()
                      google()
                  }

@@ -52,4 +52,5 @@ public class BuildInfo {
   public static final String PROJECT_SITE = "@@PROJECT_SITE@@";
   public static final String SNAPSHOTS_REPOSITORY = "@@SNAPSHOTS_REPOSITORY@@";
   public static final String PUBLIC_REPOSITORY = "@@PUBLIC_REPOSITORY@@";
+  public static final String GITHUB_PACKAGES_REPOSITORY = "@@GITHUB_PACKAGES_REPOSITORY@@";
 }

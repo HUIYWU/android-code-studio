@@ -145,7 +145,7 @@ object Main {
     )
 
     // Also enforce via environment for any forked JVM
-    val env: MutableMap<String, String> = HashMap()
+    val env: MutableMap<String, String> = HashMap(System.getenv())
     env["JAVA_TOOL_OPTIONS"] =
         "-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Duser.language=en -Duser.country=US"
     env["GRADLE_OPTS"] = "-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"

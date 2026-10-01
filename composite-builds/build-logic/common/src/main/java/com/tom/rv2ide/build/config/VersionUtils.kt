@@ -43,6 +43,8 @@ object VersionUtils {
    */
   const val SONATYPE_PUBLIC_REPO = "https://s01.oss.sonatype.org/content/groups/public/"
 
+  const val GITHUB_PACKAGES_REPO = "https://maven.pkg.github.com/HUIYWU/android-code-studio"
+
   /**
    * The latest integration version name.
    */

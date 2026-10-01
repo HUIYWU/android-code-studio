@@ -22,11 +22,15 @@ import com.tom.rv2ide.tooling.api.LogSenderConfig._PROPERTY_IS_TEST_ENV
 import com.tom.rv2ide.tooling.api.LogSenderConfig._PROPERTY_MAVEN_LOCAL_REPOSITORY
 import java.io.File
 import java.net.URI
+import java.util.Properties
 import org.gradle.StartParameter
+import org.gradle.api.Action
 import org.gradle.api.Plugin
 import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.api.artifacts.dsl.RepositoryHandler
+import org.gradle.api.credentials.PasswordCredentials
 import org.gradle.api.initialization.Settings
+import org.gradle.api.initialization.resolve.RepositoriesMode
 import org.gradle.api.invocation.Gradle
 import org.gradle.api.logging.Logging
 
@@ -97,6 +101,22 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
   private fun Settings.addDependencyRepositories() {
     val (isTestEnv, mavenLocalRepos) = getTestEnvProps(startParameter)
     addDependencyRepositories(isTestEnv, mavenLocalRepos)
+    addProjectRepositories(isTestEnv, mavenLocalRepos)
+  }
+
+  private fun Settings.addProjectRepositories(
+      isMavenLocalEnabled: Boolean,
+      mavenLocalRepo: String,
+  ) {
+    if (dependencyResolutionManagement.repositoriesMode.get() ==
+        RepositoriesMode.FAIL_ON_PROJECT_REPOS) {
+      logger.info("Skipping project repositories, the build resolves dependencies from settings")
+      return
+    }
+
+    gradle.allprojects { project ->
+      project.repositories.configureRepositories(isMavenLocalEnabled, mavenLocalRepo)
+    }
   }
 
   @Suppress("UnstableApiUsage")
@@ -137,6 +157,18 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
     // Always add standard repositories first
     google()
     mavenCentral()
+    maven { repository ->
+      repository.name = "GitHub Packages"
+      repository.setUrl(BuildInfo.GITHUB_PACKAGES_REPOSITORY)
+      githubCredentials()?.also { (user, token) ->
+        repository.credentials(
+            Action<PasswordCredentials> { credentials ->
+              credentials.username = user
+              credentials.password = token
+            }
+        )
+      }
+    }
     gradlePluginPortal()
 
     if (isMavenLocalEnabled && mavenLocalRepos.isNotBlank()) {
@@ -189,5 +221,45 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
         !repoUrl.startsWith("@@") &&
         !repoUrl.endsWith("@@") &&
         (repoUrl.startsWith("http://") || repoUrl.startsWith("https://"))
+  }
+
+  private fun githubCredentials(): Pair<String, String>? {
+    val properties = gradleProperties()
+    val user =
+        System.getProperty("gpr.user")?.takeIf(String::isNotBlank)
+            ?: properties["gpr.user"]?.takeIf(String::isNotBlank)
+            ?: System.getenv("GPR_USER")?.takeIf(String::isNotBlank)
+            ?: System.getenv("GITHUB_ACTOR")?.takeIf(String::isNotBlank)
+    val token =
+        System.getProperty("gpr.token")?.takeIf(String::isNotBlank)
+            ?: properties["gpr.token"]?.takeIf(String::isNotBlank)
+            ?: System.getenv("GPR_TOKEN")?.takeIf(String::isNotBlank)
+            ?: System.getenv("GITHUB_TOKEN")?.takeIf(String::isNotBlank)
+
+    if (user == null || token == null) {
+      return null
+    }
+
+    return user to token
+  }
+
+  private fun gradleProperties(): Map<String, String> {
+    val gradleUserHome =
+        System.getenv("GRADLE_USER_HOME")?.takeIf(String::isNotBlank)?.let(::File)
+            ?: File(System.getProperty("user.home"), ".gradle")
+    val propertiesFile = File(gradleUserHome, "gradle.properties")
+    if (!propertiesFile.isFile) {
+      return emptyMap()
+    }
+
+    val properties = Properties()
+    try {
+      propertiesFile.inputStream().use { stream -> properties.load(stream) }
+    } catch (e: Exception) {
+      logger.warn("Unable to read '${propertiesFile.absolutePath}': ${e.message}")
+      return emptyMap()
+    }
+
+    return properties.stringPropertyNames().associateWith { properties.getProperty(it) ?: "" }
   }
 }
