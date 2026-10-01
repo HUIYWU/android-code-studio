@@ -178,9 +178,8 @@ dependencies {
   implementation("com.github.Dimezis:BlurView:version-3.2.0")
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(projects.external.acsprovider)
-  implementation(projects.external.atc) 
+  implementation(projects.external.atc)
   implementation(libs.external.customizable.cardview)
-  implementation(projects.external.logwire)
   
   // Annotation processors
   kapt(libs.common.glide.ap)

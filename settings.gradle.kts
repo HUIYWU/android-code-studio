@@ -115,7 +115,6 @@ include(
   ":external:acsprovider",
   ":external:atc",
   ":core:projectdata",
-  ":external:logwire",
   
   // ":server:server",
   // ":server:shared",

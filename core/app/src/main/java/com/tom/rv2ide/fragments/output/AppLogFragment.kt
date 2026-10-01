@@ -17,18 +17,17 @@
 
 package com.tom.rv2ide.fragments.output
 
-import android.content.ComponentName
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
+import android.content.IntentFilter
 import android.os.Bundle
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.widget.EditText
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.blankj.utilcode.util.ThreadUtils
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.tom.rv2ide.R
@@ -38,10 +37,14 @@ import com.tom.rv2ide.editor.language.treesitter.TreeSitterLanguageProvider
 import com.tom.rv2ide.editor.schemes.IDEColorScheme
 import com.tom.rv2ide.editor.schemes.IDEColorSchemeProvider
 import com.tom.rv2ide.fragments.EmptyStateFragment
+import com.tom.rv2ide.models.LogLine
 import com.tom.rv2ide.preferences.internal.DevOpsPreferences
+import com.tom.rv2ide.services.log.ConnectionObserverParams
+import com.tom.rv2ide.services.log.LogReceiverImpl
+import com.tom.rv2ide.services.log.LogReceiverService
+import com.tom.rv2ide.services.log.LogReceiverServiceConnection
+import com.tom.rv2ide.services.log.lookupLogService
 import com.tom.rv2ide.utils.jetbrainsMono
-import io.github.mohammedbaqernull.logger.model.LogEntry
-import io.github.mohammedbaqernull.logger.service.LogReceiverService
 import io.github.rosemoe.sora.widget.style.CursorAnimator
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -68,28 +71,24 @@ class AppLogFragment :
         const val TRIM_ON_LINE_COUNT = 5000
         const val MAX_LINE_COUNT = TRIM_ON_LINE_COUNT - 300
 
-        private const val LOGWIRE_HEADER = """
-╔═══════════════════════════════════════════════════════════╗
-║                    Powered by LogWire                     ║
-║               Real-time Log Monitoring Tool               ║
-║                                                           ║
-║   Author: Mohammed-baqer-null                             ║
-║   GitHub: https://github.com/Mohammed-baqer-null          ║
-╚═══════════════════════════════════════════════════════════╝
-
-"""
-
         fun newInstance() = AppLogFragment()
     }
 
-    private var logService: LogReceiverService? = null
-    private var isBound = false
+    private data class AppLogEntry(
+        val formatted: String,
+        val tag: String,
+        val message: String,
+    )
+
+    private val isBoundToLogReceiver = AtomicBoolean(false)
+    private var isObservingLogConnections = false
+    private var logServiceConnection: LogReceiverServiceConnection? = null
+    private var logReceiverImpl: LogReceiverImpl? = null
     private var filterSystemLogs = true
     private var tagFilter: String? = null
     private var searchQuery: String? = null
-    private var isUsbDebuggingEnabled = false
 
-    private val allLogs = mutableListOf<LogEntry>()
+    private val allLogs = mutableListOf<AppLogEntry>()
 
     private var lastLog = -1L
     private val cacheLock = ReentrantLock()
@@ -134,35 +133,22 @@ class AppLogFragment :
         "RtgSchedEvent", "RtgSchedIpcFile", "RtgSched", "PhoneWindow",
         "FullScreenUtils", "DecorView", "HWUI", "skia", "AwareBitmapCacher",
         "Resource", "ProfileInstaller", "ZrHung", "libc", "dalvikvm",
-        "art", "Choreographer", "LogWire"
+        "art", "Choreographer"
+
     )
 
-    private val logListener = object : LogReceiverService.LogListener {
-        override fun onLogReceived(log: LogEntry) {
-            if (!isUsbDebuggingEnabled) {
+    private val logServiceConnectionObserver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != LogReceiverService.ACTION_CONNECTION_UPDATE) {
                 return
             }
 
-            activity?.runOnUiThread {
-                allLogs.add(log)
-                if (shouldDisplayLog(log)) {
-                    appendLogToEditor(log)
-                }
+            val params = ConnectionObserverParams.from(intent) ?: return
+            if (!isBoundToLogReceiver.get() && params.totalConnections > 0) {
+                bindToLogReceiver()
+            } else if (isBoundToLogReceiver.get() && params.totalConnections == 0) {
+                unbindFromLogReceiver()
             }
-        }
-    }
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            logService = LogReceiverService.getInstance()
-            isBound = true
-            logService?.addListener(logListener)
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            logService?.removeListener(logListener)
-            logService = null
-            isBound = false
         }
     }
 
@@ -171,25 +157,16 @@ class AppLogFragment :
 
         setupEditor()
         setupMenu()
-        checkUsbDebugging()
-
         if (DevOpsPreferences.logsenderEnabled) {
-          if (isUsbDebuggingEnabled) {
-              showLogWireHeader()
-              bindToLogService()
-          }
+            registerLogConnectionObserver()
         } else {
-          showLogWireDisabledMessage()
+            showLogSenderDisabledMessage()
         }
-
     }
 
     private fun setupMenu() {
         binding.btnClear.setOnClickListener {
             clearOutput()
-            if (isUsbDebuggingEnabled) {
-                showLogWireHeader()
-            }
         }
 
         binding.btnFilterSystem.setOnClickListener {
@@ -261,30 +238,69 @@ class AppLogFragment :
         }
     }
 
-    private fun checkUsbDebugging() {
-        isUsbDebuggingEnabled = try {
-            Settings.Global.getInt(
-                requireContext().contentResolver,
-                Settings.Global.ADB_ENABLED,
-                0
-            ) == 1
-        } catch (e: Exception) {
-            log.error("Failed to check USB debugging status", e)
-            false
+    private fun registerLogConnectionObserver() {
+        if (isObservingLogConnections) {
+            return
         }
+        LocalBroadcastManager.getInstance(requireContext()).registerReceiver(
+            logServiceConnectionObserver,
+            IntentFilter(LogReceiverService.ACTION_CONNECTION_UPDATE),
+        )
+        isObservingLogConnections = true
+    }
 
-        if (!isUsbDebuggingEnabled) {
-            showUsbDebuggingDisabledMessage()
+    private fun appendLog(log: LogLine) {
+        val entry = AppLogEntry(
+            formatted = log.toString(),
+            tag = log.tag.orEmpty(),
+            message = log.message.orEmpty(),
+        )
+        log.recycle()
+
+        ThreadUtils.runOnUiThread {
+            allLogs.add(entry)
+            if (shouldDisplayLog(entry)) {
+                appendLogToEditor(entry)
+            }
         }
     }
 
-    private fun bindToLogService() {
-        val intent = Intent(requireContext(), LogReceiverService::class.java)
-        requireContext().startService(intent)
-        requireContext().bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    private fun bindToLogReceiver() {
+        if (isBoundToLogReceiver.get() || !DevOpsPreferences.logsenderEnabled) {
+            return
+        }
+
+        val context = context ?: return
+        val intent = Intent(context, LogReceiverService::class.java).setAction(
+            LogReceiverService.ACTION_CONNECT_LOG_CONSUMER,
+        )
+        val connection = logServiceConnection ?: LogReceiverServiceConnection { binder ->
+            logReceiverImpl = binder
+            lookupLogService()?.setConsumer(this::appendLog)
+        }.also { logServiceConnection = it }
+
+        if (context.bindService(intent, connection, Context.BIND_IMPORTANT)) {
+            isBoundToLogReceiver.set(true)
+        }
     }
 
-    private fun shouldDisplayLog(log: LogEntry): Boolean {
+    private fun unbindFromLogReceiver() {
+        if (!isBoundToLogReceiver.getAndSet(false)) {
+            return
+        }
+        val context = context ?: return
+        lookupLogService()?.setConsumer(null)
+        logReceiverImpl?.disconnectAll()
+
+        logServiceConnection?.let {
+            runCatching { context.unbindService(it) }
+        }
+        logReceiverImpl = null
+        logServiceConnection?.onConnected = null
+        logServiceConnection = null
+    }
+
+    private fun shouldDisplayLog(log: AppLogEntry): Boolean {
         if (filterSystemLogs && isSystemLog(log)) {
             return false
         }
@@ -296,13 +312,13 @@ class AppLogFragment :
         if (searchQuery != null) {
             val query = searchQuery!!.lowercase()
             return log.tag.lowercase().contains(query) ||
-                   log.message.lowercase().contains(query)
+                log.message.lowercase().contains(query)
         }
 
         return true
     }
 
-    private fun isSystemLog(log: LogEntry): Boolean {
+    private fun isSystemLog(log: AppLogEntry): Boolean {
         if (systemTags.any { log.tag.startsWith(it) }) return true
         if (log.tag.startsWith(".")) return true
 
@@ -316,13 +332,8 @@ class AppLogFragment :
         return false
     }
 
-    fun appendLogToEditor(log: LogEntry) {
-        if (!isUsbDebuggingEnabled) {
-            return
-        }
-
-        val logLine = formatLogEntry(log)
-        appendLine(logLine)
+    private fun appendLogToEditor(log: AppLogEntry) {
+        appendLine(log.formatted)
     }
 
     private fun appendLine(line: String) {
@@ -380,10 +391,6 @@ class AppLogFragment :
         }
     }
 
-    private fun formatLogEntry(log: LogEntry): String {
-        return "${log.getFormattedTime()} [${log.level.label}] ${log.tag}: ${log.message}"
-    }
-
     private fun refreshDisplay() {
         logHandler.removeCallbacks(logRunnable)
         cacheLock.withLock {
@@ -392,24 +399,18 @@ class AppLogFragment :
         }
 
         ThreadUtils.runOnUiThread {
-            if (isUsbDebuggingEnabled) {
-                val contentBuilder = StringBuilder(LOGWIRE_HEADER)
-
+            val content = buildString {
                 for (log in allLogs) {
                     if (shouldDisplayLog(log)) {
-                        contentBuilder.append(formatLogEntry(log))
-                        if (!contentBuilder.endsWith("\n")) {
-                            contentBuilder.append("\n")
+                        append(log.formatted)
+                        if (!endsWith("\n")) {
+                            append("\n")
                         }
                     }
                 }
-
-                val content = contentBuilder.toString()
-                _binding?.logEditor?.setText(content)
-                emptyStateViewModel.isEmpty.value = content.isEmpty()
-            } else {
-                showUsbDebuggingDisabledMessage()
             }
+            _binding?.logEditor?.setText(content)
+            emptyStateViewModel.isEmpty.value = content.isEmpty()
         }
     }
 
@@ -418,44 +419,8 @@ class AppLogFragment :
         refreshDisplay()
     }
 
-    private fun showLogWireHeader() {
-        _binding?.logEditor?.setText(LOGWIRE_HEADER)
-        emptyStateViewModel.isEmpty.value = false
-    }
-
-    private fun showUsbDebuggingDisabledMessage() {
-        val message = """
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║                  USB DEBUGGING DISABLED                   ║
-    ║                                                           ║
-    ║   LogWire requires USB debugging to be enabled in order   ║
-    ║   to read your app logs.                                  ║
-    ║                                                           ║
-    ║   To enable USB debugging:                                ║
-    ║   1. Go to Settings > About Phone                         ║
-    ║   2. Tap "Build Number" 7 times to enable Developer Mode  ║
-    ║   3. Go to Settings > Developer Options                   ║
-    ║   4. Enable "USB Debugging"                               ║
-    ║   5. Close and reopen your project                        ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """
-        _binding?.logEditor?.setText(message)
-        emptyStateViewModel.isEmpty.value = false
-    }
-
-    private fun showLogWireDisabledMessage() {
-        val message = """
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                  LogWire DISABLED                         ║
-    ║              LogWire plugin is disabled                   ║
-    ║   To enable :                                             ║
-    ║   1. Go to Preferences > Developer options                ║
-    ║   2. Toggle the Enable LogWire switch                     ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """
+    private fun showLogSenderDisabledMessage() {
+        val message = "LogSender is disabled. Enable it in Developer options to view application logs."
         _binding?.logEditor?.setText(message)
         emptyStateViewModel.isEmpty.value = false
     }
@@ -521,14 +486,18 @@ class AppLogFragment :
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
+        if (isBoundToLogReceiver.get()) {
+            unbindFromLogReceiver()
+        }
+        if (isObservingLogConnections) {
+            LocalBroadcastManager.getInstance(requireContext()).unregisterReceiver(
+                logServiceConnectionObserver,
+            )
+            isObservingLogConnections = false
+        }
         _binding?.logEditor?.release()
         logHandler.removeCallbacks(logRunnable)
-        if (isBound) {
-            logService?.removeListener(logListener)
-            requireContext().unbindService(serviceConnection)
-            isBound = false
-        }
+        super.onDestroyView()
     }
 
     override fun getContent(): String {

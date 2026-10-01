@@ -27,12 +27,13 @@ import android.text.TextUtils
 import androidx.core.app.NotificationManagerCompat
 import com.blankj.utilcode.util.ResourceUtils
 import com.blankj.utilcode.util.ZipUtils
+import com.tom.rv2ide.managers.ToolsManager
+
 import com.termux.shared.termux.shell.command.environment.TermuxShellEnvironment
 import com.tom.rv2ide.BuildConfig
 import com.tom.rv2ide.R.*
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.lookup.Lookup
-import com.tom.rv2ide.managers.ToolsManager
 import com.tom.rv2ide.preferences.internal.BuildPreferences
 import com.tom.rv2ide.preferences.internal.DevOpsPreferences
 import com.tom.rv2ide.projects.builder.BuildService
@@ -102,7 +103,6 @@ class GradleBuildService :
   private var notificationManager: NotificationManager? = null
   private var server: IToolingApiServer? = null
   private var eventListener: EventListener? = null
-  private var isReleaseVariant = false
 
   private val buildServiceScope =
       CoroutineScope(Dispatchers.Default + CoroutineName("GradleBuildService"))
@@ -233,90 +233,6 @@ class GradleBuildService :
     return mBinder
   }
 
-  /** Creates a Gradle init script that injects the logger plugin into user projects. */
-  private fun createLoggerInitScript(): File {
-    val initScript = File(Environment.TMP_DIR, "ide-logger-init.gradle")
-    initScript.writeText(
-        """
-          allprojects {
-              afterEvaluate {
-                  if (plugins.hasPlugin('com.android.application') ||
-                      plugins.hasPlugin('com.android.library')) {
-
-                      android {
-                          compileOptions {
-                              coreLibraryDesugaringEnabled = true
-                          }
-                      }
-
-                      dependencies {
-                          implementation files('${getLoggerRuntimeAar().absolutePath}')
-                          coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
-                      }
-                  }
-              }
-          }
-      """
-            .trimIndent()
-    )
-    return initScript
-  }
-
-  /** Gets or creates the logger plugin directory. */
-  private fun getLoggerPluginDir(): File {
-    val dir = File(Environment.HOME, "plugins/logger")
-    if (!dir.exists()) {
-      dir.mkdirs()
-    }
-    return dir
-  }
-
-  /** Extracts and returns the logger runtime AAR file. */
-  private fun getLoggerRuntimeAar(): File {
-    val aar = File(getLoggerPluginDir(), "logger-runtime.aar")
-    if (!aar.exists()) {
-      // Extract from assets
-      if (
-          !ResourceUtils.copyFileFromAssets(
-              ToolsManager.getCommonAsset("logger-runtime.aar"),
-              aar.absolutePath,
-          )
-      ) {
-        log.error("Failed to extract logger-runtime.aar from assets")
-      }
-    }
-    return aar
-  }
-
-  /** Check if tasks include debug builds (not release-only). */
-  private fun isDebugBuild(tasks: List<String>): Boolean {
-    // Check if any task contains "Debug" or doesn't contain "Release"
-    val hasDebugTask =
-        tasks.any { task ->
-          task.contains("Debug", ignoreCase = true) ||
-              task.contains("assembleDebug", ignoreCase = true)
-        }
-
-    val hasOnlyRelease =
-        tasks.all { task ->
-          task.contains("Release", ignoreCase = true) ||
-              task.contains("assembleRelease", ignoreCase = true)
-        }
-
-    // If it's explicitly debug, or not explicitly release-only, treat as debug
-    return hasDebugTask || !hasOnlyRelease
-  }
-
-  /**
-   * Inject logger by adding init script to Gradle arguments. This modifies the system property that
-   * will be read by the Tooling API.
-   */
-  private fun injectLoggerForCurrentBuild() {
-    val initScript = createLoggerInitScript()
-    // Set property that will be picked up by Tooling API
-    System.setProperty("ide.logger.init.script", initScript.absolutePath)
-  }
-
   override fun onListenerStarted(
       server: IToolingApiServer,
       projectProxy: IProject,
@@ -386,18 +302,6 @@ class GradleBuildService :
       extraArgs.add(initScript.absolutePath)
     } else {
       log.warn("AndroidIDE init script is unavailable; path={}", initScript.absolutePath)
-    }
-
-    if (DevOpsPreferences.logsenderEnabled) {
-      injectLoggerForCurrentBuild()
-      if (!isReleaseVariant) {
-        val initScriptPath = System.getProperty("ide.logger.init.script")
-        if (initScriptPath != null) {
-          extraArgs.add("--init-script")
-          extraArgs.add(initScriptPath)
-          System.clearProperty("ide.logger.init.script")
-        }
-      }
     }
 
     // Override AAPT2 binary
@@ -622,14 +526,6 @@ class GradleBuildService :
   override fun executeTasks(vararg tasks: String): CompletableFuture<TaskExecutionResult> {
     checkServerStarted()
     val tasksList = tasks.toList()
-
-    if (isDebugBuild(tasksList)) {
-      log.info("Debug build detected, injecting logger plugin")
-      injectLoggerForCurrentBuild()
-    } else {
-      log.info("Release build detected, skipping logger injection")
-      isReleaseVariant = true
-    }
 
     /*
     * @idea Mohammed-Baqer-Null @ https://github.com/Mohammed-baqer-null

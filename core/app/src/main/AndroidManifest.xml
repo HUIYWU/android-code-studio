@@ -160,19 +160,13 @@
       android:stopWithTask="true" />
 
     <service
-      android:name="io.github.mohammedbaqernull.logger.service.LogReceiverService"
-      android:enabled="true"
-      android:exported="true">
+      android:exported="true"
+      android:name=".services.log.LogReceiverService"
+      android:permission="com.tom.rv2ide.permission.BIND_LOG_SERVICE">
+      <intent-filter>
+        <action android:name="com.tom.rv2ide.LOG_SERVICE_ACTION" />
+      </intent-filter>
     </service>
-
-    <!-- <service -->
-    <!-- android:exported="true" -->
-    <!-- android:name=".services.log.LogReceiverService" -->
-    <!-- android:permission="com.tom.rv2ide.permission.BIND_LOG_SERVICE"> -->
-    <!-- <intent-filter> -->
-    <!-- <action android:name="com.tom.rv2ide.LOG_SERVICE_ACTION" /> -->
-    <!-- </intent-filter> -->
-    <!-- </service> -->
 
     <service
       android:enabled="false"

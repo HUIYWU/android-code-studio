@@ -842,10 +842,6 @@ constructor(
     binding.bottomAction.progress.setProgressCompat(progress, true)
   }
 
-  fun appendApkLog(line: io.github.mohammedbaqernull.logger.model.LogEntry) {
-    pagerAdapter.logFragment?.appendLogToEditor(line)
-  }
-
   fun appendBuildOut(str: String?) {
     pagerAdapter.buildOutputFragment?.appendOutput(str)
   }
