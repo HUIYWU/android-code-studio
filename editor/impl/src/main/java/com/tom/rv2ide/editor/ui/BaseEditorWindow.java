@@ -94,8 +94,8 @@ public abstract class BaseEditorWindow extends AbstractPopupWindow {
 
   public void displayWindow() {
     final var dp16 = dp2px(16f);
-    final int width = getEditor().getWidth() - dp16;
-    final int height = getEditor().getHeight() - dp16;
+    final int width = Math.max(0, getEditor().getWidth() - dp16);
+    final int height = Math.max(0, AbstractPopupWindowKt.imeAwarePopupBottom(getEditor()) - dp16);
     final var widthMeasureSpec = makeMeasureSpec(width, AT_MOST);
     final var heightMeasureSpec = makeMeasureSpec(height, AT_MOST);
     this.getRootView().measure(widthMeasureSpec, heightMeasureSpec);

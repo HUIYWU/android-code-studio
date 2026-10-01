@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory
 class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(editor) {
 
   private var listView: ListView? = null
+  private var requestedPopupHeight = 0
   private val items: MutableList<CompletionItem> = mutableListOf()
   @Volatile private var latestPublisherGeneration: Long = -1
 
@@ -87,6 +88,61 @@ class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(edito
   override fun isShowing(): Boolean {
     @Suppress("UNNECESSARY_SAFE_CALL", "USELESS_ELVIS")
     return popup?.isShowing ?: false
+  }
+
+  override fun setSize(width: Int, height: Int) {
+    requestedPopupHeight = height.coerceAtLeast(0)
+    super.setSize(width, requestedPopupHeight.coerceAtMost(editor.imeAwarePopupBottom()))
+  }
+
+  override fun updateCompletionWindowPosition(scrollEditor: Boolean) {
+    val dp = editor.dpUnit
+    val cursor = editor.cursor
+    var panelX = editor.updateCursorAnchor() + dp * 20
+    val rowHeight = editor.rowHeight
+    val rightLayoutOffset = editor.layout.getCharLayoutOffset(cursor.rightLine, cursor.rightColumn)
+    var panelY = rightLayoutOffset[0] - editor.offsetY + rowHeight / 2f
+    var restY = editor.imeAwarePopupBottom() - panelY
+
+    if (restY > dp * 200) {
+      restY = dp * 200
+    } else if (restY < dp * 100 && scrollEditor) {
+      var offset = 0f
+      while (
+          restY < dp * 100 &&
+              editor.offsetY + offset + rowHeight <= editor.scrollMaxY
+      ) {
+        restY += rowHeight
+        panelY -= rowHeight
+        offset += rowHeight
+      }
+      if (offset != 0f) {
+        editor.scroller.startScroll(editor.offsetX, editor.offsetY, 0, offset.toInt(), 0)
+      }
+    }
+
+    val width: Int
+    if (
+        (editor.width < 500 * dp &&
+            getCompletionWndPositionMode() == WINDOW_POS_MODE_AUTO) ||
+            getCompletionWndPositionMode() == WINDOW_POS_MODE_FULL_WIDTH_ALWAYS
+    ) {
+      width = editor.width * 7 / 8
+      panelX = editor.width / 8f / 2f
+    } else {
+      width = min(300 * dp, editor.width / 2f).toInt()
+    }
+
+    val availableHeight = restY.toInt().coerceAtLeast(0)
+    setMaxHeight(availableHeight)
+    val desiredHeight = if (requestedPopupHeight > 0) requestedPopupHeight else getHeight()
+    val popupHeight = desiredHeight.coerceAtMost(availableHeight)
+    super.setSize(width, popupHeight)
+    val constrainedY = editor.constrainPopupY(panelY.toInt(), popupHeight)
+    super.setLocation(
+        panelX.toInt() + editor.offsetX,
+        constrainedY + editor.offsetY,
+    )
   }
 
   override fun setLayout(layout: CompletionLayout) {
@@ -279,8 +335,8 @@ class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(edito
                 hide()
               }
 
-              editor.getComponent(EditorAutoCompletion::class.java).updateCompletionWindowPosition()
-              setSize(width, min(newHeight, maxHeight.toFloat()).toInt())
+              setSize(width, newHeight.toInt())
+              updateCompletionWindowPosition(false)
               if (!isShowing) {
                 show()
               }

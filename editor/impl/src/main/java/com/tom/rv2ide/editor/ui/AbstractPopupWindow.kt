@@ -21,6 +21,30 @@ import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.base.EditorPopupWindow
 import org.slf4j.LoggerFactory
 
+internal fun IDEEditor.imeAwarePopupBottom(): Int {
+  if (imeBottomInset <= 0) {
+    return height
+  }
+
+  val location = IntArray(2)
+  getLocationInWindow(location)
+  val rootHeight = rootView.height
+  if (rootHeight <= 0) {
+    return height
+  }
+
+  return (rootHeight - imeBottomInset - location[1]).coerceIn(0, height)
+}
+
+internal fun IDEEditor.constrainPopupHeight(height: Int): Int {
+  return height.coerceAtMost(imeAwarePopupBottom())
+}
+
+internal fun IDEEditor.constrainPopupY(localY: Int, popupHeight: Int): Int {
+  val maxY = (imeAwarePopupBottom() - popupHeight).coerceAtLeast(0)
+  return localY.coerceIn(0, maxY)
+}
+
 /**
  * Abstract class for all [IDEEditor] popup windows.
  *
@@ -34,8 +58,27 @@ abstract class AbstractPopupWindow(editor: CodeEditor, features: Int) :
     private val log = LoggerFactory.getLogger(AbstractPopupWindow::class.java)
   }
 
+  override fun setSize(width: Int, height: Int) {
+    val ideEditor = editor as? IDEEditor
+    super.setSize(width, ideEditor?.constrainPopupHeight(height) ?: height)
+  }
+
+  override fun setLocation(x: Int, y: Int) {
+    val ideEditor = editor as? IDEEditor
+    if (ideEditor == null) {
+      super.setLocation(x, y)
+      return
+    }
+
+    val localY = y - ideEditor.offsetY
+    val constrainedY = ideEditor.constrainPopupY(localY, height) + ideEditor.offsetY
+    super.setLocation(x, constrainedY)
+  }
+
   override fun show() {
-    (editor as? IDEEditor)?.ensureWindowsDismissed()
+    if (!isShowing()) {
+      (editor as? IDEEditor)?.ensureWindowsDismissed()
+    }
     if (!editor.isAttachedToWindow) {
       log.error(
           "Trying to show popup window '{}' when editor is not attached to window",
