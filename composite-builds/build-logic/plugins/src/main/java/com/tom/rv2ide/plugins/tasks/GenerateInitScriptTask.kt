@@ -49,6 +49,7 @@ abstract class GenerateInitScriptTask : DefaultTask() {
                 }
             }
 
+            apply plugin: com.tom.rv2ide.gradle.AndroidIDEInitScriptPlugin
             apply plugin: com.tom.rv2ide.gradle.ModuleCreationInitScriptPlugin
           """
               .trimIndent()

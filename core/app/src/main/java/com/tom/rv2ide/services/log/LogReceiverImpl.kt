@@ -71,9 +71,9 @@ class LogReceiverImpl(consumer: ((LogLine) -> Unit)? = null) : ILogReceiver.Stub
 
   override fun connect(sender: ILogSender?) {
     doAsync("connect") {
-      val port = senderHandler.getPort()
+      val port = senderHandler.awaitPort(5, java.util.concurrent.TimeUnit.SECONDS)
       if (port == -1) {
-        log.error("A log sender is trying to connect, but log receiver is not started")
+        log.error("A log sender is trying to connect, but log receiver socket is not ready")
         return@doAsync
       }
 

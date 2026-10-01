@@ -70,6 +70,9 @@ dependencies {
   kapt(libs.google.auto.service)
 
   api(projects.tooling.api)
+  implementation(projects.tooling.plugin) {
+    isTransitive = false
+  }
 
   implementation(projects.utilities.buildInfo)
   implementation(projects.utilities.shared)

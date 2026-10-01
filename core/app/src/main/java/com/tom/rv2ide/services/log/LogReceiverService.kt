@@ -25,8 +25,6 @@ import com.tom.rv2ide.logsender.LogSender
 import com.tom.rv2ide.lookup.Lookup
 import com.tom.rv2ide.models.LogLine
 import com.tom.rv2ide.preferences.internal.DevOpsPreferences
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.slf4j.LoggerFactory
 
@@ -41,8 +39,6 @@ class LogReceiverService : Service() {
   private val started = AtomicBoolean(false)
   private val isBoundToConsumer = AtomicBoolean(false)
 
-  private val scheduledExecutor = Executors.newSingleThreadScheduledExecutor()
-
   companion object {
 
     private val log = LoggerFactory.getLogger(LogReceiverService::class.java)
@@ -50,8 +46,6 @@ class LogReceiverService : Service() {
     internal const val ACTION_CONNECT_LOG_CONSUMER =
         "com.tom.rv2ide.logrecevier.CONNECT_LOG_CONSUMER"
     internal const val ACTION_CONNECTION_UPDATE = "com.tom.rv2ide.logreceiver.CONNECTION_UPDATE"
-
-    private const val LOG_CONSUMER_WAIT_DURATION = 10 // seconds
 
     @JvmStatic internal val LOOKUP_KEY = Lookup.Key<LogReceiverService>()
   }
@@ -89,17 +83,19 @@ class LogReceiverService : Service() {
     }
 
     log.debug("Accepting bind request...")
-    return startBinderAndGet().also {
-      if (!isBoundToConsumer.get()) {
-        // listen for consumers to bind to the service for next LOG_CONSUMER_WAIT_DURATION
-        // if the consumer still does not connect, disconnect from all senders and stop the service
-        listenForConsumer()
-      }
-    }
+    return startBinderAndGet()
   }
 
   override fun onUnbind(intent: Intent?): Boolean {
+    if (intent?.action == ACTION_CONNECT_LOG_CONSUMER) {
+      releaseConsumer()
+    }
     return super.onUnbind(intent)
+  }
+
+  internal fun releaseConsumer() {
+    isBoundToConsumer.set(false)
+    binder.consumer = null
   }
 
   private fun startBinderAndGet(): LogReceiverImpl {
@@ -116,11 +112,6 @@ class LogReceiverService : Service() {
     log.debug("LogReceiverService is being destroyed...")
     binder.close()
     started.set(false)
-    try {
-      scheduledExecutor.shutdownNow()
-    } catch (e: Exception) {
-      // ignored
-    }
     Lookup.getDefault().unregister(LOOKUP_KEY)
   }
 
@@ -132,21 +123,6 @@ class LogReceiverService : Service() {
     val intent = Intent(ACTION_CONNECTION_UPDATE)
     intent.putExtras(params.bundle())
     LocalBroadcastManager.getInstance(this).sendBroadcastSync(intent)
-  }
-
-  private fun listenForConsumer() {
-    log.debug("Waiting for log consumer...")
-    scheduledExecutor.schedule(
-        {
-          if (!isBoundToConsumer.get()) {
-            // ask senders to disconnect
-            log.debug("No log consumer has been bound to the log receiver service")
-            binder.disconnectAll()
-          }
-        },
-        LOG_CONSUMER_WAIT_DURATION.toLong(),
-        TimeUnit.SECONDS,
-    )
   }
 
   /**

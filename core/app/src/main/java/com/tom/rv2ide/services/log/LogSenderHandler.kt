@@ -51,7 +51,14 @@ class LogSenderHandler(
           socket.getInputStream().bufferedReader().use { reader ->
             while (!socket.isClosed) {
               try {
-                LogLine.forLogString(reader.readLine())?.let { line -> consumer?.invoke(line) }
+                LogLine.forLogString(reader.readLine())?.let { line ->
+                    val currentConsumer = consumer
+                    if (currentConsumer != null) {
+                      currentConsumer(line)
+                    } else {
+                      line.recycle()
+                    }
+                  }
               } catch (cancellation: CancellationException) {
                 break
               }

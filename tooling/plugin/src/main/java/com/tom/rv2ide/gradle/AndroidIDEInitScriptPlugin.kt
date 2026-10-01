@@ -24,7 +24,6 @@ import java.io.File
 import java.net.URI
 import org.gradle.StartParameter
 import org.gradle.api.Plugin
-import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.api.artifacts.dsl.RepositoryHandler
 import org.gradle.api.initialization.Settings
 import org.gradle.api.invocation.Gradle
@@ -48,19 +47,10 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
     target.settingsEvaluated { settings ->
       settings.addDependencyRepositories()
     }
-
     target.rootProject { rootProject ->
-      rootProject.buildscript.apply {
-        dependencies.apply {
-          val gradlePluginDep = rootProject.ideDependency(LIB_GROUP_TOOLING, "plugin")
-          if (gradlePluginDep is ExternalModuleDependency) {
-            gradlePluginDep.isChanging = false
-          }
-          add("classpath", gradlePluginDep)
-        }
-        repositories.addDependencyRepositories(rootProject.gradle.startParameter)
-      }
+      rootProject.buildscript.repositories.addDependencyRepositories(rootProject.gradle.startParameter)
     }
+
 
     target.projectsLoaded { gradle ->
       gradle.rootProject.subprojects { sub ->
@@ -69,8 +59,8 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
         }
 
         sub.afterEvaluate {
-          logger.info("Applying plugin '${BuildInfo.PACKAGE_NAME}' to project '${sub.path}'")
-          sub.pluginManager.apply(BuildInfo.PACKAGE_NAME)
+          logger.info("Applying AndroidIDE Gradle plugin to project '${sub.path}'")
+          sub.pluginManager.apply(AndroidIDEGradlePlugin::class.java)
         }
       }
     }

@@ -159,6 +159,7 @@ class AppLogFragment :
         setupMenu()
         if (DevOpsPreferences.logsenderEnabled) {
             registerLogConnectionObserver()
+            bindToLogReceiver()
         } else {
             showLogSenderDisabledMessage()
         }
@@ -289,8 +290,7 @@ class AppLogFragment :
             return
         }
         val context = context ?: return
-        lookupLogService()?.setConsumer(null)
-        logReceiverImpl?.disconnectAll()
+        lookupLogService()?.releaseConsumer()
 
         logServiceConnection?.let {
             runCatching { context.unbindService(it) }

@@ -24,6 +24,8 @@ import com.tom.rv2ide.tasks.cancelIfActive
 import java.lang.Thread.currentThread
 import java.net.ServerSocket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineName
@@ -43,6 +45,7 @@ class MultiLogSenderHandler(consumer: ((LogLine) -> Unit)? = null) : AutoCloseab
 
   private val clients = ConcurrentHashMap<String, LogSenderHandler>()
   private val port = AtomicInteger(-1)
+  private val portReady = CountDownLatch(1)
   private var isAlive = AtomicBoolean(false)
 
   private var logHandlerScope =
@@ -62,6 +65,13 @@ class MultiLogSenderHandler(consumer: ((LogLine) -> Unit)? = null) : AutoCloseab
     return port.get()
   }
 
+  fun awaitPort(timeout: Long, unit: TimeUnit): Int {
+    if (!portReady.await(timeout, unit)) {
+      return -1
+    }
+    return port.get()
+  }
+
   private suspend fun startAsync() =
       withContext(Dispatchers.IO) {
         val job = coroutineContext[Job]
@@ -75,6 +85,7 @@ class MultiLogSenderHandler(consumer: ((LogLine) -> Unit)? = null) : AutoCloseab
 
         try {
           port.set(server.localPort)
+          portReady.countDown()
           log.info("Starting log receiver server socket at port {}", getPort())
 
           while (job?.isCancelled != true && isAlive.get()) {
