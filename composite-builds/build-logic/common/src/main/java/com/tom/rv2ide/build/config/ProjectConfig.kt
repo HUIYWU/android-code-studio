@@ -84,8 +84,14 @@ val Project.projectVersionCode: Int
  */
 val Project.downloadVersion: String
   get() {
+      val publishVersion = providers.gradleProperty("publishVersion").orNull
+          ?: System.getenv("PUBLISH_VERSION")
+      if (!publishVersion.isNullOrBlank()) {
+        return publishVersion
+      }
+
       // sometimes, when working locally, Gradle fails to download the latest snapshot version
       // this may cause issues while initializing the project in AndroidIDE
-      return VersionUtils.getLatestSnapshotVersion("gradle-plugin")
+      return VersionUtils.getLatestSnapshotVersion(BuildConfig.gradlePluginArtifact)
   }
   

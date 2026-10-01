@@ -47,5 +47,5 @@ fun Project.ideDependency(group: String, artifact: String): Dependency {
 }
 
 fun DependencyHandler.ideDependency(group: String, artifact: String, testEnv: Boolean): Dependency {
-  return create("io.github.mohammed-baqer-null:${artifact}:${depVersion(testEnv)}")
+  return create("${BuildInfo.MVN_GROUP_ID}.${group}:${artifact}:${depVersion(testEnv)}")
 }

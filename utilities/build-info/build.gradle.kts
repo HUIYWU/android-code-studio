@@ -54,8 +54,8 @@ tasks.create("generateBuildInfo") {
       candidates =
       arrayOf(
         "PACKAGE_NAME" to BuildConfig.packageName,
-        // "MVN_GROUP_ID" to BuildConfig.packageName,
-        "MVN_GROUP_ID" to "io.github.mohammed-baqer-null",
+        "MVN_GROUP_ID" to BuildConfig.mavenGroupId,
+        "GRADLE_PLUGIN_ARTIFACT" to BuildConfig.gradlePluginArtifact,
 
         "VERSION_NAME" to rootProject.version.toString(),
         "VERSION_NAME_SIMPLE" to rootProject.simpleVersionName,
@@ -68,7 +68,10 @@ tasks.create("generateBuildInfo") {
 
         "AGP_VERSION_MININUM" to AGP_VERSION_MINIMUM,
         "AGP_VERSION_LATEST" to libs.versions.agp.tooling.get(),
-        "AGP_VERSION_GRADLE_LATEST" to SdkConstants.GRADLE_LATEST_VERSION
+        "AGP_VERSION_GRADLE_LATEST" to SdkConstants.GRADLE_LATEST_VERSION,
+
+        "SNAPSHOTS_REPOSITORY" to VersionUtils.SONATYPE_SNAPSHOTS_REPO,
+        "PUBLIC_REPOSITORY" to VersionUtils.SONATYPE_PUBLIC_REPO
       )
     )
   }

@@ -19,6 +19,8 @@ package com.tom.rv2ide.plugins
 
 // import com.tom.rv2ide.plugins.tasks.SetupAapt2Task
 import com.android.build.api.variant.ApplicationAndroidComponentsExtension
+import com.tom.rv2ide.build.config.BuildConfig
+import com.tom.rv2ide.build.config.downloadVersion
 import com.tom.rv2ide.plugins.tasks.AddAndroidJarToAssetsTask
 import com.tom.rv2ide.plugins.tasks.AddFileToAssetsTask
 import com.tom.rv2ide.plugins.tasks.GenerateInitScriptTask
@@ -71,7 +73,11 @@ class AndroidIDEAssetsPlugin : Plugin<Project> {
             tasks.register(
                 "generate${variantNameCapitalized}InitScript",
                 GenerateInitScriptTask::class.java,
-            )
+            ) {
+              mavenGroupId.set(BuildConfig.mavenGroupId)
+              pluginArtifact.set(BuildConfig.gradlePluginArtifact)
+              downloadVersion.set(this@run.downloadVersion)
+            }
 
         variant.sources.assets?.addGeneratedSourceDirectory(
             generateInitScript,

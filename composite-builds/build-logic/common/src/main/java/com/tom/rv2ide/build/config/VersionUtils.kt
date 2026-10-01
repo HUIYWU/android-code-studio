@@ -34,9 +34,19 @@ object VersionUtils {
   const val CENTER_REPO = "https://repo1.maven.org/maven2"
 
   /**
+   * The Sonatype snapshots repository.
+   */
+  const val SONATYPE_SNAPSHOTS_REPO = "https://s01.oss.sonatype.org/content/repositories/snapshots/"
+
+  /**
+   * The Sonatype release repository.
+   */
+  const val SONATYPE_PUBLIC_REPO = "https://s01.oss.sonatype.org/content/groups/public/"
+
+  /**
    * The latest integration version name.
    */
-  const val LATEST_INTEGRATION = "rv2ide-gradle-plugin:1.0.0"
+  const val LATEST_INTEGRATION = "latest.integration"
 
   /**
    * The cached version name.
@@ -53,8 +63,8 @@ object VersionUtils {
       return cached
     }
 
-    val groupId = BuildConfig.packageName.replace('.', '/')
-    val moduleMetadata = "https://repo1.maven.org/maven2/io/github/mohammed-baqer-null/rv2ide-gradle-plugin/maven-metadata.xml"
+    val groupId = "${BuildConfig.mavenGroupId}.tooling".replace('.', '/')
+    val moduleMetadata = "https://repo1.maven.org/maven2/$groupId/$artifact/maven-metadata.xml"
     return try {
        BufferedInputStream(URI.create(moduleMetadata).toURL().openStream()).use { inputStream ->
         val builderFactory = DocumentBuilderFactory.newInstance()

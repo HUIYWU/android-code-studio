@@ -33,6 +33,7 @@ public class BuildInfo {
   // ---------- Maven version info ----------------
 
   public static final String MVN_GROUP_ID = "@@MVN_GROUP_ID@@";
+  public static final String GRADLE_PLUGIN_ARTIFACT = "@@GRADLE_PLUGIN_ARTIFACT@@";
 
   public static final String VERSION_NAME = "@@VERSION_NAME@@";
   public static final String VERSION_NAME_SIMPLE = "@@VERSION_NAME_SIMPLE@@";

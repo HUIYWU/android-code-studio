@@ -24,6 +24,7 @@ import java.io.File
 import java.net.URI
 import org.gradle.StartParameter
 import org.gradle.api.Plugin
+import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.api.artifacts.dsl.RepositoryHandler
 import org.gradle.api.initialization.Settings
 import org.gradle.api.invocation.Gradle
@@ -48,7 +49,20 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
       settings.addDependencyRepositories()
     }
     target.rootProject { rootProject ->
-      rootProject.buildscript.repositories.addDependencyRepositories(rootProject.gradle.startParameter)
+      rootProject.buildscript.apply {
+        dependencies.apply {
+          val gradlePluginDependency =
+              rootProject.dependencies.create(
+                  "${BuildInfo.MVN_GROUP_ID}.tooling:${BuildInfo.GRADLE_PLUGIN_ARTIFACT}:" +
+                      BuildInfo.VERSION_NAME_DOWNLOAD
+              )
+          if (gradlePluginDependency is ExternalModuleDependency) {
+            gradlePluginDependency.isChanging = false
+          }
+          add("classpath", gradlePluginDependency)
+        }
+        repositories.addDependencyRepositories(rootProject.gradle.startParameter)
+      }
     }
 
 
@@ -60,7 +74,7 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
 
         sub.afterEvaluate {
           logger.info("Applying AndroidIDE Gradle plugin to project '${sub.path}'")
-          sub.pluginManager.apply(AndroidIDEGradlePlugin::class.java)
+          sub.pluginManager.apply(BuildInfo.PACKAGE_NAME)
         }
       }
     }
@@ -138,12 +152,6 @@ class AndroidIDEInitScriptPlugin : Plugin<Gradle> {
             maven { repository -> repository.url = repo.toURI() }
           }
         }
-      }
-    } else {
-      // Add JitPack for GitHub packages
-      maven { repository ->
-        repository.name = "JitPack"
-        repository.setUrl("https://jitpack.io")
       }
     }
 

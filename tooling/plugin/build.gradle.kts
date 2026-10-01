@@ -18,6 +18,7 @@
 import com.tom.rv2ide.build.config.AGP_VERSION_MINIMUM
 import com.tom.rv2ide.build.config.BuildConfig
 import com.tom.rv2ide.build.config.ProjectConfig
+import org.gradle.api.publish.maven.MavenPublication
 
 plugins {
     id("java-gradle-plugin")
@@ -27,13 +28,25 @@ plugins {
 
 description = "Gradle Plugin for projects that are built with AndroidCS"
 
+group = "${BuildConfig.mavenGroupId}.tooling"
+
+configurations {
+    val androidBuildTool = create("androidBuildTool")
+
+    compileOnly {
+        extendsFrom(androidBuildTool)
+    }
+    testImplementation {
+        extendsFrom(androidBuildTool)
+    }
+}
+
 dependencies {
     implementation(projects.tooling.model)
     implementation(projects.tooling.pluginConfig)
     implementation(projects.utilities.buildInfo)
 
-    // AGP included in output JAR
-    implementation("com.android.tools.build:gradle:${AGP_VERSION_MINIMUM}")
+    add("androidBuildTool", "com.android.tools.build:gradle:${AGP_VERSION_MINIMUM}")
 }
 
 gradlePlugin {
@@ -56,8 +69,27 @@ gradlePlugin {
     
 }
 
-tasks.named<Jar>("jar") {
-    archiveBaseName.set("androidide-plugin")
+publishing {
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/HUIYWU/android-code-studio")
+            credentials {
+                username = providers.environmentVariable("GITHUB_ACTOR").orNull
+                    ?: providers.gradleProperty("gpr.user").orNull
+                    ?: ""
+                password = providers.environmentVariable("GITHUB_TOKEN").orNull
+                    ?: providers.gradleProperty("gpr.key").orNull
+                    ?: ""
+            }
+        }
+    }
+
+    publications.withType<MavenPublication>().configureEach {
+        if (name == "pluginMaven") {
+            artifactId = BuildConfig.gradlePluginArtifact
+        }
+    }
 }
 
 // Module-creation init support is packaged with tooling-api-all.jar.

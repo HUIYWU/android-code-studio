@@ -97,10 +97,13 @@ dependencyResolutionManagement {
   }
 }
 
+val publishVersion = providers.gradleProperty("publishVersion").orNull
+  ?: System.getenv("PUBLISH_VERSION")
+
 gradle.rootProject {
     val appMainVersion = System.getenv("MAIN_VERSION") ?: "1.0.0"
     val revision = "r${System.getenv("REVISION_NUM") ?: "03"}"
-    val baseVersion = "$appMainVersion+gh.$revision"
+    val baseVersion = publishVersion ?: "$appMainVersion+gh.$revision"
     println("Android code studio version: $baseVersion")
     project.setProperty("version", baseVersion)
 }

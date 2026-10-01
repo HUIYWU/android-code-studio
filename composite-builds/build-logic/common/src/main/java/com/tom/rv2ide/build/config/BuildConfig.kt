@@ -28,6 +28,10 @@ object BuildConfig {
   // const val packageName = "com.tom.rv2ide"
   const val packageName = "com.tom.rv2ide"
 
+  const val mavenGroupId = "com.anplatonc"
+  const val gradlePluginArtifact = "plugin"
+  const val logsenderArtifact = "logsender"
+
   /** The compile SDK version. */
   const val compileSdk = 34
   
