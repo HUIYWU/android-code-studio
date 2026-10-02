@@ -76,21 +76,3 @@ afterEvaluate {
         }
     }
 }
-
-tasks.register("fixAarName") {
-    doLast {
-        val aarDir = file("$buildDir/outputs/aar")
-        val files = aarDir.listFiles { f -> f.extension == "aar" } ?: return@doLast
-        files.forEach { f ->
-            if (f.name != "logger-runtime.aar") {
-                val target = File(f.parentFile, "logger-runtime.aar")
-                target.delete()
-                if (f.renameTo(target)) {
-                    println("✅ Renamed ${f.name} → ${target.name}")
-                } else {
-                    println("⚠️  Could not rename ${f.name}")
-                }
-            }
-        }
-    }
-}
