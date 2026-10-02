@@ -27,6 +27,7 @@ import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.widget.EditText
+import androidx.core.view.isVisible
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.blankj.utilcode.util.ThreadUtils
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -160,7 +161,21 @@ class AppLogFragment :
         if (DevOpsPreferences.logsenderEnabled) {
             registerLogConnectionObserver()
             bindToLogReceiver()
+            refreshDisplay()
         } else {
+            showLogSenderDisabledMessage()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        if (DevOpsPreferences.logsenderEnabled && isEmpty) {
+            registerLogConnectionObserver()
+            bindToLogReceiver()
+            refreshDisplay()
+        } else if (!DevOpsPreferences.logsenderEnabled && !isEmpty) {
+            unbindFromLogReceiver()
             showLogSenderDisabledMessage()
         }
     }
@@ -234,7 +249,7 @@ class AppLogFragment :
                 val existingText = editor.text?.toString().orEmpty()
                 val updatedText = existingText + chars
                 editor.setText(updatedText)
-                emptyStateViewModel.isEmpty.value = updatedText.isEmpty()
+                updateLogsView(updatedText.isNotEmpty())
             }
         }
     }
@@ -410,7 +425,7 @@ class AppLogFragment :
                 }
             }
             _binding?.logEditor?.setText(content)
-            emptyStateViewModel.isEmpty.value = content.isEmpty()
+            updateLogsView(content.isNotEmpty())
         }
     }
 
@@ -420,9 +435,14 @@ class AppLogFragment :
     }
 
     private fun showLogSenderDisabledMessage() {
-        val message = "LogSender is disabled. Enable it in Developer options to view application logs."
-        _binding?.logEditor?.setText(message)
+        emptyStateViewModel.emptyMessage.value = getString(R.string.msg_logsender_disabled)
+        emptyStateViewModel.isEmpty.value = true
+    }
+
+    private fun updateLogsView(hasLogs: Boolean) {
         emptyStateViewModel.isEmpty.value = false
+        _binding?.emptyLogMessage?.isVisible = !hasLogs
+        _binding?.logEditor?.isVisible = hasLogs
     }
 
     override fun clearOutput() {
@@ -437,7 +457,9 @@ class AppLogFragment :
 
         ThreadUtils.runOnUiThread {
             _binding?.logEditor?.setText("")
-            emptyStateViewModel.isEmpty.value = true
+            if (DevOpsPreferences.logsenderEnabled) {
+                updateLogsView(false)
+            }
         }
     }
 
