@@ -543,6 +543,13 @@
   <string name="msg_emptyview_applogs">运行应用的 debug 变体以在此处查看其日志。</string>
   <string name="msg_logsender_disabled">LogSender 已禁用。您可以在首选项中启用它。</string>
   <string name="msg_emptyview_idelogs">IDE 中的日志显示在这里。</string>
+  <string name="title_log_filter">日志过滤</string>
+  <string name="hint_log_filter_text">过滤文本</string>
+  <string name="filter_by_level">按级别</string>
+  <string name="filter_by_tag">按标签</string>
+  <string name="filter_by_message">按消息</string>
+  <string name="action_show_system_logs">显示系统日志</string>
+  <string name="action_hide_system_logs">隐藏系统日志</string>
   <string name="msg_emptyview_diagnostics">打开文件以显示其诊断结果</string>
   <string name="msg_emptyview_buildoutput">"构建应用或运行任务以在此处查看其构建输出。"</string>
   <string name="msg_codeaction_failed">无法执行代码操作</string>

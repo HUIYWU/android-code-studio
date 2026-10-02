@@ -1116,6 +1116,11 @@ Failed: %2$d</string>
   <string name="title_search_logs">Search Logs</string>
   <string name="hint_tag_filter">Enter tag name (leave empty to clear filter)</string>
   <string name="hint_search_logs">Search in tags and messages</string>
+  <string name="title_log_filter">Log filter</string>
+  <string name="hint_log_filter_text">Filter text</string>
+  <string name="filter_by_level">By level</string>
+  <string name="filter_by_tag">By tag</string>
+  <string name="filter_by_message">By message</string>
   
   <string name="ai_agent_note">
     <![CDATA[

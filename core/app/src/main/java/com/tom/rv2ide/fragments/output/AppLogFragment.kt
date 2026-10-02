@@ -26,11 +26,13 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.View
-import android.widget.EditText
+import androidx.appcompat.widget.TooltipCompat
 import androidx.core.view.isVisible
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.blankj.utilcode.util.ThreadUtils
+import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
 import com.tom.rv2ide.R
 import com.tom.rv2ide.databinding.FragmentLogViewerBinding
 import com.tom.rv2ide.editor.language.treesitter.LogLanguage
@@ -77,6 +79,7 @@ class AppLogFragment :
 
     private data class AppLogEntry(
         val formatted: String,
+        val level: String,
         val tag: String,
         val message: String,
     )
@@ -86,8 +89,10 @@ class AppLogFragment :
     private var logServiceConnection: LogReceiverServiceConnection? = null
     private var logReceiverImpl: LogReceiverImpl? = null
     private var filterSystemLogs = true
-    private var tagFilter: String? = null
-    private var searchQuery: String? = null
+    private var filterText: String? = null
+    private var filterByLevel = false
+    private var filterByTag = false
+    private var filterByMessage = false
 
     private val allLogs = mutableListOf<AppLogEntry>()
 
@@ -181,19 +186,22 @@ class AppLogFragment :
     }
 
     private fun setupMenu() {
-        binding.btnFilterSystem.contentDescription = systemLogsFilterLabel()
+        updateSystemFilterLabel()
         binding.btnFilterSystem.setOnClickListener {
             toggleSystemLogsFilter()
-            binding.btnFilterSystem.contentDescription = systemLogsFilterLabel()
+            updateSystemFilterLabel()
         }
 
-        binding.btnFilterTag.setOnClickListener {
-            showTagFilterDialog()
+        TooltipCompat.setTooltipText(binding.btnFilterLog, getString(R.string.title_log_filter))
+        binding.btnFilterLog.setOnClickListener {
+            showLogFilterDialog()
         }
+    }
 
-        binding.btnSearch.setOnClickListener {
-            showSearchDialog()
-        }
+    private fun updateSystemFilterLabel() {
+        val label = systemLogsFilterLabel()
+        binding.btnFilterSystem.contentDescription = label
+        TooltipCompat.setTooltipText(binding.btnFilterSystem, label)
     }
 
     private fun systemLogsFilterLabel(): CharSequence =
@@ -270,6 +278,7 @@ class AppLogFragment :
     private fun appendLog(log: LogLine) {
         val entry = AppLogEntry(
             formatted = log.toString(),
+            level = log.level?.levelChar?.toString().orEmpty(),
             tag = log.tag.orEmpty(),
             message = log.message.orEmpty(),
         )
@@ -322,17 +331,23 @@ class AppLogFragment :
             return false
         }
 
-        if (tagFilter != null && !log.tag.equals(tagFilter, ignoreCase = true)) {
-            return false
-        }
+        val query = filterText ?: return true
+        return matchesFilter(log, query)
+    }
 
-        if (searchQuery != null) {
-            val query = searchQuery!!.lowercase()
-            return log.tag.lowercase().contains(query) ||
-                log.message.lowercase().contains(query)
-        }
+    private fun matchesFilter(log: AppLogEntry, query: String): Boolean {
+        val fields =
+            if (filterByLevel || filterByTag || filterByMessage) {
+                buildList {
+                    if (filterByLevel) add(log.level)
+                    if (filterByTag) add(log.tag)
+                    if (filterByMessage) add(log.message)
+                }
+            } else {
+                listOf(log.level, log.tag, log.message)
+            }
 
-        return true
+        return fields.any { it.contains(query, ignoreCase = true) }
     }
 
     private fun isSystemLog(log: AppLogEntry): Boolean {
@@ -465,45 +480,34 @@ class AppLogFragment :
         }
     }
 
-    private fun showTagFilterDialog() {
-        val input = EditText(requireContext()).apply {
-            hint = getString(R.string.hint_tag_filter)
-            setText(tagFilter ?: "")
-        }
+    private fun showLogFilterDialog() {
+        val content = layoutInflater.inflate(R.layout.dialog_log_filter, null)
+        val filterInput = content.findViewById<TextInputEditText>(R.id.filterTextInput)
+        val levelChip = content.findViewById<Chip>(R.id.chipFilterLevel)
+        val tagChip = content.findViewById<Chip>(R.id.chipFilterTag)
+        val messageChip = content.findViewById<Chip>(R.id.chipFilterMessage)
+
+        filterInput.setText(filterText.orEmpty())
+        levelChip.isChecked = filterByLevel
+        tagChip.isChecked = filterByTag
+        messageChip.isChecked = filterByMessage
 
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.title_filter_by_tag)
-            .setView(input)
+            .setTitle(R.string.title_log_filter)
+            .setView(content)
             .setPositiveButton(R.string.action_apply) { _, _ ->
-                val tag = input.text.toString().trim()
-                tagFilter = if (tag.isEmpty()) null else tag
+                filterText = filterInput.text.toString().trim().ifEmpty { null }
+                filterByLevel = levelChip.isChecked
+                filterByTag = tagChip.isChecked
+                filterByMessage = messageChip.isChecked
                 refreshDisplay()
             }
             .setNegativeButton(R.string.action_cancel, null)
             .setNeutralButton(R.string.action_clear_filter) { _, _ ->
-                tagFilter = null
-                refreshDisplay()
-            }
-            .show()
-    }
-
-    private fun showSearchDialog() {
-        val input = EditText(requireContext()).apply {
-            hint = getString(R.string.hint_search_logs)
-            setText(searchQuery ?: "")
-        }
-
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.title_search_logs)
-            .setView(input)
-            .setPositiveButton(R.string.action_search) { _, _ ->
-                val query = input.text.toString().trim()
-                searchQuery = if (query.isEmpty()) null else query
-                refreshDisplay()
-            }
-            .setNegativeButton(R.string.action_cancel, null)
-            .setNeutralButton(R.string.action_clear_search) { _, _ ->
-                searchQuery = null
+                filterText = null
+                filterByLevel = false
+                filterByTag = false
+                filterByMessage = false
                 refreshDisplay()
             }
             .show()
