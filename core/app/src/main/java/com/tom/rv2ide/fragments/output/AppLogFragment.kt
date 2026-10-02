@@ -30,7 +30,7 @@ import androidx.appcompat.widget.TooltipCompat
 import androidx.core.view.isVisible
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.blankj.utilcode.util.ThreadUtils
-import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
 import com.tom.rv2ide.R
@@ -77,6 +77,12 @@ class AppLogFragment :
         fun newInstance() = AppLogFragment()
     }
 
+    private enum class FilterField {
+        LEVEL,
+        TAG,
+        MESSAGE,
+    }
+
     private data class AppLogEntry(
         val formatted: String,
         val level: String,
@@ -90,9 +96,7 @@ class AppLogFragment :
     private var logReceiverImpl: LogReceiverImpl? = null
     private var filterSystemLogs = true
     private var filterText: String? = null
-    private var filterByLevel = false
-    private var filterByTag = false
-    private var filterByMessage = false
+    private var filterField: FilterField? = null
 
     private val allLogs = mutableListOf<AppLogEntry>()
 
@@ -337,14 +341,11 @@ class AppLogFragment :
 
     private fun matchesFilter(log: AppLogEntry, query: String): Boolean {
         val fields =
-            if (filterByLevel || filterByTag || filterByMessage) {
-                buildList {
-                    if (filterByLevel) add(log.level)
-                    if (filterByTag) add(log.tag)
-                    if (filterByMessage) add(log.message)
-                }
-            } else {
-                listOf(log.level, log.tag, log.message)
+            when (filterField) {
+                FilterField.LEVEL -> listOf(log.level)
+                FilterField.TAG -> listOf(log.tag)
+                FilterField.MESSAGE -> listOf(log.message)
+                null -> listOf(log.level, log.tag, log.message)
             }
 
         return fields.any { it.contains(query, ignoreCase = true) }
@@ -483,35 +484,42 @@ class AppLogFragment :
     private fun showLogFilterDialog() {
         val content = layoutInflater.inflate(R.layout.dialog_log_filter, null)
         val filterInput = content.findViewById<TextInputEditText>(R.id.filterTextInput)
-        val levelChip = content.findViewById<Chip>(R.id.chipFilterLevel)
-        val tagChip = content.findViewById<Chip>(R.id.chipFilterTag)
-        val messageChip = content.findViewById<Chip>(R.id.chipFilterMessage)
+        val filterGroup = content.findViewById<ChipGroup>(R.id.filterFieldGroup)
 
         filterInput.setText(filterText.orEmpty())
-        levelChip.isChecked = filterByLevel
-        tagChip.isChecked = filterByTag
-        messageChip.isChecked = filterByMessage
+        filterField?.let { field -> filterGroup.check(field.chipId()) }
 
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.title_log_filter)
             .setView(content)
-            .setPositiveButton(R.string.action_apply) { _, _ ->
+            .setPositiveButton(R.string.title_apply) { _, _ ->
                 filterText = filterInput.text.toString().trim().ifEmpty { null }
-                filterByLevel = levelChip.isChecked
-                filterByTag = tagChip.isChecked
-                filterByMessage = messageChip.isChecked
+                filterField = filterFieldFor(filterGroup.checkedChipId)
                 refreshDisplay()
             }
             .setNegativeButton(R.string.action_cancel, null)
-            .setNeutralButton(R.string.action_clear_filter) { _, _ ->
+            .setNeutralButton(R.string.clear) { _, _ ->
                 filterText = null
-                filterByLevel = false
-                filterByTag = false
-                filterByMessage = false
+                filterField = null
                 refreshDisplay()
             }
             .show()
     }
+
+    private fun FilterField.chipId(): Int =
+        when (this) {
+            FilterField.LEVEL -> R.id.chipFilterLevel
+            FilterField.TAG -> R.id.chipFilterTag
+            FilterField.MESSAGE -> R.id.chipFilterMessage
+        }
+
+    private fun filterFieldFor(chipId: Int): FilterField? =
+        when (chipId) {
+            R.id.chipFilterLevel -> FilterField.LEVEL
+            R.id.chipFilterTag -> FilterField.TAG
+            R.id.chipFilterMessage -> FilterField.MESSAGE
+            else -> null
+        }
 
     override fun onDestroyView() {
         if (isBoundToLogReceiver.get()) {

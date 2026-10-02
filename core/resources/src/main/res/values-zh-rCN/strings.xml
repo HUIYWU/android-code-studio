@@ -934,7 +934,6 @@
   <string name="history_icon">历史记录图标</string>
   <string name="file_status">文件状态</string>
   <string name="file_icon">文件图标</string>
-  <string name="search_logs">搜索日志</string>
   <string name="no_terminal_session">没有终端会话</string>
   <string name="initialize_terminal">初始化终端</string>
   <string name="build_variant">构建变体</string>
