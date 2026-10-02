@@ -42,7 +42,7 @@ class LogLine private constructor() : DefaultRecyclable() {
     return if (formatted)
         String.format(
             "%-25s %-2s %s",
-            LogTagUtils.trimTagIfNeeded(tag, 25),
+            LogTagUtils.trimTagIfNeeded("${tag.orEmpty()}:", 25),
             level?.levelChar ?: 'U',
             message,
         )
@@ -74,13 +74,13 @@ class LogLine private constructor() : DefaultRecyclable() {
   override fun toString(): String {
     return if (formatted)
         String.format(
-            "%s %s %s %s %-2s %-25s %s",
+            "%s %s %5s %5s %-2s %-25s %s",
             date,
             time,
             pid,
             tid,
             level?.levelChar ?: 'U',
-            LogTagUtils.trimTagIfNeeded(tag, 25),
+            LogTagUtils.trimTagIfNeeded("${tag.orEmpty()}:", 25),
             message,
         )
     else unformatted!!
@@ -118,6 +118,8 @@ class LogLine private constructor() : DefaultRecyclable() {
 
   companion object {
 
+    private val logLineRegex = Regex("""^(\S+) +(\S+) +(\d+) +(\d+) +(\S) +(.*)$""")
+
     // do not cache too many LogLine items
     // LogLines should be recycled as soon as they are appended to the log view
     private val logLinePool = newRecyclableObjectPool(capacity = 16, factory = ::LogLine)
@@ -143,21 +145,40 @@ class LogLine private constructor() : DefaultRecyclable() {
       if (log == null) {
         return null
       }
+
       val logLine = logLinePool.obtain()
-      try {
-        val split = log.split("\\s".toRegex(), limit = 7).toTypedArray()
-        logLine.level = ILogger.Level.forChar(split[4][0])
-        logLine.date = split[0]
-        logLine.time = split[1] // time
-        logLine.pid = split[2] // process id
-        logLine.tid = split[3] // thread id
-        logLine.tag = split[5] // tag
-        logLine.message = split[6] // message
-        logLine.formatted = true
-      } catch (th: Throwable) { // do not log the exception with ILogger
-        logLine.unformatted = log
+      logLine.unformatted = log
+
+      val match = logLineRegex.find(log)
+      if (match == null) {
         logLine.formatted = false
+        return logLine
       }
+
+      logLine.date = match.groupValues[1]
+      logLine.time = match.groupValues[2]
+      logLine.pid = match.groupValues[3]
+      logLine.tid = match.groupValues[4]
+
+      val levelChar = match.groupValues[5][0]
+      logLine.level =
+          try {
+            ILogger.Level.forChar(levelChar)
+          } catch (ignored: IllegalArgumentException) {
+            null
+          }
+
+      val body = match.groupValues[6]
+      val separator = body.indexOf(':')
+      if (separator < 0) {
+        logLine.tag = body.trim()
+        logLine.message = ""
+      } else {
+        logLine.tag = body.substring(0, separator).trim()
+        logLine.message = body.substring(separator + 1).removePrefix(" ")
+      }
+
+      logLine.formatted = true
       return logLine
     }
   }
