@@ -181,17 +181,10 @@ class AppLogFragment :
     }
 
     private fun setupMenu() {
-        binding.btnClear.setOnClickListener {
-            clearOutput()
-        }
-
+        binding.btnFilterSystem.contentDescription = systemLogsFilterLabel()
         binding.btnFilterSystem.setOnClickListener {
             toggleSystemLogsFilter()
-            binding.btnFilterSystem.text = if (filterSystemLogs) {
-                getString(R.string.action_show_system_logs)
-            } else {
-                getString(R.string.action_hide_system_logs)
-            }
+            binding.btnFilterSystem.contentDescription = systemLogsFilterLabel()
         }
 
         binding.btnFilterTag.setOnClickListener {
@@ -202,6 +195,15 @@ class AppLogFragment :
             showSearchDialog()
         }
     }
+
+    private fun systemLogsFilterLabel(): CharSequence =
+        getString(
+            if (filterSystemLogs) {
+                R.string.action_show_system_logs
+            } else {
+                R.string.action_hide_system_logs
+            }
+        )
 
     private fun setupEditor() {
         val editor = this.binding.logEditor

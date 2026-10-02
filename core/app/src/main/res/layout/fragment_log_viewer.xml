@@ -15,21 +15,11 @@
         >
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnClear"
+            android:id="@+id/btnFilterSystem"
             android:layout_width="48dp"
             android:layout_height="48dp"
-            android:visibility="gone"
             style="@style/Widget.Material3.Button.IconButton"
-            app:icon="@drawable/ic_clear_all" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterSystem"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            app:icon="@drawable/ic_hide"
-            android:visibility="gone"
-            style="@style/Widget.Material3.Button.IconButton"
-            android:textSize="12sp" />
+            app:icon="@drawable/ic_hide" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnFilterTag"
