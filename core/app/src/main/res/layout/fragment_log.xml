@@ -17,8 +17,52 @@
   ~   along with AndroidIDE.  If not, see <https://www.gnu.org/licenses/>.
   -->
 
-<com.tom.rv2ide.editor.ui.IDEEditor
-  xmlns:android="http://schemas.android.com/apk/res/android"
-  android:id="@+id/editor"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:app="http://schemas.android.com/apk/res-auto"
   android:layout_width="match_parent"
-  android:layout_height="match_parent" />
+  android:layout_height="match_parent"
+  android:orientation="vertical">
+
+  <!-- Toolbar with action buttons -->
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingStart="8dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <com.google.android.material.button.MaterialButton
+      android:id="@+id/btnFilterLog"
+      style="@style/Widget.Material3.Button.IconButton"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      app:icon="@drawable/ic_filter" />
+
+  </LinearLayout>
+
+  <!-- Log editor -->
+  <FrameLayout
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1">
+
+    <com.tom.rv2ide.editor.ui.IDEEditor
+      android:id="@+id/editor"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent" />
+
+    <TextView
+      android:id="@+id/emptyLogMessage"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_gravity="center"
+      android:gravity="center"
+      android:padding="16dp"
+      android:text="@string/msg_emptyview_idelogs"
+      android:visibility="gone" />
+
+  </FrameLayout>
+
+</LinearLayout>

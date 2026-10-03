@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import androidx.appcompat.widget.TooltipCompat
 import androidx.core.view.isVisible
 import com.blankj.utilcode.util.ThreadUtils
 import com.tom.rv2ide.R
@@ -30,6 +31,7 @@ import com.tom.rv2ide.editor.language.treesitter.TreeSitterLanguageProvider
 import com.tom.rv2ide.editor.schemes.IDEColorScheme
 import com.tom.rv2ide.editor.schemes.IDEColorSchemeProvider
 import com.tom.rv2ide.fragments.EmptyStateFragment
+import com.tom.rv2ide.logging.IdeLogEntry
 import com.tom.rv2ide.utils.jetbrainsMono
 import io.github.rosemoe.sora.widget.style.CursorAnimator
 import java.util.concurrent.ArrayBlockingQueue
@@ -85,6 +87,14 @@ abstract class LogViewFragment :
   private var lastLog = -1L
   private var lastTailFollow = 0L
 
+  private val logFilter = LogFilter()
+
+  /**
+   * The log entries shown in the log view. The entries are kept in memory so that the log view can
+   * be re-rendered when the filter changes.
+   */
+  private val entries = ArrayDeque<IdeLogEntry>()
+
   private val cacheLock = ReentrantLock()
   private val cache = StringBuilder()
   private var cacheLineTrack = ArrayBlockingQueue<Int>(MAX_LINE_COUNT, true)
@@ -134,7 +144,24 @@ abstract class LogViewFragment :
         }
       }
 
-  protected fun appendLine(line: String) {
+  /**
+   * Appends the given log entry to the log view if it matches the current filter. The entry is kept
+   * in memory, so that the log view can be re-rendered when the filter changes.
+   */
+  protected fun appendLog(entry: IdeLogEntry) {
+    cacheLock.withLock {
+      entries.addLast(entry)
+      while (entries.size > MAX_LINE_COUNT) {
+        entries.removeFirst()
+      }
+
+      if (logFilter.matches(entry.level, entry.tag, entry.message)) {
+        appendLine(entry.formatted)
+      }
+    }
+  }
+
+  private fun appendLine(line: String) {
     var lineStr = line
     if (!lineStr.endsWith("\n")) {
       lineStr += "\n"
@@ -193,7 +220,7 @@ abstract class LogViewFragment :
         if (wasNearBottom) {
           followTailIfNeeded(editor, content)
         }
-        emptyStateViewModel.isEmpty.value = content.length == 0
+        updateLogsView(content.length > 0)
       }
     }
   }
@@ -317,6 +344,11 @@ abstract class LogViewFragment :
           }
         }
 
+    TooltipCompat.setTooltipText(binding.btnFilterLog, getString(R.string.title_log_filter))
+    binding.btnFilterLog.setOnClickListener {
+      logFilter.showDialog(this) { refreshDisplay() }
+    }
+
     editor.setText("")
     emptyStateViewModel.isEmpty.observe(viewLifecycleOwner) {
       emptyStateBinding?.root?.displayedChild = if (it) 0 else 1
@@ -339,9 +371,47 @@ abstract class LogViewFragment :
     super.onDestroyView()
   }
 
+  /**
+   * Re-renders the log view from the entries collected so far, with the current filter applied.
+   */
+  protected fun refreshDisplay() {
+    val filtered =
+        cacheLock.withLock {
+          logHandler.removeCallbacks(logRunnable)
+          cache.clear()
+          cacheLineTrack.clear()
+          entries.filter { logFilter.matches(it.level, it.tag, it.message) }
+        }
+
+    ThreadUtils.runOnUiThread {
+      val editor = _binding?.editor ?: return@runOnUiThread
+      val content = buildString {
+        filtered.forEach {
+          append(it.formatted)
+          append('\n')
+        }
+      }
+
+      editor.setText(content)
+      updateLogsView(content.isNotEmpty())
+
+      if (content.isNotEmpty()) {
+        editor.postInLifecycle { followTailIfNeeded(editor, editor.text, force = true) }
+      }
+    }
+  }
+
+  private fun updateLogsView(hasLogs: Boolean) {
+    emptyStateViewModel.isEmpty.value = false
+    _binding?.emptyLogMessage?.isVisible = !hasLogs
+    _binding?.editor?.isVisible = hasLogs
+  }
+
   override fun clearOutput() {
-    _binding?.editor?.setText("")
-    emptyStateViewModel.isEmpty.value = true
+    cacheLock.withLock {
+      entries.clear()
+    }
+    refreshDisplay()
   }
 
   override fun getContent(): String {

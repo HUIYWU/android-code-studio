@@ -43,15 +43,14 @@ class IDELogFragment : LogViewFragment() {
 
     if (GeneralPreferences.ideLogsEnabled) {
       setupLogging()
+      refreshDisplay()
     } else {
       showLogsDisabledMessage()
     }
   }
 
   private fun setupLogging() {
-    emptyStateViewModel.emptyMessage.value = getString(R.string.msg_emptyview_idelogs)
-
-    lifecycleAwareAppender.consumer = this::appendLine
+    lifecycleAwareAppender.consumer = this::appendLog
     lifecycleAwareAppender.attachTo(viewLifecycleOwner)
 
     val loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
@@ -65,6 +64,15 @@ class IDELogFragment : LogViewFragment() {
 
   private fun showLogsDisabledMessage() {
     emptyStateViewModel.emptyMessage.value = getString(R.string.msg_ide_logs_disabled)
+    emptyStateViewModel.isEmpty.value = true
+  }
+
+  override fun clearOutput() {
+    super.clearOutput()
+
+    if (!GeneralPreferences.ideLogsEnabled) {
+      showLogsDisabledMessage()
+    }
   }
 
   override fun onDestroy() {

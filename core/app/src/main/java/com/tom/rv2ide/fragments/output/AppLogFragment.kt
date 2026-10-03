@@ -30,9 +30,6 @@ import androidx.appcompat.widget.TooltipCompat
 import androidx.core.view.isVisible
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.blankj.utilcode.util.ThreadUtils
-import com.google.android.material.chip.ChipGroup
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
 import com.tom.rv2ide.R
 import com.tom.rv2ide.databinding.FragmentLogViewerBinding
 import com.tom.rv2ide.editor.language.treesitter.LogLanguage
@@ -77,12 +74,6 @@ class AppLogFragment :
         fun newInstance() = AppLogFragment()
     }
 
-    private enum class FilterField {
-        LEVEL,
-        TAG,
-        MESSAGE,
-    }
-
     private data class AppLogEntry(
         val formatted: String,
         val level: String,
@@ -95,8 +86,7 @@ class AppLogFragment :
     private var logServiceConnection: LogReceiverServiceConnection? = null
     private var logReceiverImpl: LogReceiverImpl? = null
     private var filterSystemLogs = true
-    private var filterText: String? = null
-    private var filterField: FilterField? = null
+    private val logFilter = LogFilter()
 
     private val allLogs = mutableListOf<AppLogEntry>()
 
@@ -198,7 +188,7 @@ class AppLogFragment :
 
         TooltipCompat.setTooltipText(binding.btnFilterLog, getString(R.string.title_log_filter))
         binding.btnFilterLog.setOnClickListener {
-            showLogFilterDialog()
+            logFilter.showDialog(this) { refreshDisplay() }
         }
     }
 
@@ -335,20 +325,7 @@ class AppLogFragment :
             return false
         }
 
-        val query = filterText ?: return true
-        return matchesFilter(log, query)
-    }
-
-    private fun matchesFilter(log: AppLogEntry, query: String): Boolean {
-        val fields =
-            when (filterField) {
-                FilterField.LEVEL -> listOf(log.level)
-                FilterField.TAG -> listOf(log.tag)
-                FilterField.MESSAGE -> listOf(log.message)
-                null -> listOf(log.level, log.tag, log.message)
-            }
-
-        return fields.any { it.contains(query, ignoreCase = true) }
+        return logFilter.matches(log.level, log.tag, log.message)
     }
 
     private fun isSystemLog(log: AppLogEntry): Boolean {
@@ -480,46 +457,6 @@ class AppLogFragment :
             }
         }
     }
-
-    private fun showLogFilterDialog() {
-        val content = layoutInflater.inflate(R.layout.dialog_log_filter, null)
-        val filterInput = content.findViewById<TextInputEditText>(R.id.filterTextInput)
-        val filterGroup = content.findViewById<ChipGroup>(R.id.filterFieldGroup)
-
-        filterInput.setText(filterText.orEmpty())
-        filterField?.let { field -> filterGroup.check(field.chipId()) }
-
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.title_log_filter)
-            .setView(content)
-            .setPositiveButton(R.string.title_apply) { _, _ ->
-                filterText = filterInput.text.toString().trim().ifEmpty { null }
-                filterField = filterFieldFor(filterGroup.checkedChipId)
-                refreshDisplay()
-            }
-            .setNegativeButton(R.string.action_cancel, null)
-            .setNeutralButton(R.string.clear) { _, _ ->
-                filterText = null
-                filterField = null
-                refreshDisplay()
-            }
-            .show()
-    }
-
-    private fun FilterField.chipId(): Int =
-        when (this) {
-            FilterField.LEVEL -> R.id.chipFilterLevel
-            FilterField.TAG -> R.id.chipFilterTag
-            FilterField.MESSAGE -> R.id.chipFilterMessage
-        }
-
-    private fun filterFieldFor(chipId: Int): FilterField? =
-        when (chipId) {
-            R.id.chipFilterLevel -> FilterField.LEVEL
-            R.id.chipFilterTag -> FilterField.TAG
-            R.id.chipFilterMessage -> FilterField.MESSAGE
-            else -> null
-        }
 
     override fun onDestroyView() {
         if (isBoundToLogReceiver.get()) {

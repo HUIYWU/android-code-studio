@@ -182,7 +182,7 @@
   <string name="msg_enable_ide_logs">Show IDE logs</string>
   <string name="title_enable_ide_debug_logs">IDE Debug Logs</string>
   <string name="msg_enable_ide_debug_logs">Show debug/info IDE logs</string>
-  <string name="msg_ide_logs_disabled">Logs are disabled. \nTo re-enable them, navigate to Settings -> Developer Options and check the "IDE logs" switch</string>
+  <string name="msg_ide_logs_disabled">IDE Logs has been disabled. It needs to be enabled in the Preferences.</string>
   <string name="terminal_bstab">Terminal</string>
   <!-- AndroidIDE-R -->
   <string name="discussions_on_qq">Discussions on QQ</string>

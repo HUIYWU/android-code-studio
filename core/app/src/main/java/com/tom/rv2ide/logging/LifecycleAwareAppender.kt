@@ -37,7 +37,7 @@ class LifecycleAwareAppender
 @JvmOverloads
 constructor(
     private val requireLifecycleState: Lifecycle.State = Lifecycle.State.CREATED,
-    var consumer: ((String) -> Unit)? = null,
+    var consumer: ((IdeLogEntry) -> Unit)? = null,
 ) : AppenderBase<ILoggingEvent>(), LifecycleEventObserver {
 
   companion object {
@@ -85,25 +85,35 @@ constructor(
       return
     }
 
-    val prefix = formatPrefix(eventObject)
-    eventObject.formattedMessage.split('\n').forEach { consumer?.invoke("$prefix $it") }
-  }
-
-  private fun formatPrefix(event: ILoggingEvent): String {
-    val date = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT).format(Date(event.timeStamp))
+    val date =
+        SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT).format(Date(eventObject.timeStamp))
+    val level = eventObject.level.levelStr
+    val thread = formatThread(eventObject.threadName)
     val tag =
         LogTagUtils.trimTagIfNeeded(
-            "${loggerNameAbbreviator.abbreviate(event.loggerName)}:",
+            "${loggerNameAbbreviator.abbreviate(eventObject.loggerName)}:",
             TAG_WIDTH,
         )
-    return String.format(
-        Locale.ROOT,
-        "%s %5s %-${THREAD_WIDTH}s %-${TAG_WIDTH}s",
-        date,
-        event.level.levelStr,
-        formatThread(event.threadName),
-        tag,
-    )
+
+    eventObject.formattedMessage.split('\n').forEach { message ->
+      consumer?.invoke(
+          IdeLogEntry(
+              formatted =
+                  String.format(
+                      Locale.ROOT,
+                      "%s %5s %-${THREAD_WIDTH}s %-${TAG_WIDTH}s %s",
+                      date,
+                      level,
+                      thread,
+                      tag,
+                      message,
+                  ),
+              level = level,
+              tag = tag,
+              message = message,
+          )
+      )
+    }
   }
 
   private fun formatThread(threadName: String): String {
