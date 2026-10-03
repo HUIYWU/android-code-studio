@@ -180,17 +180,21 @@ open class LayoutInflaterImpl : ILayoutInflater {
         if (element.name.contains('.')) widgets.getWidget(element.name)
         else widgets.findWidgetWithSimpleName(element.name)
 
-    // TODO(itsaky): Handle views from libraries
     val view: ViewImpl =
-        (if (widget == null) {
+        (if (widget != null) {
+          onCreatePlatformView(widget, parentView, module, widgets)
+        } else if (
+            element.name.contains('.') &&
+                ViewAdapterIndexImpl.INSTANCE.getViewAdapter(element.name) != null
+        ) {
+          onCreateLibraryView(element.name, element.childCount > 0, parentView)
+        } else {
           onCreateUnsupportedView(
               element.name,
               element.childCount > 0,
               "View with name '${element.name}' not found",
               parentView,
           )
-        } else {
-          onCreatePlatformView(widget, parentView, module, widgets)
         })
             as ViewImpl
 
@@ -321,6 +325,24 @@ open class LayoutInflaterImpl : ILayoutInflater {
           widget.qualifiedName,
           widget.type == WidgetType.LAYOUT,
           "Unable to create view for widget ${widget.qualifiedName}",
+          parent,
+      )
+    }
+  }
+
+  protected open fun onCreateLibraryView(
+      name: String,
+      hasChildren: Boolean,
+      parent: ViewGroup,
+  ): IView {
+    return try {
+      val v = createViewInstance(name, parent.context)
+      componentFactory.createView(currentLayoutFile, name, v)
+    } catch (err: Throwable) {
+      onCreateUnsupportedView(
+          name,
+          hasChildren,
+          "Unable to create view for widget $name",
           parent,
       )
     }

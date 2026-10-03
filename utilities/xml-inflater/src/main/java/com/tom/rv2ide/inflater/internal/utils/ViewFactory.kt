@@ -32,29 +32,16 @@ object ViewFactory {
   private val log = LoggerFactory.getLogger(ViewFactory::class.java)
 
   fun createViewInstance(name: String, context: Context): View {
-    println("ViewFactory.createViewInstance called for: $name")
     val adapter = ViewAdapterIndexImpl.INSTANCE.getViewAdapter(name)
-    println("Found adapter for $name: ${adapter?.javaClass?.simpleName}")
     return try {
-      if (adapter != null) {
-        // Check if adapter can create the view instance
-        val view = adapter.onCreateView(name, context)
-        if (view != null) {
-          println("Adapter created view: ${view::class.java.simpleName}")
-          return view
-        } else {
-          println("Adapter.onCreateView returned null for $name")
-        }
-      } else {
-        println("No adapter found for $name")
+      val view = adapter?.onCreateView(name, context)
+      if (view != null) {
+        return view
       }
 
-      println("Falling back to reflection for $name")
       val klass = javaClass.classLoader!!.loadClass(name)
       val constructor = klass.getConstructor(Context::class.java)
-      val view = constructor.newInstance(context) as View
-      println("Reflection created view: ${view::class.java.simpleName}")
-      view
+      constructor.newInstance(context) as View
     } catch (err: Throwable) {
       log.error("Failed to create view instance for view: {}", name, err)
       throw RuntimeException(err)

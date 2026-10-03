@@ -33,6 +33,8 @@ dependencies {
   ksp(projects.annotation.processorsKsp)
 
   implementation(libs.androidx.appcompat)
+  implementation(libs.androidx.constraintlayout)
+  implementation(libs.google.material)
   implementation(libs.common.kotlin)
   implementation(libs.common.utilcode)
 
