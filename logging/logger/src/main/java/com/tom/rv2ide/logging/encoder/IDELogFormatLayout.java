@@ -33,15 +33,6 @@ import java.util.Locale;
 public class IDELogFormatLayout extends LayoutBase<ILoggingEvent> {
 
   private final Abbreviator loggerNameAbbreviator = new ClassNameOnlyAbbreviator();
-  private boolean omitMessage = false;
-
-  public void setOmitMessage(boolean omitMessage) {
-    this.omitMessage = omitMessage;
-  }
-
-  public boolean isOmitMessage() {
-    return omitMessage;
-  }
 
   @Override
   public String doLayout(ILoggingEvent event) {
@@ -59,11 +50,8 @@ public class IDELogFormatLayout extends LayoutBase<ILoggingEvent> {
     builder.append(' ');
     builder.append(loggerNameAbbreviator.abbreviate(event.getLoggerName()));
     builder.append(": ");
-
-    if (!isOmitMessage()) {
-      builder.append(event.getFormattedMessage());
-      builder.append(System.lineSeparator());
-    }
+    builder.append(event.getFormattedMessage());
+    builder.append(System.lineSeparator());
 
     return builder.toString();
   }

@@ -81,6 +81,6 @@ public class ThreadTimeEncoder extends EncoderBase<ILoggingEvent> {
       return -1;
     }
 
-    return android.os.Process.myUid();
+    return android.os.Process.myPid();
   }
 }

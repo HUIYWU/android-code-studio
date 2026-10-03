@@ -20,10 +20,13 @@ package com.tom.rv2ide.logging
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import ch.qos.logback.classic.pattern.ClassNameOnlyAbbreviator
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.AppenderBase
-import ch.qos.logback.core.Context
-import com.tom.rv2ide.logging.encoder.IDELogFormatLayout
+import com.tom.rv2ide.utils.LogTagUtils
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * An [AppenderBase] implementation to show the logs in the GUI.
@@ -37,12 +40,16 @@ constructor(
     var consumer: ((String) -> Unit)? = null,
 ) : AppenderBase<ILoggingEvent>(), LifecycleEventObserver {
 
+  companion object {
+    private const val THREAD_WIDTH = 35
+    private const val TAG_WIDTH = 25
+  }
+
   private var currentState: Lifecycle.State? = null
-  private val logLayout = IDELogFormatLayout()
+  private val loggerNameAbbreviator = ClassNameOnlyAbbreviator()
 
   init {
     setName("LifecycleAwareAppender")
-    logLayout.isOmitMessage = true
   }
 
   fun attachTo(lifecycleOwner: LifecycleOwner) = attachTo(lifecycleOwner.lifecycle)
@@ -68,20 +75,9 @@ constructor(
         consumer != null)
   }
 
-  override fun start() {
-    this.logLayout.start()
-    super.start()
-  }
-
   override fun stop() {
     super.stop()
-    this.logLayout.stop()
     this.consumer = null
-  }
-
-  override fun setContext(context: Context?) {
-    super.setContext(context)
-    this.logLayout.context = context
   }
 
   override fun append(eventObject: ILoggingEvent?) {
@@ -89,10 +85,32 @@ constructor(
       return
     }
 
-    // When rendering the logs in the GUI, we need to ensure that the message does not span multiple
-    // lines
-    // if it does, we need to prefix the message with the layout header
-    val prefix = logLayout.doLayout(eventObject)
+    val prefix = formatPrefix(eventObject)
     eventObject.formattedMessage.split('\n').forEach { consumer?.invoke("$prefix $it") }
+  }
+
+  private fun formatPrefix(event: ILoggingEvent): String {
+    val date = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.ROOT).format(Date(event.timeStamp))
+    val tag =
+        LogTagUtils.trimTagIfNeeded(
+            "${loggerNameAbbreviator.abbreviate(event.loggerName)}:",
+            TAG_WIDTH,
+        )
+    return String.format(
+        Locale.ROOT,
+        "%s %5s %-${THREAD_WIDTH}s %-${TAG_WIDTH}s",
+        date,
+        event.level.levelStr,
+        formatThread(event.threadName),
+        tag,
+    )
+  }
+
+  private fun formatThread(threadName: String): String {
+    val thread = "[$threadName]"
+    if (thread.length <= THREAD_WIDTH) {
+      return thread
+    }
+    return "[${threadName.substring(0, THREAD_WIDTH - 2)}]"
   }
 }

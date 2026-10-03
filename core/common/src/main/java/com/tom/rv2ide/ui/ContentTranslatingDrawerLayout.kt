@@ -245,7 +245,6 @@ class ContentTranslatingDrawerLayout : InterceptableDrawerLayout {
         }
 
         override fun onDrawerOpened(drawerView: View) {
-          // TODO(DRAWER-GRAVITY-EXPERIMENT): restrict start-drawer lock handling to the start drawer
           if (
               Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
                   drawerView === findDrawerWithGravityCompat()
@@ -259,7 +258,6 @@ class ContentTranslatingDrawerLayout : InterceptableDrawerLayout {
         }
 
         override fun onDrawerClosed(drawerView: View) {
-          // TODO(DRAWER-GRAVITY-EXPERIMENT): restrict start-drawer lock handling to the start drawer
           if (
               Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
                   drawerView === findDrawerWithGravityCompat()

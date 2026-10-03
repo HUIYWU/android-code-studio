@@ -38,22 +38,6 @@ class LogLine private constructor() : DefaultRecyclable() {
     resetToDefault()
   }
 
-  fun toSimpleString(): String {
-    return if (formatted)
-        String.format(
-            "%-25s %-2s %s",
-            LogTagUtils.trimTagIfNeeded("${tag.orEmpty()}:", 25),
-            level?.levelChar ?: 'U',
-            message,
-        )
-    else unformatted!!
-  }
-
-  fun formattedTagAndMessage(): String {
-    return if (formatted) String.format("%-25s %-2s", LogTagUtils.trimTagIfNeeded(tag, 25), message)
-    else unformatted!!
-  }
-
   private fun resetToDefault() {
     message = null
     tag = null

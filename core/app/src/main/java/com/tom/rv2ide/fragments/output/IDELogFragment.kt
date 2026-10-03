@@ -17,16 +17,14 @@
 
 package com.tom.rv2ide.fragments.output
 
-import android.content.SharedPreferences
 import android.os.Bundle
 import android.view.View
 import androidx.lifecycle.Lifecycle
-import androidx.preference.PreferenceManager
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.LoggerContext
 import com.tom.rv2ide.R
 import com.tom.rv2ide.logging.LifecycleAwareAppender
-import com.tom.rv2ide.resources.R.string
+import com.tom.rv2ide.preferences.internal.GeneralPreferences
 import org.slf4j.LoggerFactory
 
 /**
@@ -37,22 +35,13 @@ import org.slf4j.LoggerFactory
 class IDELogFragment : LogViewFragment() {
 
   private val lifecycleAwareAppender = LifecycleAwareAppender(Lifecycle.State.CREATED)
-  private lateinit var sharedPreferences: SharedPreferences
-  private val logsEnabledKey = "idepref_ide_logs_enabled"
-
-  override fun isSimpleFormattingEnabled() = true
 
   override fun getFilename() = "ide_logs"
 
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
     super.onViewCreated(view, savedInstanceState)
 
-    // Initialize SharedPreferences
-    sharedPreferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
-
-    val areLogsEnabled = sharedPreferences.getBoolean(logsEnabledKey, false) // Default to false
-
-    if (areLogsEnabled) {
+    if (GeneralPreferences.ideLogsEnabled) {
       setupLogging()
     } else {
       showLogsDisabledMessage()
@@ -76,7 +65,6 @@ class IDELogFragment : LogViewFragment() {
 
   private fun showLogsDisabledMessage() {
     emptyStateViewModel.emptyMessage.value = getString(R.string.msg_ide_logs_disabled)
-    // clearLogs()
   }
 
   override fun onDestroy() {

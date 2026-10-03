@@ -30,8 +30,6 @@ import com.tom.rv2ide.editor.language.treesitter.TreeSitterLanguageProvider
 import com.tom.rv2ide.editor.schemes.IDEColorScheme
 import com.tom.rv2ide.editor.schemes.IDEColorSchemeProvider
 import com.tom.rv2ide.fragments.EmptyStateFragment
-import com.tom.rv2ide.models.LogLine
-import com.tom.rv2ide.utils.ILogger.Level
 import com.tom.rv2ide.utils.jetbrainsMono
 import io.github.rosemoe.sora.widget.style.CursorAnimator
 import java.util.concurrent.ArrayBlockingQueue
@@ -135,20 +133,6 @@ abstract class LogViewFragment :
           }
         }
       }
-
-  fun appendLog(line: LogLine) {
-
-    val lineString =
-        if (isSimpleFormattingEnabled()) {
-          line.toSimpleString()
-        } else {
-          line.toString()
-        }
-
-    line.recycle()
-
-    appendLine(lineString)
-  }
 
   protected fun appendLine(line: String) {
     var lineStr = line
@@ -265,13 +249,6 @@ abstract class LogViewFragment :
     val lastColumn = content.getColumnCount(lastLine)
     editor.ensurePositionVisible(lastLine, lastColumn, true)
     lastTailFollow = now
-  }
-
-  abstract fun isSimpleFormattingEnabled(): Boolean
-
-  protected open fun logLine(level: Level, tag: String, message: String) {
-    val line = LogLine.obtain(level, tag, message)
-    appendLog(line)
   }
 
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
