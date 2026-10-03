@@ -245,7 +245,11 @@ class ContentTranslatingDrawerLayout : InterceptableDrawerLayout {
         }
 
         override fun onDrawerOpened(drawerView: View) {
-          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          // TODO(DRAWER-GRAVITY-EXPERIMENT): restrict start-drawer lock handling to the start drawer
+          if (
+              Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                  drawerView === findDrawerWithGravityCompat()
+          ) {
             backCloseAnimator?.cancel()
             backProgress = 0f
             // Prevent DrawerLayout's own API 33 callback from racing the custom callback.
@@ -255,7 +259,11 @@ class ContentTranslatingDrawerLayout : InterceptableDrawerLayout {
         }
 
         override fun onDrawerClosed(drawerView: View) {
-          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          // TODO(DRAWER-GRAVITY-EXPERIMENT): restrict start-drawer lock handling to the start drawer
+          if (
+              Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                  drawerView === findDrawerWithGravityCompat()
+          ) {
             unregisterBackAnimationCallback()
             // The predictive-back callback temporarily translates the drawer itself. Clear that
             // visual offset only after DrawerLayout has committed the closed state.
