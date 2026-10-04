@@ -553,6 +553,7 @@
   <string name="action_hide_system_logs">隐藏系统日志</string>
   <string name="msg_emptyview_diagnostics">打开文件以显示其诊断结果</string>
   <string name="msg_emptyview_buildoutput">"构建应用或运行任务以在此处查看其构建输出。"</string>
+  <string name="msg_emptyview_modules">项目模块将在初始化完成后显示。</string>
   <string name="msg_codeaction_failed">无法执行代码操作</string>
   <string name="idepref_devOptions_enableLogsender_title">启用 LogSender</string>
   <string name="idepref_devOptions_enableLogsender_summary">显示应用日志</string>
@@ -1097,19 +1098,7 @@
   <string name="skip_for_1_min">跳过 1 分钟</string>
   <string name="update_all">全部更新</string>
   <string name="module_manager_title">模块管理</string>
-  <string name="module_manager_subtitle">创建和管理项目模块</string>
   <string name="module_manager_configuration">模块配置</string>
-  <string name="module_manager_language">编程语言</string>
-  <string name="module_manager_kotlin">Kotlin</string>
-  <string name="module_manager_java">Java</string>
-  <string name="module_manager_name_hint">输入模块名称（例如 feature、utils）</string>
-  <string name="module_manager_name_valid">模块名称有效</string>
-  <string name="module_manager_name_invalid">模块名称无效</string>
-  <string name="module_manager_create">创建模块</string>
-  <string name="module_manager_created_success">模块“%1$s”创建成功！</string>
-  <string name="module_manager_created_error">创建模块失败：%1$s</string>
-  <string name="module_manager_info_title">关于模块</string>
-  <string name="module_manager_info_description">模块可帮助你将项目组织为更小、更易管理的组件。每个模块都可以拥有自己的依赖项和构建配置。</string>
   <string name="close">关闭</string>
   <string name="module_manager_wizard_title">新建模块</string>
   <string name="module_manager_type_android_library">Android 库</string>

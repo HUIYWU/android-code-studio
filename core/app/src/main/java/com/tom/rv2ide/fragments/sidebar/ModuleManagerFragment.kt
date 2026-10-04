@@ -147,7 +147,7 @@ class ModuleManagerFragment : Fragment() {
     super.onViewCreated(view, savedInstanceState)
     useKotlinDsl = usesKotlinSettings(projectRoot())
     binding.addModule.setOnClickListener { loadApplicationProjectsAndShowWizard() }
-    binding.moduleEmptyState.message = "Project modules will appear after initialization finishes."
+    binding.moduleEmptyState.message = getString(R.string.msg_emptyview_modules)
     editorViewModel._isInitializing.observe(viewLifecycleOwner) { initializing ->
       binding.addModule.isEnabled = !initializing
       if (refreshAfterSync && !initializing) {

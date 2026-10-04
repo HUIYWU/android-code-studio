@@ -9,7 +9,7 @@
         android:id="@+id/module_empty_state"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_margin="32dp"
+        android:layout_margin="@dimen/content_padding_double"
         android:background="?attr/colorSurface"
         android:clickable="false"
         android:focusable="false" />
