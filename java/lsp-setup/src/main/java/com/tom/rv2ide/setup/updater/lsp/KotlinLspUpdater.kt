@@ -76,6 +76,12 @@ class KotlinLspUpdater(private val context: Context) {
      * and the second parameter contains the remote version string if available.
      */
     fun checkForUpdates(currentVersion: String, onResult: ((Boolean, String?) -> Unit)? = null) {
+        val activeBackend = LSPPreferences.kotlinLspBackend.trim().lowercase()
+        if (activeBackend == LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS) {
+            onResult?.invoke(false, null)
+            return
+        }
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val jsonString = URL(manifestUrl).readText()
@@ -152,6 +158,7 @@ class KotlinLspUpdater(private val context: Context) {
     private fun activeBackendManifestId(): String {
         return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
             LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> "stub"
+            LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> "analysis"
             else -> "fwcd"
         }
     }
@@ -285,6 +292,7 @@ class KotlinLspUpdater(private val context: Context) {
 
         return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
             LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> File(Environment.SERVERS_KOTLIN_DIR, "stub")
+            LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> File(Environment.SERVERS_KOTLIN_DIR, "analysis")
             else -> File(Environment.SERVERS_KOTLIN_DIR, "fwcd")
         }
     }
@@ -352,6 +360,7 @@ class KotlinLspUpdater(private val context: Context) {
     private fun kotlinVersionPropertyKey(): String {
         return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
             LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> "KotlinLspVersion.stub"
+            LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> "KotlinLspVersion.analysis"
             else -> "KotlinLspVersion.fwcd"
         }
     }
@@ -359,6 +368,7 @@ class KotlinLspUpdater(private val context: Context) {
     private fun kotlinBackendDisplayName(): String {
         return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
             LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> "Kotlin language server (stub)"
+            LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> "Kotlin language server (Analysis API)"
             else -> "Kotlin language server (fwcd)"
         }
     }

@@ -41,6 +41,7 @@ object LSPProperties {
             return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
                 LSPPreferences.KOTLIN_LSP_BACKEND_STUB ->
                     readPropertyValue(Environment.ACSIDE.toString(), "KotlinLspVersion.stub", false) ?: "stub"
+                LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> "bundled"
                 else ->
                     readPropertyValue(Environment.ACSIDE.toString(), "KotlinLspVersion.fwcd", false) ?: "unknown"
             }

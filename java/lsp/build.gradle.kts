@@ -17,6 +17,7 @@
 
 import com.tom.rv2ide.build.config.BuildConfig
 import org.gradle.api.tasks.testing.Test
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 
 plugins {
@@ -24,6 +25,14 @@ plugins {
   id("kotlin-android")
   id("kotlin-kapt")
 }
+
+// TODO(ACS-KT-ANALYSIS-EXPERIMENT): spike gating for the in-process Kotlin Analysis API engine.
+//  The engine jar is only packaged when -Pacs.kt.analysis.spike=true is passed; the default
+//  build ships the backend sources without the engine.
+val ktAnalysisSpikeEnabled =
+    providers.gradleProperty("acs.kt.analysis.spike").getOrElse("false") == "true"
+val ktAnalysisEngineJar =
+    rootProject.file("docs/misc/kotlin-android/analysis-api-standalone-embeddable-for-ide-2.3.255-SNAPSHOT.jar")
 
 android {
   namespace = "${BuildConfig.packageName}.lsp.java"
@@ -41,6 +50,12 @@ android {
     resources.pickFirsts += "kotlin/*.kotlin_builtins"
     resources.pickFirsts += "kotlin/*/*.kotlin_builtins"
   }
+}
+
+tasks.withType<KotlinCompile>().configureEach {
+  // TODO(ACS-KT-ANALYSIS-EXPERIMENT): the spike compiles against the Kotlin 2.3.x analysis engine jar
+  //  while the module toolchain stays on 2.1.0.
+  compilerOptions { freeCompilerArgs.add("-Xskip-metadata-version-check") }
 }
 
 tasks.withType<Test>().configureEach {
@@ -109,12 +124,37 @@ dependencies {
   implementation(libs.common.kotlin)
   
   // Kotlin compiler for Kotlin LSP
-  implementation(libs.kotlin.compiler.embeddable)
-  implementation(libs.kotlin.scripting.compiler.embeddable)
+  if (ktAnalysisSpikeEnabled) {
+    // TODO(ACS-KT-ANALYSIS-EXPERIMENT): the spike build ships the analysis engine as the only
+    //  provider of org.jetbrains.kotlin.* classes; the embeddables stay test-only so they no
+    //  longer collide with the engine at packaging time.
+    testImplementation(libs.kotlin.compiler.embeddable)
+    testImplementation(libs.kotlin.scripting.compiler.embeddable)
+  } else {
+    implementation(libs.kotlin.compiler.embeddable)
+    implementation(libs.kotlin.scripting.compiler.embeddable)
+  }
   implementation(libs.asm)
+
+  // TODO(ACS-KT-ANALYSIS-EXPERIMENT): compileOnly keeps the default APK free of the analysis
+  //  engine; it is only packaged when -Pacs.kt.analysis.spike=true is passed.
+  compileOnly(files(ktAnalysisEngineJar))
+  if (ktAnalysisSpikeEnabled) {
+    runtimeOnly(files(ktAnalysisEngineJar))
+  }
   
   // LSP4J dependencies for kotlin-language-server integration
   implementation(libs.org.eclipse.lsp4j.lsp4j)
   implementation(libs.org.eclipse.lsp4j.jsonrpc)
 
+}
+
+if (ktAnalysisSpikeEnabled) {
+  // TODO(ACS-KT-ANALYSIS-EXPERIMENT): keep any transient kotlin-reflect off the production
+  //  runtime classpaths; the analysis engine already provides kotlin/reflect classes.
+  configurations
+      .matching { it.name.endsWith("RuntimeClasspath") && !it.name.contains("UnitTest") }
+      .configureEach {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
+      }
 }

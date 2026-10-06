@@ -181,7 +181,7 @@ private class KotlinLSP(
     ) {
 
   override fun onRequestDownload(context: android.content.Context, serverId: String) {
-    if (serverId == "stub") {
+    if (serverId == "stub" || serverId == "analysis") {
       Toast.makeText(context, context.getString(string.status_installed), Toast.LENGTH_SHORT).show()
       return
     }
@@ -189,7 +189,7 @@ private class KotlinLSP(
   }
 
   override fun onRequestUninstall(context: android.content.Context, serverId: String) {
-    if (serverId == "stub") {
+    if (serverId == "stub" || serverId == "analysis") {
       Toast.makeText(context, context.getString(string.status_installed), Toast.LENGTH_SHORT).show()
       return
     }
@@ -242,6 +242,11 @@ private class KotlinBackend(
             "Stub/NA",
             LSPPreferences.kotlinLspBackend == LSPPreferences.KOTLIN_LSP_BACKEND_STUB,
             LSPPreferences.KOTLIN_LSP_BACKEND_STUB,
+        ),
+        PreferenceChoices.Entry(
+            "Analysis API",
+            LSPPreferences.kotlinLspBackend == LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS,
+            LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS,
         ),
     )
   }
@@ -365,6 +370,7 @@ private fun getStatus(installed: Boolean): String {
 private fun activeKotlinBackendId(): KotlinLspBackendId {
   return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
     LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> KotlinLspBackendId.STUB
+    LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> KotlinLspBackendId.ANALYSIS
     else -> KotlinLspBackendId.FWCD
   }
 }
@@ -373,6 +379,7 @@ private fun activeKotlinBackendManifestId(): String =
     when (activeKotlinBackendId()) {
       KotlinLspBackendId.FWCD -> "fwcd"
       KotlinLspBackendId.STUB -> "stub"
+      KotlinLspBackendId.ANALYSIS -> "analysis"
     }
 
 private fun isActiveKotlinBackendInstalled(): Boolean =
@@ -380,6 +387,7 @@ private fun isActiveKotlinBackendInstalled(): Boolean =
     when (activeKotlinBackendId()) {
       KotlinLspBackendId.FWCD -> isDirectoryInstalled(File(Environment.SERVERS_KOTLIN_DIR, "fwcd"))
       KotlinLspBackendId.STUB -> true
+      KotlinLspBackendId.ANALYSIS -> true
     }
 
 private fun isDirectoryInstalled(dir: File): Boolean {

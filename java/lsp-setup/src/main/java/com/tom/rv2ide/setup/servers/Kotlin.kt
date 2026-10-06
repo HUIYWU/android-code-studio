@@ -63,6 +63,7 @@ class Kotlin(private val context: Context) : ILanguageServerInstaller {
 
     return when (backendId) {
       "stub" -> true
+      "analysis" -> true
       else -> hasLauncher
     }
   }
@@ -73,6 +74,12 @@ class Kotlin(private val context: Context) : ILanguageServerInstaller {
       
       val manifest = json.decodeFromString<Manifest>(URL(MANIFEST_URL).readText())
       val backendId = activeBackendManifestId()
+
+      if (backendId == "analysis") {
+        onOutput("Analysis API backend does not use the download-based installer.")
+        return true
+      }
+
       val server = selectServerItem(manifest, backendId)
       val downloadLink = server?.artifact?.url ?: server?.link
       val version = server?.version
@@ -190,6 +197,11 @@ class Kotlin(private val context: Context) : ILanguageServerInstaller {
       val backendId = activeBackendManifestId()
       onOutput("Resolving Kotlin language server installation...")
 
+      if (backendId == "analysis") {
+        onOutput("Analysis API backend does not require uninstall.")
+        return true
+      }
+
       if (backendId == "stub") {
         onOutput("Stub backend does not require uninstall.")
         return true
@@ -231,6 +243,7 @@ class Kotlin(private val context: Context) : ILanguageServerInstaller {
   private fun activeBackendManifestId(): String =
       when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
         LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> "stub"
+        LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> "analysis"
         else -> "fwcd"
       }
 

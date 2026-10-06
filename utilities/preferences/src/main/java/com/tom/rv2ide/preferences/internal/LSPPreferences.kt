@@ -29,6 +29,7 @@ object LSPPreferences {
 
   const val KOTLIN_LSP_BACKEND_FWCD = "fwcd"
   const val KOTLIN_LSP_BACKEND_STUB = "stub"
+  const val KOTLIN_LSP_BACKEND_ANALYSIS = "analysis"
   const val DEFAULT_KOTLIN_LSP_BACKEND = KOTLIN_LSP_BACKEND_FWCD
 
   var codeFormatStyle: String
@@ -57,6 +58,7 @@ object LSPPreferences {
           when (stored.trim().lowercase()) {
             KOTLIN_LSP_BACKEND_FWCD -> KOTLIN_LSP_BACKEND_FWCD
             KOTLIN_LSP_BACKEND_STUB -> KOTLIN_LSP_BACKEND_STUB
+            KOTLIN_LSP_BACKEND_ANALYSIS -> KOTLIN_LSP_BACKEND_ANALYSIS
             else -> DEFAULT_KOTLIN_LSP_BACKEND
           }
 

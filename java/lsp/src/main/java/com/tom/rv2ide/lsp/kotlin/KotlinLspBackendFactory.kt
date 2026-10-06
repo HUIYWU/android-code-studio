@@ -17,6 +17,8 @@
 package com.tom.rv2ide.lsp.kotlin
 
 import android.content.Context
+import com.tom.rv2ide.lsp.kotlin.analysis.KotlinAnalysisBackendConfigurator
+import com.tom.rv2ide.lsp.kotlin.analysis.KotlinAnalysisLspConnection
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 
 /**
@@ -25,16 +27,17 @@ import com.tom.rv2ide.preferences.internal.LSPPreferences
  * Available concrete backends currently include:
  * - [KotlinLspBackendId.FWCD] for fwcd/kotlin-language-server
  * - [KotlinLspBackendId.STUB] for a no-op structural placeholder
+ * - [KotlinLspBackendId.ANALYSIS] for the in-process Kotlin Analysis API engine
  */
 object KotlinLspBackendFactory {
   private fun activeBackendId(): KotlinLspBackendId {
     return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
       LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> KotlinLspBackendId.STUB
+      LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> KotlinLspBackendId.ANALYSIS
       else -> KotlinLspBackendId.FWCD
     }
   }
 
-  @Suppress("UNUSED_PARAMETER")
   fun createSpec(context: Context): KotlinLspBackendSpec {
     return when (activeBackendId()) {
       KotlinLspBackendId.FWCD ->
@@ -48,6 +51,12 @@ object KotlinLspBackendFactory {
               id = KotlinLspBackendId.STUB,
               connection = StubKotlinLspConnection(context),
               configurator = StubKotlinLspBackendConfigurator,
+          )
+      KotlinLspBackendId.ANALYSIS ->
+          KotlinLspBackendSpec(
+              id = KotlinLspBackendId.ANALYSIS,
+              connection = KotlinAnalysisLspConnection(context.applicationInfo.sourceDir),
+              configurator = KotlinAnalysisBackendConfigurator,
           )
     }
   }

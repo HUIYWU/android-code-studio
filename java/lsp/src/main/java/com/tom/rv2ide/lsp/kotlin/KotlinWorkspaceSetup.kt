@@ -109,7 +109,6 @@ class KotlinWorkspaceSetup(
     }
 
     val initParams = createInitParams(workspaceRoot)
-    logInitializeSummary(initParams)
 
     KslLogs.debugThrottled("kls:init-request", 5000L, "Sending initialize request...")
 
@@ -126,79 +125,6 @@ class KotlinWorkspaceSetup(
       }
     }
   }
-  private fun summarizeJsonKeys(obj: JsonObject?): String {
-    if (obj == null || obj.entrySet().isEmpty()) return "[]"
-    return obj.entrySet().map { it.key }.sorted().joinToString(prefix = "[", postfix = "]")
-  }
-
-  private fun summarizeJsonArrayStrings(array: JsonArray?, limit: Int = 5): String {
-    if (array == null || array.size() == 0) return "[]"
-    val values =
-        array.mapNotNull { element ->
-          runCatching {
-                when {
-                  element.isJsonPrimitive -> element.asString
-                  element.isJsonObject -> {
-                    val obj = element.asJsonObject
-                    obj.get("name")?.asString ?: obj.get("uri")?.asString ?: obj.toString()
-                  }
-                  else -> element.toString()
-                }
-              }
-              .getOrNull()
-        }
-    if (values.isEmpty()) return "[]"
-    val shown = values.take(limit)
-    return shown.joinToString(prefix = "[", postfix = if (values.size > limit) ", ...]" else "]")
-  }
-
-  private fun logInitializeSummary(params: JsonObject) {
-    val workspaceFolders = params.getAsJsonArray("workspaceFolders")
-    val initOptions = params.getAsJsonObject("initializationOptions")
-    val scripts = initOptions?.getAsJsonObject("scripts")
-    val completion = initOptions?.getAsJsonObject("completion")
-    val classpathCount = initOptions?.getAsJsonArray("classpath")?.size() ?: 0
-    val javaSourceRoots = initOptions?.getAsJsonArray("javaSourceRoots")
-    val javaSourceRootCount = javaSourceRoots?.size() ?: 0
-    val snippetsEnabled =
-        completion
-            ?.getAsJsonObject("snippets")
-            ?.get("enabled")
-            ?.takeIf { !it.isJsonNull }
-            ?.asBoolean
-    KslLogs.debug(
-        "KLS TRACE init.send backend={} rootUri={} rootPath={} workspaceFolders={} initOptionKeys={} classpathCount={} javaSourceRootCount={} javaSourceRootsPreview={} scriptsEnabled={} buildScriptsEnabled={} usePredefinedClasspath={} disableDependencyResolution={} indexing={} externalSources={} snippetsEnabled={} capabilitiesKeys={}",
-        backendId.name.lowercase(),
-        params.get("rootUri")?.asString ?: "",
-        params.get("rootPath")?.asString ?: "",
-        summarizeJsonArrayStrings(workspaceFolders),
-        summarizeJsonKeys(initOptions),
-        classpathCount,
-        javaSourceRootCount,
-        summarizeJsonArrayStrings(javaSourceRoots),
-        scripts?.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean,
-        scripts?.get("buildScriptsEnabled")?.takeIf { !it.isJsonNull }?.asBoolean,
-        initOptions?.get("usePredefinedClasspath")?.takeIf { !it.isJsonNull }?.asBoolean,
-        initOptions?.get("disableDependencyResolution")?.takeIf { !it.isJsonNull }?.asBoolean,
-        initOptions?.get("indexing")?.takeIf { !it.isJsonNull }?.asString,
-        initOptions?.get("externalSources")?.takeIf { !it.isJsonNull }?.asString,
-        snippetsEnabled,
-        summarizeJsonKeys(params.getAsJsonObject("capabilities")),
-    )
-  }
-  private fun logDidChangeConfigurationSummary(source: String, params: JsonObject) {
-    val settings = params.getAsJsonObject("settings")
-    val settingsKeys = summarizeJsonKeys(settings)
-    KslLogs.debug(
-        "KLS TRACE didChangeConfiguration.send backend={} source={} settingsKeys={} settingsEmpty={}"
-        ,
-        backendId.name.lowercase(),
-        source,
-        settingsKeys,
-        settings == null || settings.entrySet().isEmpty(),
-    )
-  }
-
   private fun sha256Hex(lines: Collection<String>): String {
     val digest = MessageDigest.getInstance("SHA-256")
     val content = lines.map { it.trim() }.filter { it.isNotEmpty() }.sorted().joinToString("\n")
@@ -587,15 +513,14 @@ class KotlinWorkspaceSetup(
   }
 
 
-  private fun sendFwcdRuntimeConfig(processManager: KotlinLspConnection, source: String) {
+  private fun sendFwcdRuntimeConfig(processManager: KotlinLspConnection) {
     val configParams = createFwcdRuntimeConfig()
-    logDidChangeConfigurationSummary(source, configParams)
     processManager.sendNotification("workspace/didChangeConfiguration", configParams)
   }
 
   private fun restoreCachedIndex(processManager: KotlinLspConnection, showStartupBanner: Boolean) {
     if (!showStartupBanner) {
-      sendFwcdRuntimeConfig(processManager, "restoreCachedIndex:noKotlinSources")
+      sendFwcdRuntimeConfig(processManager)
       return
     }
 
@@ -610,7 +535,6 @@ class KotlinWorkspaceSetup(
       // remains enabled so completion, standard-library symbols and diagnostics stay correct.
       val configParams = createFwcdRuntimeConfig()
 
-      logDidChangeConfigurationSummary("restoreCachedIndex", configParams)
       processManager.sendNotification("workspace/didChangeConfiguration", configParams)
       KslLogs.infoThrottled(
           "kls:restore-cache-success",
@@ -637,7 +561,7 @@ class KotlinWorkspaceSetup(
   ) {
     KslLogs.infoThrottled("kls:trigger-indexing", 3000L, "Triggering classpath indexing...")
     if (!showStartupBanner) {
-      sendFwcdRuntimeConfig(processManager, "triggerIndexing:noKotlinSources")
+      sendFwcdRuntimeConfig(processManager)
       return
     }
 
@@ -646,7 +570,6 @@ class KotlinWorkspaceSetup(
 
     val configParams = createFwcdRuntimeConfig()
 
-    logDidChangeConfigurationSummary("triggerIndexing", configParams)
     processManager.sendNotification("workspace/didChangeConfiguration", configParams)
 
     // Request symbols to warm up and cache the index
@@ -962,7 +885,7 @@ class KotlinWorkspaceSetup(
           add("initializationOptions", initOptions)
 
           KslLogs.debugThrottled("kls:configured-classpath-count", 5000L, "Configured KLS with {} classpath entries", effectiveClassPaths.size)
-          KslLogs.debugThrottled("kls:configured-java-source-roots", 5000L, "Configured KLS with {} java source roots: {}", javaSourceRoots.size, summarizeJsonArrayStrings(javaSourceRootsArray))
+          KslLogs.debugThrottled("kls:configured-java-source-roots", 5000L, "Configured KLS with {} java source roots", javaSourceRoots.size)
         }
 
     KslLogs.debugThrottled("kls:init-params-created", 5000L, "Full init params created with script support and formatting")

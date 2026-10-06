@@ -20,7 +20,6 @@ package com.tom.rv2ide.lsp.kotlin
 import com.google.gson.JsonObject
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
-import org.slf4j.LoggerFactory
 
 /*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
@@ -34,34 +33,21 @@ class KotlinDocumentManager(
       val file: Path,
       val uri: String,
       val text: String,
+      val version: Int,
       val queuedAtMs: Long,
   )
 
 
   companion object {
     private const val INITIAL_DID_SAVE_DELAY_MS = 1000L
-    private val log = LoggerFactory.getLogger(KotlinDocumentManager::class.java)
   }
   private val openedDocuments = ConcurrentHashMap.newKeySet<String>()
   private val documentVersions = ConcurrentHashMap<String, Int>()
   private val pendingOpenDocuments = ConcurrentHashMap<String, PendingOpenDocument>()
 
-  private fun textLength(text: String?): Int = text?.length ?: -1
-
-
-  fun ensureDocumentOpen(file: Path, content: String? = null) {
+  fun ensureDocumentOpen(file: Path, content: String? = null, version: Int? = null) {
     val uri = file.toUri().toString()
     if (openedDocuments.contains(uri)) {
-      if (getDocumentVersion(uri) <= 0) {
-        setDocumentVersion(uri, 1)
-      }
-      KslLogs.debugThrottled(
-          "kls:didOpen-skip:${uri}",
-          1500L,
-          "KLS TRACE didOpen.skip.alreadyOpened uri={} version={}",
-          uri,
-          getDocumentVersion(uri),
-      )
       return
     }
 
@@ -74,29 +60,21 @@ class KotlinDocumentManager(
               return
             }
 
+    val requestedVersion = version ?: (getDocumentVersion(uri) + 1).coerceAtLeast(1)
+
     if (!isServerReady()) {
       pendingOpenDocuments[uri] =
           PendingOpenDocument(
               file = file,
               uri = uri,
               text = text,
+              version = requestedVersion,
               queuedAtMs = android.os.SystemClock.elapsedRealtime(),
           )
-      KslLogs.debug(
-          "KLS TRACE didOpen.queue.pending uri={} contentLength={} serverReady=false",
-          uri,
-          textLength(text),
-      )
       return
     }
 
-    KslLogs.debug(
-        "KLS TRACE didOpen.send uri={} contentLength={} requestedVersionHint={}",
-        uri,
-        textLength(text),
-        getDocumentVersion(uri).coerceAtLeast(0) + 1,
-    )
-    openDocumentNow(file, uri, text)
+    openDocumentNow(file, uri, text, requestedVersion)
   }
 
   fun flushPendingOpens() {
@@ -115,14 +93,18 @@ class KotlinDocumentManager(
         return@forEach
       }
 
-      if (openDocumentNow(pendingOpen.file, pendingOpen.uri, pendingOpen.text)) {
+      if (openDocumentNow(
+            pendingOpen.file,
+            pendingOpen.uri,
+            pendingOpen.text,
+            pendingOpen.version,
+        )) {
         pendingOpenDocuments.remove(pendingOpen.uri)
       }
     }
   }
 
-  private fun openDocumentNow(file: Path, uri: String, text: String): Boolean {
-    val version = getDocumentVersion(uri).coerceAtLeast(0) + 1
+  private fun openDocumentNow(file: Path, uri: String, text: String, version: Int): Boolean {
     setDocumentVersion(uri, version)
 
     val params =
@@ -139,13 +121,6 @@ class KotlinDocumentManager(
         }
 
     return try {
-      KslLogs.info("Sending didOpen notification for: {}", uri)
-      KslLogs.debug(
-          "KLS TRACE didOpen.sent uri={} version={} contentLength={}",
-          uri,
-          version,
-          textLength(text),
-      )
       processManager.sendNotificationOrThrow("textDocument/didOpen", params)
       openedDocuments.add(uri)
       pendingOpenDocuments.remove(uri)
@@ -157,8 +132,7 @@ class KotlinDocumentManager(
           .Handler(android.os.Looper.getMainLooper())
           .postDelayed(
               {
-                KslLogs.info("Sending didSave notification for: {}", uri)
-                notifyDocumentSave(file, reason = "afterOpenBootstrap")
+                notifyDocumentSave(file)
               },
               INITIAL_DID_SAVE_DELAY_MS,
           )
@@ -175,23 +149,9 @@ class KotlinDocumentManager(
 
     if (!openedDocuments.contains(uri)) {
       KslLogs.warn("Document not opened, opening it first: {}", uri)
-      KslLogs.debug(
-          "KLS TRACE didChange.recover.ensureOpen uri={} version={} contentLength={}",
-          uri,
-          version,
-          textLength(newText),
-      )
-      ensureDocumentOpen(file, newText)
+      ensureDocumentOpen(file, newText, version)
       return
     }
-
-    KslLogs.debug("Notifying document change: {} (version: {})", uri, version)
-    KslLogs.debug(
-        "KLS TRACE didChange.send uri={} version={} contentLength={} opened=true",
-        uri,
-        version,
-        textLength(newText),
-    )
 
     val params =
         JsonObject().apply {
@@ -213,11 +173,9 @@ class KotlinDocumentManager(
     processManager.sendNotification("textDocument/didChange", params)
   }
 
-  fun notifyDocumentSave(file: Path, text: String? = null, reason: String = "unknown") {
+  fun notifyDocumentSave(file: Path, text: String? = null) {
     val uri = file.toUri().toString()
     if (!openedDocuments.contains(uri)) {
-      KslLogs.debug("Skip didSave for unopened document: {}", uri)
-      KslLogs.debug("KLS TRACE didSave.skip.unopened uri={} reason={}", uri, reason)
       return
     }
 
@@ -242,20 +200,14 @@ class KotlinDocumentManager(
               },
           )
         }
-    KslLogs.debug("Sending didSave notification for: {}", uri)
-    KslLogs.debug(
-        "KLS TRACE didSave.send uri={} version={} contentLength={} reason={}",
-        uri,
-        getDocumentVersion(uri),
-        textLength(currentText),
-        reason,
-    )
     processManager.sendNotification("textDocument/didSave", params)
   }
 
   fun closeDocument(file: Path) {
     val uri = file.toUri().toString()
+    pendingOpenDocuments.remove(uri)
     if (openedDocuments.remove(uri)) {
+      documentVersions.remove(uri)
       val params =
           JsonObject().apply { add("textDocument", JsonObject().apply { addProperty("uri", uri) }) }
       processManager.sendNotification("textDocument/didClose", params)
@@ -273,5 +225,6 @@ class KotlinDocumentManager(
   fun clear() {
     openedDocuments.clear()
     documentVersions.clear()
+    pendingOpenDocuments.clear()
   }
 }

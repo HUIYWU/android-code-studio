@@ -22,4 +22,5 @@ package com.tom.rv2ide.lsp.kotlin
 enum class KotlinLspBackendId {
   FWCD,
   STUB,
+  ANALYSIS,
 }

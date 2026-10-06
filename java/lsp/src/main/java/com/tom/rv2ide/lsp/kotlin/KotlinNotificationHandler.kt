@@ -123,28 +123,6 @@ class KotlinNotificationHandler {
           }
         }
 
-    val summary =
-        if (diagnostics.isEmpty()) {
-          "[]"
-        } else {
-          diagnostics.take(3).joinToString(prefix = "[", postfix = if (diagnostics.size > 3) ", ...]" else "]") { diagnostic ->
-            val code = diagnostic.code.ifBlank { "<no-code>" }
-            val source = diagnostic.source.ifBlank { "<no-source>" }
-            val message = diagnostic.message.replace("\n", " ").take(80)
-            "$code|$source|$message"
-          }
-        }
-    if (diagnostics.isEmpty()) {
-      KslLogs.debug("KLS TRACE diagnostics.clear uri={} count=0", uri)
-    } else {
-      KslLogs.debug(
-          "KLS TRACE diagnostics.recv uri={} count={} summary={}",
-          uri,
-          diagnostics.size,
-          summary,
-      )
-    }
-
     val filePath =
         try {
           java.nio.file.Paths.get(java.net.URI(uri))

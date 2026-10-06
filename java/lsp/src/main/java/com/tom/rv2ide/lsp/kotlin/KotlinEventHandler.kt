@@ -34,37 +34,23 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
     if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
 
     val uri = file.toUri().toString()
-    val currentTime = System.currentTimeMillis()
-    val lastChange = lastChangeTime[uri] ?: 0L
-    val deltaSinceLastChange = currentTime - lastChange
-
-    // Throttle rapid changes
-    if (deltaSinceLastChange < changeThrottleMs) {
-      KslLogs.debug(
-          "KLS TRACE change.drop.throttled uri={} eventVersion={} deltaMs={} thresholdMs={}",
-          uri,
-          event.version,
-          deltaSinceLastChange,
-          changeThrottleMs,
-      )
-      return
-    }
-
-    lastChangeTime[uri] = currentTime
 
     try {
       val content = event.newText
+      val currentTime = System.currentTimeMillis()
+      val lastChange = lastChangeTime[uri] ?: 0L
+      val deltaSinceLastChange = currentTime - lastChange
 
-      if (!content.isNullOrEmpty() && event.version > 0) {
+      // Throttle rapid changes
+      if (deltaSinceLastChange < changeThrottleMs) {
+        return
+      }
+
+      lastChangeTime[uri] = currentTime
+
+      if (content != null && event.version > 0) {
         val currentVersion = documentManager.getDocumentVersion(uri)
         if (event.version > currentVersion) {
-          KslLogs.debug(
-              "KLS TRACE change.accept uri={} eventVersion={} currentVersion={} contentLength={}",
-              uri,
-              event.version,
-              currentVersion,
-              content.length,
-          )
           documentManager.setDocumentVersion(uri, event.version)
           documentManager.notifyDocumentChange(file, content, event.version)
           // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of
@@ -72,42 +58,12 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
           val lastSaved = lastSaveTime[uri] ?: 0L
           val deltaSinceLastSave = currentTime - lastSaved
           if (deltaSinceLastSave >= saveDebounceMs) {
-            KslLogs.debug(
-                "KLS TRACE save.trigger.afterChange uri={} eventVersion={} deltaSinceLastSaveMs={} contentLength={}",
-                uri,
-                event.version,
-                deltaSinceLastSave,
-                content.length,
-            )
-            documentManager.notifyDocumentSave(file, content, reason = "afterChangeDebounce")
+            documentManager.notifyDocumentSave(file, content)
             lastSaveTime[uri] = currentTime
-          } else {
-            KslLogs.debug(
-                "KLS TRACE save.skip.debounced uri={} eventVersion={} deltaSinceLastSaveMs={} thresholdMs={}",
-                uri,
-                event.version,
-                deltaSinceLastSave,
-                saveDebounceMs,
-            )
           }
-        } else {
-          KslLogs.debug(
-              "KLS TRACE change.skip.staleVersion uri={} eventVersion={} currentVersion={} contentLength={}",
-              uri,
-              event.version,
-              currentVersion,
-              content.length,
-          )
         }
       } else {
         KslLogs.debug("Skip Kotlin document change without in-memory content: {}", uri)
-        KslLogs.debug(
-            "KLS TRACE change.skip.noContent uri={} eventVersion={} hasContent={} contentLength={}",
-            uri,
-            event.version,
-            !content.isNullOrEmpty(),
-            content?.length ?: -1,
-        )
       }
     } catch (e: Exception) {
       KslLogs.error("Failed to handle document change", e)
@@ -121,7 +77,7 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
 
     KslLogs.debug("Document open event for: {}", file)
     val initialText = event.text.ifEmpty { com.tom.rv2ide.projects.FileManager.getDocumentContents(file) }
-    documentManager.ensureDocumentOpen(file, initialText)
+    documentManager.ensureDocumentOpen(file, initialText, event.version)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
@@ -129,7 +85,17 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
     val file = event.selectedFile
     if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
     KslLogs.debug("Document selected event for: {}", file)
-    documentManager.ensureDocumentOpen(file)
+    val selectedText = com.tom.rv2ide.projects.FileManager.getDocumentContents(file)
+    documentManager.ensureDocumentOpen(file, selectedText)
+    documentManager.notifyDocumentSave(file, selectedText)
+  }
+
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  fun onFileSaved(event: com.tom.rv2ide.eventbus.events.editor.DocumentSaveEvent) {
+    val file = event.savedFile
+    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+
+    documentManager.notifyDocumentSave(file)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
