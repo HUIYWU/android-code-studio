@@ -42,6 +42,16 @@ jobs:
         with:
           submodules: 'recursive'
           fetch-depth: 0
+      - name: Extract Kotlin Analysis API engine
+        shell: bash
+        run: |
+          archive="docs/misc/kotlin-android/analysis-api.tar.xz"
+          destination="docs/misc/kotlin-android"
+          jar="${destination}/analysis-api-standalone-embeddable-for-ide-2.3.255-SNAPSHOT.jar"
+          test -f "$archive"
+          tar -xJf "$archive" -C "$destination"
+          test -f "$jar"
+          echo "Extracted $jar"
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
