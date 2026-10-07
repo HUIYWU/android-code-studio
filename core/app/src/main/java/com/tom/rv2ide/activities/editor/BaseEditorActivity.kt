@@ -56,7 +56,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
-import androidx.lifecycle.lifecycleScope
 import com.blankj.utilcode.constant.MemoryConstants
 import com.blankj.utilcode.util.ConvertUtils.byte2MemorySize
 import com.blankj.utilcode.util.FileUtils
@@ -103,8 +102,6 @@ import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.models.SearchResult
 import com.tom.rv2ide.preferences.internal.BuildPreferences
 import com.tom.rv2ide.preferences.internal.EditorPreferences
-import com.tom.rv2ide.projectdata.state.lsp.Index
-import com.tom.rv2ide.indexing.views.IndexingBanner
 import com.tom.rv2ide.projectdata.state.Initialization
 import com.tom.rv2ide.projects.IProjectManager
 import com.tom.rv2ide.tasks.cancelIfActive
@@ -132,7 +129,6 @@ import com.tom.rv2ide.xml.versions.ApiVersionsRegistry
 import com.tom.rv2ide.xml.widgets.WidgetTableRegistry
 import com.tom.rv2ide.language.setup.Setup
 import com.tom.rv2ide.experimental.depsupdater.DependencyUpdaterDialog
-import com.tom.rv2ide.preferences.internal.BuildPreferences.isKtIndexingNotificationEnabled
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
@@ -855,64 +851,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
       }
     }
 
-    if (BuildPreferences.isKtIndexingNotificationEnabled) {
-      // Kotlin banner is intentionally scoped to the initial KLS startup/indexing pass only.
-      // Project sync, builds, classpath reloads, cache restore and normal edit-time progress should not
-      // start or update a visible banner session.
-      val indexingBanner = IndexingBanner(this)
-      var kotlinBannerSessionActive = false
-
-      fun updateKotlinBanner() {
-        val initialKlsStartup = Index.isKotlinStartupSessionActive()
-
-        if (!kotlinBannerSessionActive && initialKlsStartup) {
-          kotlinBannerSessionActive = true
-          indexingBanner.updateTitle("Kotlin")
-        }
-
-        if (!kotlinBannerSessionActive) {
-          indexingBanner.hide()
-          return
-        }
-
-        indexingBanner.updateMessage(Index.progressMessage.value)
-
-        if (Index.isIndexing()) {
-          indexingBanner.show()
-        } else {
-          indexingBanner.hide()
-          kotlinBannerSessionActive = false
-          Index.setKotlinStartupSession(false)
-        }
-      }
-
-      editorViewModel._isInitializing.observe(this) { updateKotlinBanner() }
-
-      lifecycleScope.launch {
-        Index.progressMessage.collect {
-          if (kotlinBannerSessionActive) {
-            indexingBanner.updateMessage(it)
-          }
-          updateKotlinBanner()
-        }
-      }
-
-      lifecycleScope.launch {
-        Index.isKotlinStartupSession.collect {
-          updateKotlinBanner()
-        }
-      }
-
-      lifecycleScope.launch {
-        Index.isProjectIndexing.collect {
-          updateKotlinBanner()
-        }
-      }
-
-      updateKotlinBanner()
-    }
-    
-    
   }
 
   private fun setupDependencyUpdater() {

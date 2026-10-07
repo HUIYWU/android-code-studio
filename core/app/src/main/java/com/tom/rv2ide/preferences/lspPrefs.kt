@@ -76,7 +76,6 @@ private class KotlinCategory(
     addPreference(KotlinLspEnabled())
     addPreference(KotlinBackend())
     addPreference(KotlinFormatStyle())
-    addPreference(KotlinIndexingNotification())
   }
 }
 

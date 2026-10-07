@@ -715,8 +715,6 @@
   <string name="idepref_enableBuildOutput_summary">在编辑器中显示构建输出</string>
   <string name="idepref_dependencies_updater_title">依赖更新器</string>
   <string name="idepref_dependencies_updater_summary">打开 build.gradle(.kts) 时显示更新对话框，并自动更新已声明的依赖项。</string>
-  <string name="idepref_kotlin_indexing_notif_title">Kotlin 通知横幅</string>
-  <string name="idepref_kotlin_indexing_notif_summary">当 Kotlin 项目正在被 Kotlin 语言服务器建立索引时，显示通知横幅。</string>
   <string name="title_ide_configurations">IDE 配置</string>
   <string name="subtitle_ide_build_system_configurations">IDE 构建系统配置</string>
   <string name="title_android_ndk_build_system">Android NDK构建系统</string>

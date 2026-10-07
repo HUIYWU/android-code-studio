@@ -16,26 +16,34 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
+import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendContext
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendId
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import java.io.File
 
 /**
  * Configurator for the in-process Kotlin Analysis API backend.
  */
-object KotlinAnalysisBackendConfigurator : KotlinLspBackendConfigurator {
-  override fun beforeServerStart(
-      connection: KotlinLspConnection,
-      classpathProvider: KotlinClasspathProvider,
-  ) {
+class KotlinAnalysisBackendConfigurator(
+    private val context: KotlinLspBackendContext,
+) : KotlinLspBackendConfigurator {
+  override fun resolveWorkspaceRoot(): File =
+      context.mainModuleWorkspaceRoot(KotlinLspBackendId.ANALYSIS)
+
+  override fun initializationOptions(): JsonObject? = null
+
+  override fun beforeServerStart(connection: KotlinLspConnection) {
     KlsLogs.info("Analysis API Kotlin backend selected - in-process engine, no external process to configure")
   }
 
-  override fun afterServerInitialized(
-      connection: KotlinLspConnection,
-      classpathProvider: KotlinClasspathProvider,
-  ) {
+  override fun afterServerInitialized(connection: KotlinLspConnection, hasKotlinSources: Boolean) {
     KlsLogs.info("Analysis API Kotlin backend initialized - no backend-specific post-init configuration")
   }
+
+  override fun onClasspathReloaded(connection: KotlinLspConnection) {}
+
+  override fun applyFormattingStyle(connection: KotlinLspConnection, style: String) {}
 }

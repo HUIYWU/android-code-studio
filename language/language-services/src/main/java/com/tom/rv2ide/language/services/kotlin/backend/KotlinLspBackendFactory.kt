@@ -48,19 +48,19 @@ object KotlinLspBackendFactory {
           KotlinLspBackendSpec(
               id = KotlinLspBackendId.FWCD,
               connection = FwcdKotlinLspConnection(),
-              configurator = FwcdKotlinLspBackendConfigurator,
+              createConfigurator = ::FwcdKotlinLspBackendConfigurator,
           )
       KotlinLspBackendId.STUB ->
           KotlinLspBackendSpec(
               id = KotlinLspBackendId.STUB,
               connection = StubKotlinLspConnection(context),
-              configurator = StubKotlinLspBackendConfigurator,
+              createConfigurator = ::StubKotlinLspBackendConfigurator,
           )
       KotlinLspBackendId.ANALYSIS ->
           KotlinLspBackendSpec(
               id = KotlinLspBackendId.ANALYSIS,
               connection = KotlinAnalysisLspConnection(context.applicationInfo.sourceDir),
-              configurator = KotlinAnalysisBackendConfigurator,
+              createConfigurator = ::KotlinAnalysisBackendConfigurator,
           )
     }
   }

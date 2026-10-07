@@ -18,9 +18,10 @@ package com.tom.rv2ide.language.services.kotlin
 
 import android.content.Context
 import com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendContext
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendFactory
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerProvider
 import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerService
 import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
@@ -58,7 +59,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private var selectedFile: java.nio.file.Path? = null
   private val backendSpec = KotlinLspBackendFactory.createSpec(context)
   private val connection: KotlinLspConnection = backendSpec.connection
-  private val backendConfigurator: KotlinLspBackendConfigurator = backendSpec.configurator
 
   private val documentManager = KotlinDocumentManager(connection) { initialized && connection.isReady }
   private val requestHandler = KotlinRequestHandler(connection, documentManager)
@@ -124,8 +124,10 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       return
     }
 
-    formatProvider = KotlinCodeFormatProvider(connection)
-    workspaceSetup = KotlinWorkspaceSetup(context, workspace, backendConfigurator, backendSpec.id)
+    val backendContext = KotlinLspBackendContext(workspace, KotlinClasspathProvider())
+    val backendConfigurator = backendSpec.createConfigurator(backendContext)
+    formatProvider = KotlinCodeFormatProvider(connection, backendConfigurator)
+    workspaceSetup = KotlinWorkspaceSetup(workspace, backendContext, backendConfigurator)
     initialized = false
     workspaceSetup?.setup(connection) { success ->
       if (!success || !connection.isReady) {

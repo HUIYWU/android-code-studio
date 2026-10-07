@@ -289,11 +289,6 @@
       Display an update dialog when opening build.gradle(.kts) that automatically updates declared dependencies.
   </string>
   
-  <string name="idepref_kotlin_indexing_notif_title">Kotlin notification banner</string>
-  <string name="idepref_kotlin_indexing_notif_summary">
-      Display a notification banner when a Kotlin project is being indexed by the Kotlin Language Server.
-  </string>
-
   <string name="closing_project">Closing Project</string>
 
   <string name="include_test_str">Include android tests</string>

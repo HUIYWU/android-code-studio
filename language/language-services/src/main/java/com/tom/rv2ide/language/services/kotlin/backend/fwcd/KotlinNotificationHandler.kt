@@ -20,7 +20,6 @@ package com.tom.rv2ide.language.services.kotlin.backend.fwcd
 import com.google.gson.JsonObject
 import com.tom.rv2ide.lsp.models.*
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
-import com.tom.rv2ide.projectdata.state.lsp.Index
 import com.tom.rv2ide.projectdata.logs.LogStream
 import java.nio.file.Paths
 import org.slf4j.LoggerFactory
@@ -149,7 +148,6 @@ class KotlinNotificationHandler {
     val message = params?.get("message")?.asString
     val messageType = params?.get("type")?.asInt
 
-    // Track indexing state based on log messages
     message?.let { originalMsg ->
       val msg = originalMsg.replace("async2    ", "")
       when {
@@ -159,35 +157,17 @@ class KotlinNotificationHandler {
         msg.contains("building symbol index", ignoreCase = true) ||
         msg.contains("Triggering full workspace indexing", ignoreCase = true) ||
         msg.contains("Restoring cached index", ignoreCase = true) -> {
-          if (!Index.isIndexing()) {
-            KlsLogs.info("Indexing started - setting Index flag to true")
-            Index.setIsIndexing(true)
-          }
           LogStream.emitLineBlocking(msg)
         }
 
-        // Only the real full-symbol-index completion closes the startup banner.
-        // Earlier warm-up workspace/symbol responses and generic "indexing complete" messages can happen
-        // before KLS finishes its own full index, so do not use them as completion signals here.
         msg.contains("updated full symbol", ignoreCase = true) -> {
-          KlsLogs.info("Full symbol index completed - setting Index flag to false")
+          KlsLogs.info("Full symbol index completed")
           LogStream.emitLineBlocking(msg)
-          extractSymbolCount(msg)?.let { count ->
-            Index.setProgressMessage("Indexed $count symbols")
-          }
-          Index.setIsIndexing(false)
         }
 
-        // Cache load is a valid completion only when it is part of the current Kotlin startup banner session.
         msg.contains("Loaded symbol index from cache in", ignoreCase = true) -> {
-          KlsLogs.info("Symbol index loaded from cache - setting Index flag to false")
+          KlsLogs.info("Symbol index loaded from cache")
           LogStream.emitLineBlocking(msg)
-          extractSymbolCount(msg)?.let { count ->
-            Index.setProgressMessage("Indexed $count symbols")
-          }
-          if (Index.isKotlinStartupSessionActive()) {
-            Index.setIsIndexing(false)
-          }
         }
 
         msg.contains("symbol index complete", ignoreCase = true) ||
@@ -195,7 +175,7 @@ class KotlinNotificationHandler {
           KlsLogs.debugThrottled(
               "kls:generic-indexing-complete",
               1500L,
-              "KLS generic indexing completion ignored for startup banner: {}",
+              "KLS generic indexing completion: {}",
               msg,
           )
         }
@@ -209,9 +189,8 @@ class KotlinNotificationHandler {
         // Indexing failed/error messages
         msg.contains("Error while updating symbol index", ignoreCase = true) ||
         msg.contains("Failed to build symbol index", ignoreCase = true) -> {
-          KlsLogs.warn("Indexing error detected - setting Index flag to false")
+          KlsLogs.warn("Indexing error detected")
           LogStream.emitLineBlocking(msg)
-          Index.setIsIndexing(false)
         }
 
         // Emit any other symbol-related messages while indexing
@@ -286,16 +265,6 @@ class KotlinNotificationHandler {
       msg.contains("diagnostics.recv", ignoreCase = true) -> "kls:diagnostics-recv"
       msg.contains("diagnostics.clear", ignoreCase = true) -> "kls:diagnostics-clear"
       else -> "kls:${msg.take(80)}"
-    }
-  }
-
-  private fun extractSymbolCount(message: String): Int? {
-    val patterns = listOf(
-        Regex("""(\d+)\s+symbols?""", RegexOption.IGNORE_CASE),
-        Regex("""found\s+(\d+)""", RegexOption.IGNORE_CASE),
-    )
-    return patterns.firstNotNullOfOrNull { pattern ->
-      pattern.find(message)?.groupValues?.getOrNull(1)?.toIntOrNull()
     }
   }
 }

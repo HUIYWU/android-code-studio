@@ -29,7 +29,6 @@ import com.tom.rv2ide.models.JdkDistribution
 import com.tom.rv2ide.preferences.internal.BuildPreferences.CUSTOM_GRADLE_INSTALLATION
 import com.tom.rv2ide.preferences.internal.BuildPreferences.ENABLE_BUILD_OUTPUT
 import com.tom.rv2ide.preferences.internal.BuildPreferences.DEPENDENCIES_UPDATER
-import com.tom.rv2ide.preferences.internal.BuildPreferences.KT_INDEXING_NOTIFICATION
 import com.tom.rv2ide.preferences.internal.BuildPreferences.GRADLE_CLEAR_CACHE
 import com.tom.rv2ide.preferences.internal.BuildPreferences.GRADLE_COMMANDS
 import com.tom.rv2ide.preferences.internal.BuildPreferences.INSTALL_VIA_SHIZUKU
@@ -40,7 +39,6 @@ import com.tom.rv2ide.preferences.internal.BuildPreferences.installViaShizuku
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isBuildCacheEnabled
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isBuildOutputEnabled
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isDependenciesUpdaterEnabled
-import com.tom.rv2ide.preferences.internal.BuildPreferences.isKtIndexingNotificationEnabled
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isDebugEnabled
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isInfoEnabled
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isOfflineEnabled
@@ -95,18 +93,6 @@ private class DependenciesUpdater(
     SwitchPreference(
         setValue = ::isDependenciesUpdaterEnabled::set,
         getValue = ::isDependenciesUpdaterEnabled::get,
-    )
-
-@Parcelize
-class KotlinIndexingNotification(
-    override val key: String = KT_INDEXING_NOTIFICATION,
-    override val title: Int = R.string.idepref_kotlin_indexing_notif_title,
-    override val summary: Int? = R.string.idepref_kotlin_indexing_notif_summary,
-    override val icon: Int? = MainR.drawable.ic_notification,
-) :
-    SwitchPreference(
-        setValue = ::isKtIndexingNotificationEnabled::set,
-        getValue = ::isKtIndexingNotificationEnabled::get,
     )
 
 @Parcelize

@@ -15,7 +15,7 @@
  *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.tom.rv2ide.language.services.kotlin.workspace
+package com.tom.rv2ide.language.services.kotlin.backend.fwcd
 
 import com.google.gson.Gson
 import com.google.gson.JsonArray

@@ -38,11 +38,6 @@ object BuildPreferences {
 
   const val ENABLE_BUILD_OUTPUT = "ide.build.enableBuildOutput"
   const val DEPENDENCIES_UPDATER = "ide.build.enableDependenciesUpdater"
-  const val KT_INDEXING_NOTIFICATION = "ide.build.enableKotlinIndexingNotification"
-
-  var isKtIndexingNotificationEnabled: Boolean
-    get() = prefManager.getBoolean(KT_INDEXING_NOTIFICATION, true)
-    set(value) = prefManager.putBoolean(KT_INDEXING_NOTIFICATION, value)
 
   var isDependenciesUpdaterEnabled: Boolean
     get() = prefManager.getBoolean(DEPENDENCIES_UPDATER, true)

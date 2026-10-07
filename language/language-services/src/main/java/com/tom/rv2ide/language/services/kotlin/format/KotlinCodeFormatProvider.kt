@@ -19,6 +19,7 @@ package com.tom.rv2ide.language.services.kotlin.format
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.settings.KotlinLspSettings
@@ -35,7 +36,10 @@ import org.slf4j.LoggerFactory
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
 
-class KotlinCodeFormatProvider(private val connection: KotlinLspConnection) {
+class KotlinCodeFormatProvider(
+    private val connection: KotlinLspConnection,
+    private val backendConfigurator: KotlinLspBackendConfigurator,
+) {
 
   companion object {
     private val log = LoggerFactory.getLogger(KotlinCodeFormatProvider::class.java)
@@ -73,7 +77,8 @@ class KotlinCodeFormatProvider(private val connection: KotlinLspConnection) {
     // Read current content for offset calculation
     val content = params.content?.toString() ?: filePath.toFile().readText()
 
-    sendFormattingConfiguration()
+    val style = KotlinLspSettings.getCodeFormatStyle() ?: "google"
+    backendConfigurator.applyFormattingStyle(connection, style)
 
     val lspParams =
         JsonObject().apply {
@@ -82,7 +87,7 @@ class KotlinCodeFormatProvider(private val connection: KotlinLspConnection) {
               "options",
               JsonObject().apply {
                 val currentIndent =
-                    when (KotlinLspSettings.getCodeFormatStyle()) {
+                    when (style) {
                       "google",
                       "facebook" -> 2
                       "kotlinlang" -> 4
@@ -152,49 +157,6 @@ class KotlinCodeFormatProvider(private val connection: KotlinLspConnection) {
     }
 
     return result
-  }
-
-  private fun sendFormattingConfiguration() {
-    val style = KotlinLspSettings.getCodeFormatStyle() ?: "google"
-    val indentSize =
-        when (style) {
-          "google",
-          "facebook" -> 2
-          "kotlinlang" -> 4
-          else -> 4
-        }
-
-    val configParams =
-        JsonObject().apply {
-          add(
-              "settings",
-              JsonObject().apply {
-                add(
-                    "kotlin",
-                    JsonObject().apply {
-                      add(
-                          "formatting",
-                          JsonObject().apply {
-                            addProperty("formatter", "ktfmt")
-                            add(
-                                "ktfmt",
-                                JsonObject().apply {
-                                  addProperty("style", style)
-                                  addProperty("indent", indentSize)
-                                  addProperty("maxWidth", 100)
-                                  addProperty("removeUnusedImports", true)
-                                },
-                            )
-                          },
-                      )
-                    },
-                )
-              },
-          )
-        }
-
-    connection.sendNotification("workspace/didChangeConfiguration", configParams)
-    KlsLogs.debug("Sent formatting configuration: style={}, indent={}", style, indentSize)
   }
 
   private fun convertToIndexedTextEdits(
