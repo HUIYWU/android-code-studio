@@ -52,7 +52,6 @@ import com.tom.rv2ide.models.OpenedFile
 import com.tom.rv2ide.models.OpenedFilesCache
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.models.SaveResult
-import com.tom.rv2ide.projects.internal.ProjectManagerImpl
 import com.tom.rv2ide.tasks.executeAsync
 import com.tom.rv2ide.ui.CodeEditorView
 import com.tom.rv2ide.utils.DialogUtils.newYesNoDialog
@@ -472,12 +471,11 @@ open class EditorHandlerActivity : ProjectHandlerActivity(), IEditorHandler {
   override fun saveAllAsync(
       notify: Boolean,
       requestSync: Boolean,
-      processResources: Boolean,
       progressConsumer: ((Int, Int) -> Unit)?,
       runAfter: (() -> Unit)?,
   ) {
     editorActivityScope.launch {
-      saveAll(notify, requestSync, processResources, progressConsumer)
+      saveAll(notify, requestSync, progressConsumer)
       runAfter?.invoke()
     }
   }
@@ -485,7 +483,6 @@ open class EditorHandlerActivity : ProjectHandlerActivity(), IEditorHandler {
   override suspend fun saveAll(
       notify: Boolean,
       requestSync: Boolean,
-      processResources: Boolean,
       progressConsumer: ((Int, Int) -> Unit)?,
   ): Boolean {
     val result = saveAllResult(progressConsumer)
@@ -501,10 +498,6 @@ open class EditorHandlerActivity : ProjectHandlerActivity(), IEditorHandler {
           editorViewModel.isSyncNeeded = true
         }
       }
-    }
-
-    if (processResources) {
-      ProjectManagerImpl.getInstance().generateSources()
     }
 
     return result.gradleSaved

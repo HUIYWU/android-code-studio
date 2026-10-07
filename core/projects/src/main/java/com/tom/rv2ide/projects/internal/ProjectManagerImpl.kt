@@ -36,7 +36,6 @@ import com.tom.rv2ide.projects.CachingProject
 import com.tom.rv2ide.projects.IProjectManager
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
-import com.tom.rv2ide.projects.R
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.projects.builder.BuildService
 import com.tom.rv2ide.tasks.executeAsync
@@ -45,7 +44,6 @@ import com.tom.rv2ide.tooling.api.IProject
 import com.tom.rv2ide.tooling.api.messages.result.InitializeResult
 import com.tom.rv2ide.tooling.api.models.BuildVariantInfo
 import com.tom.rv2ide.utils.DocumentUtils
-import com.tom.rv2ide.utils.flashError
 import com.tom.rv2ide.utils.withStopWatch
 import com.tom.rv2ide.utils.GradleFileParser
 import java.io.File
@@ -147,30 +145,6 @@ class ProjectManagerImpl : IProjectManager, EventReceiver {
     }
   }
 
-  private fun shouldPreGenerateAndroidSources(workspace: IWorkspace): Boolean {
-    val androidModules = workspace.androidProjects().filterIsInstance<AndroidModule>()
-    if (!androidModules.iterator().hasNext()) {
-      return false
-    }
-
-    return try {
-      val allReady = androidModules.all { module ->
-        val variant = module.getSelectedVariant() ?: return@all false
-        val generatedRoots = variant.mainArtifact.generatedSourceFolders
-          .filter { it.exists() && it.isDirectory }
-          .filter { path ->
-            val normalized = path.absolutePath.replace('\\', '/').lowercase()
-            normalized.contains("/build/generated/") || normalized.contains("/build/intermediates/")
-          }
-        generatedRoots.isNotEmpty()
-      }
-      !allReady
-    } catch (e: Exception) {
-      log.warn("Failed to evaluate Android generated source warm-up requirement", e)
-      true
-    }
-  }
-
   override fun destroy() {
     log.info("Destroying project manager")
 
@@ -185,79 +159,6 @@ class ProjectManagerImpl : IProjectManager, EventReceiver {
     resourceTableRefreshes.close()
     resourceTableRefreshes = ResourceTableRefreshCoordinator()
   }
-  @JvmOverloads
-  fun generateSources(
-      builder: BuildService? = Lookup.getDefault().lookup(BuildService.KEY_BUILD_SERVICE)
-  ) {
-    generateSourcesAsync(builder)
-  }
-
-  @JvmOverloads
-  fun generateSourcesAsync(
-      builder: BuildService? = Lookup.getDefault().lookup(BuildService.KEY_BUILD_SERVICE),
-      notifyOnSuccess: Boolean = true,
-  ): java.util.concurrent.CompletableFuture<Boolean> {
-    if (builder == null) {
-      log.warn("Cannot generate sources. BuildService is null.")
-      return java.util.concurrent.CompletableFuture.completedFuture(false)
-    }
-
-    if (!builder.isToolingServerStarted()) {
-      flashError(R.string.msg_tooling_server_unavailable)
-      return java.util.concurrent.CompletableFuture.completedFuture(false)
-    }
-
-    if (builder.isBuildInProgress) {
-      log.info("Skipping source generation because a build is already in progress")
-      return java.util.concurrent.CompletableFuture.completedFuture(false)
-    }
-
-    val tasks =
-        getWorkspace()
-            ?.androidProjects()
-            ?.flatMap { module ->
-              val variant = module.getSelectedVariant()
-              if (variant == null) {
-                log.error("Selected build variant for project '{}' not found", module.path)
-                return@flatMap emptyList()
-              }
-
-val mainArtifact = variant.mainArtifact
-
-              // Only execute task names supplied by the Android tooling model. AGP task names are not
-              // stable across plugins/features (for example Navigation adds a suffix), so guessing
-              // process<Variant>Resources or dataBindingGenBaseClasses<Variant> can invoke an
-              // ambiguous Gradle task or fail outright.
-              return@flatMap listOf(mainArtifact.resGenTaskName, mainArtifact.sourceGenTaskName)
-                  .mapNotNull { taskName ->
-                    taskName
-                        ?.takeIf(String::isNotBlank)
-                        ?.let { name -> module.tasks.firstOrNull { it.name == name }?.path }
-                  }
-            }
-            ?.distinct()
-            ?.toList() ?: emptyList()
-
-    if (tasks.isEmpty()) {
-      log.info("No Android source generation tasks resolved for current workspace")
-      return java.util.concurrent.CompletableFuture.completedFuture(false)
-    }
-
-    log.info("Generating Android sources before language-server init: {}", tasks)
-    return builder.executeTasks(*tasks.toTypedArray()).handle { result, taskErr ->
-      if (result == null || !result.isSuccessful || taskErr != null) {
-        log.warn("Execution for tasks failed: {} {}", tasks, taskErr ?: "")
-        false
-      } else {
-        log.info("Android source generation completed successfully: {}", tasks)
-        if (notifyOnSuccess) {
-          notifyProjectUpdate()
-        }
-        true
-      }
-    }
-  }
-
   private fun generateSourcesForModule(
       module: AndroidModule,
       builder: BuildService? = Lookup.getDefault().lookup(BuildService.KEY_BUILD_SERVICE),
@@ -298,33 +199,6 @@ val mainArtifact = variant.mainArtifact
       }
     }
   }
-
-  @JvmOverloads
-  fun generateSourcesBlocking(
-      builder: BuildService? = Lookup.getDefault().lookup(BuildService.KEY_BUILD_SERVICE),
-      timeoutMs: Long = 120000L,
-      notifyOnSuccess: Boolean = true,
-  ): Boolean {
-    return try {
-      generateSourcesAsync(builder, notifyOnSuccess).get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-    } catch (e: Exception) {
-      log.warn("Timed out or failed while waiting for Android source generation", e)
-      false
-    }
-  }
-
-
-  /** Marks a caller-owned full Gradle build lifecycle that subsumes resource generation tasks. */
-  fun beginFullBuildIntent() {
-    fullBuildIntents.incrementAndGet()
-  }
-
-  /** Ends a lifecycle started by [beginFullBuildIntent]. */
-  fun endFullBuildIntent() {
-    fullBuildIntents.updateAndGet { count -> if (count > 0) count - 1 else 0 }
-  }
-
-  private fun hasFullBuildIntent(): Boolean = fullBuildIntents.get() > 0
 
   fun notifyProjectUpdate() {
 
@@ -453,6 +327,18 @@ val mainArtifact = variant.mainArtifact
       )
     }
   }
+
+  /** Marks a caller-owned full Gradle build lifecycle that subsumes resource generation tasks. */
+  fun beginFullBuildIntent() {
+    fullBuildIntents.incrementAndGet()
+  }
+
+  /** Ends a lifecycle started by [beginFullBuildIntent]. */
+  fun endFullBuildIntent() {
+    fullBuildIntents.updateAndGet { count -> if (count > 0) count - 1 else 0 }
+  }
+
+  private fun hasFullBuildIntent(): Boolean = fullBuildIntents.get() > 0
 
   override fun notifyFileCreated(file: File) {
     onFileCreated(FileCreationEvent(file))

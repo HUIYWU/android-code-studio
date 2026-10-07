@@ -61,13 +61,13 @@ class AIMarkdownRenderer(context: Context) {
                     override fun configureSpansFactory(builder: MarkwonSpansFactory.Builder) {
                         builder
                             .setFactory(Code::class.java) { _, _ ->
-                                arrayOf(
+                                arrayOf<Any>(
                                     BackgroundColorSpan(inlineCodeBackground),
                                     TypefaceSpan("monospace"),
                                 )
                             }
                             .setFactory(FencedCodeBlock::class.java) { _, _ ->
-                                arrayOf(
+                                arrayOf<Any>(
                                     TypefaceSpan("monospace"),
                                     BackgroundColorSpan(codeBlockBackground),
                                 )

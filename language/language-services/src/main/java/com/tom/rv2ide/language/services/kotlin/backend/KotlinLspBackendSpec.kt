@@ -20,7 +20,6 @@ package com.tom.rv2ide.language.services.kotlin.backend
  * Bundles the transport connection and the per-workspace configurator factory for one concrete backend.
  */
 class KotlinLspBackendSpec(
-    val id: KotlinLspBackendId,
     val connection: KotlinLspConnection,
     val createConfigurator: (KotlinLspBackendContext) -> KotlinLspBackendConfigurator,
 )

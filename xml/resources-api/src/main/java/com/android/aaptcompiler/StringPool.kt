@@ -360,7 +360,7 @@ class StringPool {
 
       // Now encode the string
       for (i in 0.until(utf16Length)) {
-        stringBlock.writeShort(str[i].toShort().hostToDevice(), locationToWrite)
+        stringBlock.writeShort(str[i].code.toShort().hostToDevice(), locationToWrite)
         locationToWrite += 2
       }
 

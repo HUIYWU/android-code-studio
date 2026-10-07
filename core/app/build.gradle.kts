@@ -43,6 +43,7 @@ buildscript {
 }
 
 configurations.all {
+  exclude(group = "org.jetbrains.kotlin", module = "kotlin-android-extensions-runtime")
   resolutionStrategy {
     force("com.google.guava:guava:32.1.3-android")
     eachDependency {

@@ -3,6 +3,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.itsaky.androidide.treesitter.TreeSitter
 import java.util.concurrent.TimeUnit
+import kotlin.io.path.createTempDirectory
 import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
@@ -264,7 +265,7 @@ dependencies {
   }
 
   @Test fun transactionRestoresFilesAndOnlyDeletesTrackedDirectories() {
-    val root = createTempDir(prefix = "project-edit-")
+    val root = createTempDirectory("project-edit-").toFile()
     try {
       val settings = root.resolve("settings.gradle.kts").apply { writeText("include(\":app\")\n") }
       val newModule = root.resolve("feature")
@@ -283,7 +284,7 @@ dependencies {
   }
 
   @Test fun transactionMovesDirectoryAndRestoresItOnRollback() {
-    val root = createTempDir(prefix = "project-move-")
+    val root = createTempDirectory("project-move-").toFile()
     try {
       val source = root.resolve("legacy").apply {
         mkdirs()

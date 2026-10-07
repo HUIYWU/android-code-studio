@@ -97,7 +97,7 @@ class HoverMarkdownRenderer(private val context: Context) {
                       .setFactory(BlockQuote::class.java) { _, _ -> QuoteSpan(outlineColor) }
                       .setFactory(Strikethrough::class.java) { _, _ -> StrikethroughSpan() }
                       .setFactory(Code::class.java) { _, _ ->
-                        arrayOf(BackgroundColorSpan(inlineCodeBackground), TypefaceSpan("monospace"))
+                        arrayOf<Any>(BackgroundColorSpan(inlineCodeBackground), TypefaceSpan("monospace"))
                       }
                       .setFactory(ListItem::class.java) { _, _ -> BulletSpan() }
                 }

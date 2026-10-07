@@ -30,6 +30,9 @@ repositories {
 tasks.withType(KotlinCompile::class.java) {
   compilerOptions {
     jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_1)
+    languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_1)
+    freeCompilerArgs.add("-Xuse-fir-lt=false")
   }
 }
 

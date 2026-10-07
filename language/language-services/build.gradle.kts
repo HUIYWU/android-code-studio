@@ -17,7 +17,6 @@
 
 import com.tom.rv2ide.build.config.BuildConfig
 import org.gradle.api.tasks.testing.Test
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 
 plugins {
@@ -47,11 +46,6 @@ android {
   }
 }
 
-tasks.withType<KotlinCompile>().configureEach {
-  // TODO(ACS-KT-ANALYSIS-EXPERIMENT): the spike compiles against the Kotlin 2.3.x analysis engine jar
-  //  while the module toolchain stays on 2.1.0.
-  compilerOptions { freeCompilerArgs.add("-Xskip-metadata-version-check") }
-}
 
 tasks.withType<Test>().configureEach {
   // Workspace integration tests launch this standalone Tooling API artifact in a child process.

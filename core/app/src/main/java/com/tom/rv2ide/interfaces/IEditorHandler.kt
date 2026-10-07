@@ -49,14 +49,12 @@ interface IEditorHandler {
    * Save all files.
    *
    * @param notify Whether to notify the user about the save event.
-   * @param processResources Whether the resources must be generated after the save operation.
    * @param progressConsumer A function which consumes the progress of the save operation. See
    *   [saveAllResult] for more details.
    */
   suspend fun saveAll(
       notify: Boolean = true,
       requestSync: Boolean = true,
-      processResources: Boolean = false,
       progressConsumer: ((progress: Int, total: Int) -> Unit)? = null,
   ): Boolean
 
@@ -69,7 +67,6 @@ interface IEditorHandler {
   fun saveAllAsync(
       notify: Boolean = true,
       requestSync: Boolean = true,
-      processResources: Boolean = false,
       progressConsumer: ((progress: Int, total: Int) -> Unit)? = null,
       runAfter: (() -> Unit)? = null,
   )

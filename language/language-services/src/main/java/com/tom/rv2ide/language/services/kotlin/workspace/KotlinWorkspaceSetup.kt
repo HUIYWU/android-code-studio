@@ -134,21 +134,18 @@ class KotlinWorkspaceSetup(
       }
 
       // Register directories to watch
-      val watchKeys = mutableMapOf<WatchKey, File>()
       modulesToWatch.forEach { buildDir ->
         try {
           val generatedDir = File(buildDir, "generated")
           if (generatedDir.exists()) {
-            val key =
-                generatedDir
-                    .toPath()
-                    .register(
-                        buildWatcher,
-                        StandardWatchEventKinds.ENTRY_CREATE,
-                        StandardWatchEventKinds.ENTRY_MODIFY,
-                        StandardWatchEventKinds.ENTRY_DELETE,
-                    )
-            watchKeys[key] = generatedDir
+            generatedDir
+                .toPath()
+                .register(
+                    buildWatcher,
+                    StandardWatchEventKinds.ENTRY_CREATE,
+                    StandardWatchEventKinds.ENTRY_MODIFY,
+                    StandardWatchEventKinds.ENTRY_DELETE,
+                )
           KlsLogs.infoThrottled(
               "kls:watch-build-changes",
               3000L,
