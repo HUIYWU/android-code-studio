@@ -30,6 +30,9 @@ class StubKotlinLspConnection(context: Context) : KotlinLspConnection {
   private val appContext = context.applicationContext
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
 
+  override val isReady: Boolean
+    get() = false
+
   override fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit) {
     diagnosticsCallback = callback
     KslLogs.info("Stub Kotlin backend installed diagnostics callback")

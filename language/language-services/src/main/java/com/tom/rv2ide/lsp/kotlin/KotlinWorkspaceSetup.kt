@@ -55,7 +55,7 @@ class KotlinWorkspaceSetup(
   private val watchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
   private val resolvedWorkspaceRootDir: File by lazy { resolveKlsWorkspaceRootDir() }
 
-  fun setup(processManager: KotlinLspConnection) {
+  fun setup(processManager: KotlinLspConnection, onInitialized: (Boolean) -> Unit = {}) {
     val workspaceRootDir = resolvedWorkspaceRootDir
     val workspaceRoot = workspaceRootDir.toPath().toUri().toString()
     KslLogs.infoThrottled(
@@ -105,6 +105,7 @@ class KotlinWorkspaceSetup(
         Index.setProgressMessage("Kotlin language server failed to start")
         LogStream.emitLineBlocking(message)
       }
+      onInitialized(false)
       return
     }
 
@@ -113,8 +114,23 @@ class KotlinWorkspaceSetup(
     KslLogs.debugThrottled("kls:init-request", 5000L, "Sending initialize request...")
 
     processManager.sendRequest("initialize", initParams) { result ->
+      val capabilities = result?.get("capabilities")?.takeIf { it.isJsonObject }?.asJsonObject
+      if (result == null || capabilities == null) {
+        val message = "Kotlin language server initialize failed; backend did not return capabilities."
+        KslLogs.error(message)
+        if (hasKotlinSources) {
+          Index.setIsIndexing(false)
+          Index.setProgressMessage("Kotlin language server initialization failed")
+          LogStream.emitLineBlocking(message)
+        }
+        processManager.shutdown()
+        onInitialized(false)
+        return@sendRequest
+      }
+
       KslLogs.infoThrottled("kls:init-success", 5000L, "Server initialized successfully")
       processManager.sendNotification("initialized", JsonObject())
+      onInitialized(true)
 
       backendConfigurator.afterServerInitialized(processManager, classpathProvider)
 

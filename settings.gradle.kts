@@ -119,9 +119,6 @@ include(
   ":external:atc",
   ":core:projectdata",
   
-  // ":server:server",
-  // ":server:shared",
-  
   ":core:actions",
   ":core:app",
   ":ideconfigurations",
@@ -139,9 +136,9 @@ include(
   ":event:eventbus",
   ":event:eventbus-android",
   ":event:eventbus-events",
-  ":java:javac-services",
-  ":java:lsp-setup",
-  ":java:lsp",
+  ":language:compiler-services",
+  ":language:language-server-setup",
+  ":language:language-services",
   ":logging:idestats",
   ":logging:logger",
   ":logging:logsender",
@@ -149,7 +146,6 @@ include(
   ":termux:emulator",
   ":termux:shared",
   ":termux:view",
-  // JVM-only tooling/LSP fixture support. Android instrumentation support remains intentionally separate.
   ":testing:gradleToolingTest",
   ":testing:lspTest",
   ":tooling:api",

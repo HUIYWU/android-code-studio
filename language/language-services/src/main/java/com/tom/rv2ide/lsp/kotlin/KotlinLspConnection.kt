@@ -31,6 +31,8 @@ import com.tom.rv2ide.lsp.models.DiagnosticResult
  * the same upper-layer integration with minimal behavioral drift.
  */
 interface KotlinLspConnection {
+  val isReady: Boolean
+
   fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit)
   /**
    * Starts the backend process.

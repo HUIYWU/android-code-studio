@@ -106,7 +106,7 @@ dependencies {
   implementation(projects.core.resources)
   implementation(projects.editor.api)
   implementation(projects.utilities.shared)
-  implementation(projects.java.javacServices)
+  implementation(projects.language.compilerServices)
 
   implementation(libs.composite.javac)
   implementation(libs.composite.javapoet)

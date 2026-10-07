@@ -40,6 +40,10 @@ class KotlinAnalysisLspConnection(private val intellijPluginRoot: String) : Kotl
 
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
   private var engine: KotlinAnalysisEngine? = null
+  @Volatile private var ready = false
+
+  override val isReady: Boolean
+    get() = ready
 
   private val closing = AtomicBoolean(false)
   private val scheduledJobs = java.util.concurrent.ConcurrentHashMap<Path, ScheduledFuture<*>>()
@@ -54,34 +58,47 @@ class KotlinAnalysisLspConnection(private val intellijPluginRoot: String) : Kotl
   }
 
   override fun startServer(classpathProvider: KotlinClasspathProvider): Boolean {
-    if (!KotlinAnalysisEngine.isEngineBundled()) {
-      KslLogs.warn(
-          "Kotlin Analysis API engine is not bundled in this build; rebuild with -Pacs.kt.analysis.spike=true to include it.",
-      )
+    if (closing.get()) {
+      KslLogs.warn("Kotlin Analysis API backend is already shutting down")
       return false
     }
-
-    executor.execute {
-      if (closing.get()) {
-        return@execute
-      }
-      try {
-        val startedEngine = KotlinAnalysisEngine(classpathProvider, intellijPluginRoot)
-        if (startedEngine.start()) {
-          engine = startedEngine
-          KslLogs.info("Kotlin Analysis API engine started")
-        } else {
-          KslLogs.warn("Kotlin Analysis API engine failed to start")
-        }
-      } catch (t: Throwable) {
-        KslLogs.error("Failed to start Kotlin Analysis API engine", t)
-      }
+    if (!KotlinAnalysisEngine.isEngineBundled()) {
+      KslLogs.error("Kotlin Analysis API engine is not bundled in this build")
+      return false
     }
-    return true
+    if (ready && engine != null) {
+      return true
+    }
+
+    ready = false
+    return try {
+      val startedEngine = KotlinAnalysisEngine(classpathProvider, intellijPluginRoot)
+      if (!startedEngine.start()) {
+        startedEngine.close()
+        KslLogs.error("Kotlin Analysis API engine failed to start")
+        false
+      } else {
+        engine = startedEngine
+        ready = true
+        KslLogs.info("Kotlin Analysis API engine started")
+        true
+      }
+    } catch (t: Throwable) {
+      KslLogs.error("Failed to start Kotlin Analysis API engine", t)
+      false
+    }
   }
 
   override fun sendRequest(method: String, params: JsonObject, callback: (JsonObject?) -> Unit) {
+    if (!isReady && method != "initialize") {
+      callback.invoke(null)
+      return
+    }
     if (method == "initialize") {
+      if (!isReady) {
+        callback.invoke(null)
+        return
+      }
       callback.invoke(JsonObject().apply { add("capabilities", JsonObject()) })
     } else {
       KslLogs.debug("Analysis API Kotlin backend has no handler for request: {}", method)
@@ -90,10 +107,16 @@ class KotlinAnalysisLspConnection(private val intellijPluginRoot: String) : Kotl
   }
 
   override fun sendNotification(method: String, params: JsonObject) {
+    if (!isReady) {
+      return
+    }
     handleNotification(method, params)
   }
 
   override fun sendNotificationOrThrow(method: String, params: JsonObject) {
+    if (!isReady) {
+      throw IllegalStateException("Kotlin Analysis API backend is not ready")
+    }
     handleNotification(method, params)
   }
 
@@ -184,6 +207,7 @@ class KotlinAnalysisLspConnection(private val intellijPluginRoot: String) : Kotl
       return
     }
 
+    ready = false
     scheduledJobs.values.forEach { it.cancel(false) }
     scheduledJobs.clear()
 

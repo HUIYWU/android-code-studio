@@ -49,12 +49,12 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private val processManager: KotlinLspConnection = backendSpec.connection
   private val backendConfigurator: KotlinLspBackendConfigurator = backendSpec.configurator
 
-  private val documentManager = KotlinDocumentManager(processManager) { initialized }
+  private val documentManager = KotlinDocumentManager(processManager) { initialized && processManager.isReady }
   private val requestHandler = KotlinRequestHandler(processManager, documentManager)
   private val eventHandler = KotlinEventHandler(documentManager)
 
   private var _client: ILanguageClient? = null
-  private var initialized = false
+  @Volatile private var initialized = false
   private var disabledByPreference = false
   private var workspaceSetup: KotlinWorkspaceSetup? = null
 
@@ -117,8 +117,22 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
     formatProvider = KotlinCodeFormatProvider(processManager)
     workspaceSetup = KotlinWorkspaceSetup(context, workspace, backendConfigurator, backendSpec.id)
-    workspaceSetup?.setup(processManager)
+    initialized = false
+    workspaceSetup?.setup(processManager) { success ->
+      if (!success || !processManager.isReady) {
+        initialized = false
+        workspaceSetup?.cleanup()
+        KslLogs.error("Kotlin language server backend did not become ready")
+        return@setup
+      }
 
+      initialized = true
+      documentManager.flushPendingOpens()
+
+      if (!EventBus.getDefault().isRegistered(this)) {
+        EventBus.getDefault().register(this)
+      }
+    }
 
     javaCompilerBridge = KotlinJavaCompilerBridge(workspace)
     requestHandler.setJavaCompilerBridge(javaCompilerBridge)
@@ -126,14 +140,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     // Get compiler service and update import analyzer
     compilerService = findCompilerService(workspace)
     importAnalyzer.updateImportCache(compilerService)
-
-    initialized = true
-    documentManager.flushPendingOpens()
-
-    // Subscribe to editor events if not already
-    if (!EventBus.getDefault().isRegistered(this)) {
-      EventBus.getDefault().register(this)
-    }
   }
 
   /** Invalidate cache and trigger reindexing Call this when dependencies change or project syncs */
@@ -159,7 +165,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       return CompletionResult(emptyList())
     }
 
-    return if (initialized && params != null) {
+    return if (initialized && processManager.isReady && params != null) {
       // Use async instead of blocking
       runBlocking {
         withTimeout(3000) {
@@ -173,7 +179,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun findReferences(params: ReferenceParams): ReferenceResult {
-    return if (initialized && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.findReferences(params)
     } else {
       ReferenceResult(emptyList())
@@ -181,7 +187,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun findDefinition(params: DefinitionParams): DefinitionResult {
-    return if (initialized && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.findDefinition(params)
     } else {
       DefinitionResult(emptyList())
@@ -189,7 +195,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun hover(params: DefinitionParams): MarkupContent {
-    return if (initialized && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.hover(params)
     } else MarkupContent("", MarkupKind.PLAIN)
   }
@@ -199,7 +205,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun signatureHelp(params: SignatureHelpParams): SignatureHelp {
-    return if (initialized && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.signatureHelp(params)
     } else {
       SignatureHelp(emptyList(), 0, 0)
@@ -252,7 +258,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       return CodeFormatResult(false, mutableListOf())
     }
 
-    if (!initialized || disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
+    if (!initialized || !processManager.isReady || disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
       KslLogs.warn("Server not initialized or Kotlin language server is disabled")
       return CodeFormatResult(false, mutableListOf())
     }
@@ -333,7 +339,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
   fun onFileSelected(event: DocumentSelectedEvent) {
-    if (disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
+    if (disabledByPreference || !LSPPreferences.kotlinLspEnabled || !processManager.isReady) {
       return
     }
 

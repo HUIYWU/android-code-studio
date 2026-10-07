@@ -47,6 +47,10 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
   private var process: Process? = null
   private var writer: BufferedWriter? = null
   private var input: BufferedInputStream? = null
+  @Volatile private var ready = false
+
+  override val isReady: Boolean
+    get() = ready
   private val nextId = AtomicInteger(1)
   private val pendingRequests = ConcurrentHashMap<Int, (JsonObject?) -> Unit>()
   private val notificationHandler = KotlinNotificationHandler()
@@ -69,11 +73,12 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
   }
 
   override fun startServer(classpathProvider: KotlinClasspathProvider): Boolean {
-    if (process?.isAlive == true) {
+    if (ready && process?.isAlive == true) {
       KslLogs.debugThrottled("kls:already-running", 3000L, "{} already running", logPrefix())
       return true
     }
 
+    ready = false
     try {
       val startedProcess = startProcess(classpathProvider) ?: run {
         KslLogs.error("{} launch did not produce a process; initialize will not be sent", logPrefix())
@@ -98,17 +103,24 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
             processId(startedProcess),
             startedProcess.exitValue(),
         )
+        ready = false
         return false
       }
+      ready = true
       KslLogs.info("{} transport ready: processId={}", logPrefix(), processId(startedProcess))
       return true
     } catch (e: Exception) {
+      ready = false
       onProcessStartFailed(e)
       return false
     }
   }
 
   override fun sendRequest(method: String, params: JsonObject, callback: (JsonObject?) -> Unit) {
+    if (!isReady && method != "initialize" && method != "shutdown") {
+      callback.invoke(null)
+      return
+    }
     val id = nextId.getAndIncrement()
     pendingRequests[id] = callback
 
@@ -121,10 +133,20 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
         }
 
     KslLogs.debugThrottled("kls:request:$method", 1500L, "Sending request: {}", method)
-    sendMessage(payload)
+    try {
+      sendMessageOrThrow(payload)
+    } catch (e: Exception) {
+      pendingRequests.remove(id)
+      ready = false
+      KslLogs.error("Failed to send request: {}", method, e)
+      callback.invoke(null)
+    }
   }
 
   override fun sendNotification(method: String, params: JsonObject) {
+    if (!isReady && method != "exit") {
+      return
+    }
     val payload =
         JsonObject().apply {
           addProperty("jsonrpc", "2.0")
@@ -137,6 +159,9 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
   }
 
   override fun sendNotificationOrThrow(method: String, params: JsonObject) {
+    if (!isReady && method != "exit") {
+      throw IllegalStateException("${logPrefix()} is not ready")
+    }
     val payload =
         JsonObject().apply {
           addProperty("jsonrpc", "2.0")
@@ -152,6 +177,7 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
     try {
       sendMessageOrThrow(payload)
     } catch (e: Exception) {
+      ready = false
       KslLogs.error("Failed to send message", e)
     }
   }
@@ -160,15 +186,16 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
     val data = gson.toJson(payload)
     val w = writer ?: throw IllegalStateException("Cannot send message: writer is null")
 
-    synchronized(w) {
-      try {
+    try {
+      synchronized(w) {
         val contentBytes = data.toByteArray(StandardCharsets.UTF_8)
         w.write("Content-Length: ${contentBytes.size}\r\n\r\n")
         w.write(data)
         w.flush()
-      } catch (e: Exception) {
-        KslLogs.error("Failed to send message", e)
       }
+    } catch (e: Exception) {
+      ready = false
+      throw e
     }
   }
 
@@ -242,11 +269,19 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
               try {
                 val exitCode = startedProcess.waitFor()
                 if (process === startedProcess) {
-                  process = null
-                  writer = null
-                  input = null
-                  pendingRequests.clear()
-                }
+                   ready = false
+                   process = null
+                   writer = null
+                   input = null
+                   pendingRequests.values.forEach { callback ->
+                     try {
+                       callback.invoke(null)
+                     } catch (e: Exception) {
+                       KslLogs.warn("Failed to notify pending Kotlin LSP request about process exit", e)
+                     }
+                   }
+                   pendingRequests.clear()
+                 }
                 KslLogs.error(
                     "{} process exited: processId={}, exitCode={}. Review preceding '{} stderr' lines for the root cause.",
                     logPrefix(),
@@ -337,6 +372,7 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
   }
 
   override fun shutdown() {
+    ready = false
     try {
       sendRequest("shutdown", JsonObject()) {}
       sendNotification("exit", JsonObject())
