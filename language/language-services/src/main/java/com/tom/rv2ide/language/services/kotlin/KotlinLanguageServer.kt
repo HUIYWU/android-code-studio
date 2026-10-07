@@ -18,12 +18,23 @@ package com.tom.rv2ide.language.services.kotlin
 
 import android.content.Context
 import com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendFactory
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerProvider
+import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerService
+import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
+import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentManager
+import com.tom.rv2ide.language.services.kotlin.document.KotlinEventHandler
+import com.tom.rv2ide.language.services.kotlin.format.KotlinCodeFormatProvider
+import com.tom.rv2ide.language.services.kotlin.imports.KotlinImportAnalyzer
+import com.tom.rv2ide.language.services.kotlin.imports.KotlinImportQuickFix
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.language.services.kotlin.request.KotlinRequestHandler
+import com.tom.rv2ide.language.services.kotlin.workspace.KotlinWorkspaceSetup
 import com.tom.rv2ide.lsp.api.ILanguageClient
 import com.tom.rv2ide.lsp.api.ILanguageServer
 import com.tom.rv2ide.lsp.api.IServerSettings
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerService
-import com.tom.rv2ide.language.services.kotlin.etc.LspFeatures
-import com.tom.rv2ide.language.services.kotlin.providers.KotlinCodeFormatProvider
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.lsp.models.*
 import com.tom.rv2ide.models.Range
@@ -46,11 +57,11 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   private var selectedFile: java.nio.file.Path? = null
   private val backendSpec = KotlinLspBackendFactory.createSpec(context)
-  private val processManager: KotlinLspConnection = backendSpec.connection
+  private val connection: KotlinLspConnection = backendSpec.connection
   private val backendConfigurator: KotlinLspBackendConfigurator = backendSpec.configurator
 
-  private val documentManager = KotlinDocumentManager(processManager) { initialized && processManager.isReady }
-  private val requestHandler = KotlinRequestHandler(processManager, documentManager)
+  private val documentManager = KotlinDocumentManager(connection) { initialized && connection.isReady }
+  private val requestHandler = KotlinRequestHandler(connection, documentManager)
   private val eventHandler = KotlinEventHandler(documentManager)
 
   private var _client: ILanguageClient? = null
@@ -66,21 +77,19 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   private val completionScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-  private val autoImportHandler by lazy { KotlinCompletionAutoImport(documentManager) }
-
   private lateinit var javaCompilerBridge: KotlinJavaCompilerBridge
 
   init {
     if (!LSPPreferences.kotlinLspEnabled) {
       disabledByPreference = true
-      KslLogs.info("Kotlin language server is disabled by preference")
+      KlsLogs.info("Kotlin language server is disabled by preference")
     } else {
       if (!org.greenrobot.eventbus.EventBus.getDefault().isRegistered(eventHandler)) {
         org.greenrobot.eventbus.EventBus.getDefault().register(eventHandler)
       }
 
-      processManager.setDiagnosticsCallback { diagnostics ->
-        KslLogs.debug(
+      connection.setDiagnosticsCallback { diagnostics ->
+        KlsLogs.debug(
             "KLS diagnostics forwarded from server: file={} count={} summary={}",
             diagnostics.file,
             diagnostics.diagnostics.size,
@@ -100,29 +109,29 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   override fun connectClient(client: ILanguageClient?) {
     this._client = client
-    KslLogs.debug("Connected language client: {}", client?.javaClass?.simpleName)
+    KlsLogs.debug("Connected language client: {}", client?.javaClass?.simpleName)
   }
 
   override fun applySettings(settings: IServerSettings?) {
-    KslLogs.debug("Applied settings: {}", settings)
+    KlsLogs.debug("Applied settings: {}", settings)
   }
 
   override fun setupWorkspace(workspace: IWorkspace) {
     if (!LSPPreferences.kotlinLspEnabled) {
       disabledByPreference = true
       initialized = false
-      KslLogs.info("Skipping Kotlin language server setup because KLS is disabled by preference")
+      KlsLogs.info("Skipping Kotlin language server setup because KLS is disabled by preference")
       return
     }
 
-    formatProvider = KotlinCodeFormatProvider(processManager)
+    formatProvider = KotlinCodeFormatProvider(connection)
     workspaceSetup = KotlinWorkspaceSetup(context, workspace, backendConfigurator, backendSpec.id)
     initialized = false
-    workspaceSetup?.setup(processManager) { success ->
-      if (!success || !processManager.isReady) {
+    workspaceSetup?.setup(connection) { success ->
+      if (!success || !connection.isReady) {
         initialized = false
         workspaceSetup?.cleanup()
-        KslLogs.error("Kotlin language server backend did not become ready")
+        KlsLogs.error("Kotlin language server backend did not become ready")
         return@setup
       }
 
@@ -142,30 +151,12 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     importAnalyzer.updateImportCache(compilerService)
   }
 
-  /** Invalidate cache and trigger reindexing Call this when dependencies change or project syncs */
-  fun invalidateCacheAndReindex() {
-    KslLogs.info("Invalidating index cache and triggering reindex...")
-    workspaceSetup?.getIndexCache()?.clearCache()
-
-  }
-
-  /** Clear all project caches (useful for maintenance) */
-  fun clearAllCaches() {
-    KslLogs.info("Clearing all KLS caches...")
-    workspaceSetup?.getIndexCache()?.clearAllCaches()
-  }
-
-  /** Get cache statistics */
-  fun getCacheInfo(): String {
-    return workspaceSetup?.getIndexCache()?.getCacheStats() ?: "No workspace setup"
-  }
-
   override fun complete(params: CompletionParams?): CompletionResult {
     if (disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
       return CompletionResult(emptyList())
     }
 
-    return if (initialized && processManager.isReady && params != null) {
+    return if (initialized && connection.isReady && params != null) {
       // Use async instead of blocking
       runBlocking {
         withTimeout(3000) {
@@ -179,7 +170,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun findReferences(params: ReferenceParams): ReferenceResult {
-    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && connection.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.findReferences(params)
     } else {
       ReferenceResult(emptyList())
@@ -187,7 +178,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun findDefinition(params: DefinitionParams): DefinitionResult {
-    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && connection.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.findDefinition(params)
     } else {
       DefinitionResult(emptyList())
@@ -195,7 +186,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun hover(params: DefinitionParams): MarkupContent {
-    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && connection.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.hover(params)
     } else MarkupContent("", MarkupKind.PLAIN)
   }
@@ -205,7 +196,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override suspend fun signatureHelp(params: SignatureHelpParams): SignatureHelp {
-    return if (initialized && processManager.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
+    return if (initialized && connection.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled) {
       requestHandler.signatureHelp(params)
     } else {
       SignatureHelp(emptyList(), 0, 0)
@@ -247,35 +238,35 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun formatCode(params: FormatCodeParams?): CodeFormatResult {
-    KslLogs.debug("formatCode called - initialized: {}, selectedFile: {}, params: {}",
+    KlsLogs.debug("formatCode called - initialized: {}, selectedFile: {}, params: {}",
         initialized,
         selectedFile,
         params != null,
     )
 
     if (params == null) {
-      KslLogs.warn("Format params is null")
+      KlsLogs.warn("Format params is null")
       return CodeFormatResult(false, mutableListOf())
     }
 
-    if (!initialized || !processManager.isReady || disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
-      KslLogs.warn("Server not initialized or Kotlin language server is disabled")
+    if (!initialized || !connection.isReady || disabledByPreference || !LSPPreferences.kotlinLspEnabled) {
+      KlsLogs.warn("Server not initialized or Kotlin language server is disabled")
       return CodeFormatResult(false, mutableListOf())
     }
 
     // Get the file to format - from params if available, otherwise use selectedFile
     val fileToFormat = selectedFile
     if (fileToFormat == null) {
-      KslLogs.warn("No file selected for formatting")
+      KlsLogs.warn("No file selected for formatting")
       return CodeFormatResult(false, mutableListOf())
     }
 
     if (!(fileToFormat.toString().endsWith(".kt") || fileToFormat.toString().endsWith(".kts"))) {
-      KslLogs.debug("Not a Kotlin file: {}", fileToFormat)
+      KlsLogs.debug("Not a Kotlin file: {}", fileToFormat)
       return CodeFormatResult(false, mutableListOf())
     }
 
-    KslLogs.debug("Formatting file: {}", fileToFormat)
+    KlsLogs.debug("Formatting file: {}", fileToFormat)
 
     try {
       // Ensure document is opened before formatting
@@ -297,18 +288,18 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
       return result
     } catch (e: Exception) {
-      KslLogs.error("Error during format", e)
+      KlsLogs.error("Error during format", e)
       return CodeFormatResult(false, mutableListOf())
     }
   }
 
   override fun handleFailure(failure: LSPFailure?): Boolean {
-    KslLogs.error("LSP failure: type={}, error={}", failure?.type, failure?.error?.message)
+    KlsLogs.error("LSP failure: type={}, error={}", failure?.type, failure?.error?.message)
     return false
   }
 
   override fun shutdown() {
-    KslLogs.info("Shutting down Kotlin Language Server...")
+    KlsLogs.info("Shutting down Kotlin Language Server...")
     completionScope.cancel()
     try {
       org.greenrobot.eventbus.EventBus.getDefault().unregister(eventHandler)
@@ -316,14 +307,14 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         EventBus.getDefault().unregister(this)
       }
     } catch (e: Exception) {
-      KslLogs.warn("Error unregistering from EventBus", e)
+      KlsLogs.warn("Error unregistering from EventBus", e)
     }
     if (!disabledByPreference) {
-      processManager.shutdown()
+      connection.shutdown()
     }
     importAnalyzer.clearCache()
     initialized = false
-    KslLogs.info("Kotlin Language Server shutdown complete")
+    KlsLogs.info("Kotlin Language Server shutdown complete")
   }
   private fun summarizeDiagnosticsForTrace(diagnostics: List<DiagnosticItem>, limit: Int = 3): String {
     if (diagnostics.isEmpty()) return "[]"
@@ -339,11 +330,11 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
   fun onFileSelected(event: DocumentSelectedEvent) {
-    if (disabledByPreference || !LSPPreferences.kotlinLspEnabled || !processManager.isReady) {
+    if (disabledByPreference || !LSPPreferences.kotlinLspEnabled || !connection.isReady) {
       return
     }
 
-    KslLogs.debug("=== FILE SELECTED EVENT: {}", event.selectedFile)
+    KlsLogs.debug("=== FILE SELECTED EVENT: {}", event.selectedFile)
     selectedFile = event.selectedFile
     if (
         event.selectedFile.toString().endsWith(".kt") ||

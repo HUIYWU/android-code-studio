@@ -20,8 +20,8 @@ package com.tom.rv2ide.preferences
 import androidx.preference.Preference
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.tom.rv2ide.app.BaseApplication
-import com.tom.rv2ide.language.services.kotlin.KotlinLspBackendId
-import com.tom.rv2ide.language.services.kotlin.etc.LspFeatures
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendId
+import com.tom.rv2ide.language.services.kotlin.settings.KotlinLspSettings
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_KOTLIN_LSP_BACKEND
 import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_CLANG_LSP_ENABLED
@@ -319,7 +319,7 @@ private class KotlinFormatStyle(
   ) {
     val selectedStyle = STYLES.getOrNull(position) ?: DEFAULT_STYLE
     LSPPreferences.codeFormatStyle = selectedStyle
-    LspFeatures.setCodeFormatStyle(selectedStyle)
+    KotlinLspSettings.setCodeFormatStyle(selectedStyle)
   }
 
   override fun onCreatePreference(

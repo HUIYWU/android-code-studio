@@ -32,7 +32,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.tom.rv2ide.language.services.kotlin.KslLogs;
 
 /**
  * Kotlin source file manager that configures classpaths for Android modules.
@@ -121,13 +120,6 @@ public class KotlinSourceFileManager {
     allPaths.addAll(classPaths);
     allPaths.addAll(bootClassPaths);
     return allPaths;
-  }
-
-  /**
-   * Check if this file manager is for an Android module.
-   */
-  public boolean isAndroidModule() {
-    return module instanceof AndroidModule;
   }
 
   /**

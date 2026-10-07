@@ -31,8 +31,6 @@ import com.tom.rv2ide.utils.FlashbarUtilsKt;
 import com.tom.rv2ide.utils.JavaCharacter;
 import com.tom.rv2ide.utils.VMUtils;
 import java.io.File;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 public class BaseApplication extends Application {
 
@@ -48,10 +46,6 @@ public class BaseApplication extends Application {
   private static BaseApplication instance;
   private PreferenceManager mPrefsManager;
   
-  private Object kotlinProcessManager;
-  private CountDownLatch serverStartLatch;
-  private volatile boolean isStarting = false;
-
   public static BaseApplication getBaseInstance() {
     return instance;
   }
@@ -84,101 +78,6 @@ public class BaseApplication extends Application {
     }
   }
   
-  // public Object getKotlinProcessManager() {
-  //   synchronized (this) {
-  //       // Check if we need to start/restart the server
-  //       if (kotlinProcessManager == null || !isServerAlive()) {
-  //           if (isStarting) {
-  //               android.util.Log.w("BaseApplication", "Server is already starting, waiting...");
-  //           } else {
-  //               android.util.Log.i("BaseApplication", "Starting/restarting Kotlin server...");
-  //               serverStartLatch = new CountDownLatch(1);
-  //               isStarting = true;
-  //               // initKotlinServer();
-  //           }
-  //       } else {
-  //           android.util.Log.i("BaseApplication", "Server already running and alive");
-  //           return kotlinProcessManager;
-  //       }
-  //   }
-    
-  //   // Wait for server to be ready (max 10 seconds)
-  //   try {
-  //       if (!serverStartLatch.await(10, TimeUnit.SECONDS)) {
-  //           android.util.Log.e("BaseApplication", "Timeout waiting for Kotlin server to start");
-  //           isStarting = false;
-  //           return null;
-  //       }
-  //   } catch (InterruptedException e) {
-  //       android.util.Log.e("BaseApplication", "Interrupted while waiting for Kotlin server", e);
-  //       Thread.currentThread().interrupt();
-  //       isStarting = false;
-  //       return null;
-  //   }
-    
-  //   return kotlinProcessManager;
-  // }
-  
-  private boolean isServerAlive() {
-      if (kotlinProcessManager == null) {
-          return false;
-      }
-      
-      try {
-          Class<?> managerClass = kotlinProcessManager.getClass();
-          java.lang.reflect.Field processField = managerClass.getDeclaredField("process");
-          processField.setAccessible(true);
-          Object process = processField.get(kotlinProcessManager);
-          
-          if (process == null) {
-              return false;
-          }
-          
-          java.lang.reflect.Method isAliveMethod = process.getClass().getMethod("isAlive");
-          Boolean isAlive = (Boolean) isAliveMethod.invoke(process);
-          
-          return isAlive != null && isAlive;
-      } catch (Exception e) {
-          android.util.Log.e("BaseApplication", "Error checking if server is alive", e);
-          return false;
-      }
-  }
-  
-  private void initKotlinServer() {
-    new Thread(() -> {
-      try {
-        android.util.Log.i("BaseApplication", "=== STARTING KOTLIN SERVER INITIALIZATION ===");
-        
-        // Use reflection to avoid circular dependency
-        Class<?> managerClass = Class.forName("com.tom.rv2ide.language.services.kotlin.KotlinServerProcessManager");
-        Class<?> providerClass = Class.forName("com.tom.rv2ide.language.services.kotlin.KotlinClasspathProvider");
-        
-        android.util.Log.i("BaseApplication", "Creating manager and provider instances...");
-        Object manager = managerClass.getConstructor(android.content.Context.class).newInstance(this);
-        Object provider = providerClass.getConstructor().newInstance();
-        
-        android.util.Log.i("BaseApplication", "Calling startServer method...");
-        java.lang.reflect.Method startMethod = managerClass.getMethod("startServer", providerClass);
-        startMethod.invoke(manager, provider);
-        
-        // Wait for server to initialize
-        Thread.sleep(3000);
-        
-        kotlinProcessManager = manager;
-        
-        android.util.Log.i("BaseApplication", "=== KOTLIN SERVER STARTED SUCCESSFULLY ===");
-      } catch (Exception e) {
-        android.util.Log.e("BaseApplication", "FATAL: Failed to start Kotlin Language Server", e);
-        e.printStackTrace();
-      } finally {
-        isStarting = false;
-        if (serverStartLatch != null) {
-            serverStartLatch.countDown();
-        }
-      }
-    }).start();
-  }
-
   public void writeException(Throwable th) {
     FileUtil.writeFile(new File(FileUtil.getExternalStorageDir(), "idelog.txt").getAbsolutePath(),
         ThrowableUtils.getFullStackTrace(th));
