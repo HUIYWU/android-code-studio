@@ -22,7 +22,7 @@ import com.tom.rv2ide.editor.language.newline.TSCStyleBracketsHandler
 import com.tom.rv2ide.editor.language.treesitter.TreeSitterLanguage.Factory
 import com.tom.rv2ide.lsp.api.ILanguageServer
 import com.tom.rv2ide.lsp.api.ILanguageServerRegistry
-import com.tom.rv2ide.lsp.clang.ClangLanguageServer
+import com.tom.rv2ide.language.services.clang.ClangLanguageServer
 import com.itsaky.androidide.treesitter.cpp.TSLanguageCpp
 import io.github.rosemoe.sora.util.MyCharacter
 

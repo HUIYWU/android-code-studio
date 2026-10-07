@@ -130,7 +130,7 @@ import com.tom.rv2ide.viewmodel.EditorViewModel
 import com.tom.rv2ide.xml.resources.ResourceTableRegistry
 import com.tom.rv2ide.xml.versions.ApiVersionsRegistry
 import com.tom.rv2ide.xml.widgets.WidgetTableRegistry
-import com.tom.rv2ide.setup.Setup
+import com.tom.rv2ide.language.setup.Setup
 import com.tom.rv2ide.experimental.depsupdater.DependencyUpdaterDialog
 import com.tom.rv2ide.preferences.internal.BuildPreferences.isKtIndexingNotificationEnabled
 import java.io.File

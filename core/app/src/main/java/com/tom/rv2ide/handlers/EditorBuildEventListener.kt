@@ -26,10 +26,10 @@ import android.content.Context
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.tom.rv2ide.R
 import com.tom.rv2ide.activities.editor.EditorHandlerActivity
-import com.tom.rv2ide.lsp.java.JavaCompilerProvider
-import com.tom.rv2ide.lsp.java.compiler.SourceFileManager
-import com.tom.rv2ide.lsp.java.kotlin.KotlinClassOutputProvider
-import com.tom.rv2ide.lsp.java.kotlin.KotlinJvmTypeIndex
+import com.tom.rv2ide.language.services.java.JavaCompilerProvider
+import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
+import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
+import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex
 import com.tom.rv2ide.preferences.internal.GeneralPreferences
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.projects.IProjectManager

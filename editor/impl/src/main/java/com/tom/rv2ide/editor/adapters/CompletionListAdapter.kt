@@ -27,7 +27,7 @@ import android.widget.TextView
 import com.tom.rv2ide.editor.R
 import com.tom.rv2ide.editor.databinding.LayoutCompletionItemBinding
 import com.tom.rv2ide.lookup.Lookup
-import com.tom.rv2ide.lsp.java.utils.JavaType
+import com.tom.rv2ide.language.services.java.utils.JavaType
 import com.tom.rv2ide.lsp.models.ClassCompletionData
 import com.tom.rv2ide.lsp.models.CompletionItem as LspCompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind.CLASS

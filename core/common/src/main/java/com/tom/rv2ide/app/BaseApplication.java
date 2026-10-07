@@ -150,8 +150,8 @@ public class BaseApplication extends Application {
         android.util.Log.i("BaseApplication", "=== STARTING KOTLIN SERVER INITIALIZATION ===");
         
         // Use reflection to avoid circular dependency
-        Class<?> managerClass = Class.forName("com.tom.rv2ide.lsp.kotlin.KotlinServerProcessManager");
-        Class<?> providerClass = Class.forName("com.tom.rv2ide.lsp.kotlin.KotlinClasspathProvider");
+        Class<?> managerClass = Class.forName("com.tom.rv2ide.language.services.kotlin.KotlinServerProcessManager");
+        Class<?> providerClass = Class.forName("com.tom.rv2ide.language.services.kotlin.KotlinClasspathProvider");
         
         android.util.Log.i("BaseApplication", "Creating manager and provider instances...");
         Object manager = managerClass.getConstructor(android.content.Context.class).newInstance(this);

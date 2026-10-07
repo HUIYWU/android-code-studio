@@ -43,8 +43,8 @@ import com.tom.rv2ide.viewmodel.MainViewModel
 import com.tom.rv2ide.viewmodel.MainViewModel.Companion.SCREEN_MAIN
 import com.tom.rv2ide.viewmodel.MainViewModel.Companion.SCREEN_TEMPLATE_DETAILS
 import com.tom.rv2ide.viewmodel.MainViewModel.Companion.SCREEN_TEMPLATE_LIST
-import com.tom.rv2ide.setup.updater.lsp.KotlinLspUpdater
-import com.tom.rv2ide.setup.updater.lsp.data.LSPProperties
+import com.tom.rv2ide.language.setup.updater.lsp.KotlinLspUpdater
+import com.tom.rv2ide.language.setup.updater.lsp.data.LSPProperties
 import java.io.File
 
 class MainActivity : EdgeToEdgeIDEActivity() {

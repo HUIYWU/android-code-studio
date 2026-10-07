@@ -37,7 +37,7 @@ import com.tom.rv2ide.handlers.LspHandler.connectClient
 import com.tom.rv2ide.handlers.LspHandler.destroyLanguageServers
 import com.tom.rv2ide.lookup.Lookup
 import com.tom.rv2ide.lsp.IDELanguageClientImpl
-import com.tom.rv2ide.lsp.java.utils.CancelChecker
+import com.tom.rv2ide.language.services.java.utils.CancelChecker
 import com.tom.rv2ide.preferences.internal.GeneralPreferences
 import com.tom.rv2ide.projects.GradleProject
 import com.tom.rv2ide.projects.builder.BuildService

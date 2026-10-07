@@ -2,7 +2,7 @@ package com.tom.rv2ide.editor.ui
 
 import androidx.appcompat.app.AlertDialog
 import com.tom.rv2ide.common.logging.IdeLogConfig
-import com.tom.rv2ide.lsp.kotlin.KotlinLanguageServer
+import com.tom.rv2ide.language.services.kotlin.KotlinLanguageServer
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.models.Position
 import com.tom.rv2ide.models.Range

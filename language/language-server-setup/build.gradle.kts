@@ -25,7 +25,7 @@ plugins {
 }
 
 android {
-  namespace = "${BuildConfig.packageName}.setup"
+  namespace = "${BuildConfig.packageName}.language.setup"
 }
 
 dependencies {

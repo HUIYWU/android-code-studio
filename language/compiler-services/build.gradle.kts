@@ -26,7 +26,7 @@ plugins {
 
 
 android {
-    namespace = "${BuildConfig.packageName}.javac.services"
+    namespace = "${BuildConfig.packageName}.language.compiler"
     
     buildTypes {
         release {

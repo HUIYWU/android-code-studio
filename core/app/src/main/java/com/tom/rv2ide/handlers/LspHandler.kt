@@ -3,9 +3,9 @@ package com.tom.rv2ide.handlers
 import android.content.Context
 import com.tom.rv2ide.lsp.api.ILanguageClient
 import com.tom.rv2ide.lsp.api.ILanguageServerRegistry
-import com.tom.rv2ide.lsp.java.JavaLanguageServer
-import com.tom.rv2ide.lsp.clang.ClangLanguageServer
-import com.tom.rv2ide.lsp.kotlin.KotlinLanguageServer
+import com.tom.rv2ide.language.services.java.JavaLanguageServer
+import com.tom.rv2ide.language.services.clang.ClangLanguageServer
+import com.tom.rv2ide.language.services.kotlin.KotlinLanguageServer
 import com.tom.rv2ide.lsp.xml.XMLLanguageServer
 
 /** @author Akash Yadav */

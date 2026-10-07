@@ -30,7 +30,7 @@ val ktAnalysisEngineJar =
 
 
 android {
-  namespace = "${BuildConfig.packageName}.lsp.java"
+  namespace = "${BuildConfig.packageName}.language.services"
 
   sourceSets {
     getByName("androidTest") {
@@ -64,7 +64,7 @@ tasks.withType<Test>().configureEach {
 
 kapt {
   arguments {
-    arg("eventBusIndex", "${BuildConfig.packageName}.events.LspJavaEventsIndex")
+    arg("eventBusIndex", "${BuildConfig.packageName}.events.LanguageServicesEventsIndex")
   }
 }
 dependencies {

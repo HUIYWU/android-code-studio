@@ -20,8 +20,8 @@ package com.tom.rv2ide.preferences
 import androidx.preference.Preference
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.tom.rv2ide.app.BaseApplication
-import com.tom.rv2ide.lsp.kotlin.KotlinLspBackendId
-import com.tom.rv2ide.lsp.kotlin.etc.LspFeatures
+import com.tom.rv2ide.language.services.kotlin.KotlinLspBackendId
+import com.tom.rv2ide.language.services.kotlin.etc.LspFeatures
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_KOTLIN_LSP_BACKEND
 import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_CLANG_LSP_ENABLED
@@ -30,9 +30,9 @@ import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_KOTLIN_LSP_FORMAT_
 
 import com.tom.rv2ide.resources.R.drawable
 import com.tom.rv2ide.resources.R.string
-import com.tom.rv2ide.setup.Setup
-import com.tom.rv2ide.setup.servers.Clang
-import com.tom.rv2ide.setup.servers.Kotlin
+import com.tom.rv2ide.language.setup.Setup
+import com.tom.rv2ide.language.setup.servers.Clang
+import com.tom.rv2ide.language.setup.servers.Kotlin
 import com.tom.rv2ide.utils.AppRestartDialog
 import com.tom.rv2ide.utils.Environment
 import kotlinx.coroutines.CoroutineScope
@@ -136,11 +136,11 @@ private class ClangLSP(
         .setPositiveButton(string.lsp_server_uninstall) { _, _ ->
           Setup(context).uninstallLanguageServer(
             title = context.getString(string.lsp_server_uninstalling, "clang"),
-            initialStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_prepare_clang_removal),
-            successStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_completed),
-            failureStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_failed),
-            successTail = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_completed_success),
-            failureTail = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_failed_detail),
+            initialStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_prepare_clang_removal),
+            successStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_completed),
+            failureStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_failed),
+            successTail = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_completed_success),
+            failureTail = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_failed_detail),
             onComplete = { success ->
               if (success) {
                 AppRestartDialog.show(context)
@@ -199,11 +199,11 @@ private class KotlinLSP(
         .setPositiveButton(string.lsp_server_uninstall) { _, _ ->
           Setup(context).uninstallLanguageServer(
             title = context.getString(string.lsp_server_uninstalling, serverId),
-            initialStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_prepare_kotlin_removal),
-            successStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_completed),
-            failureStep = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_failed),
-            successTail = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_completed_success),
-            failureTail = context.getString(com.tom.rv2ide.setup.R.string.lsp_task_uninstallation_failed_detail),
+            initialStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_prepare_kotlin_removal),
+            successStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_completed),
+            failureStep = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_failed),
+            successTail = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_completed_success),
+            failureTail = context.getString(com.tom.rv2ide.language.setup.R.string.lsp_task_uninstallation_failed_detail),
             onComplete = { success ->
               if (success) {
                 AppRestartDialog.show(context)

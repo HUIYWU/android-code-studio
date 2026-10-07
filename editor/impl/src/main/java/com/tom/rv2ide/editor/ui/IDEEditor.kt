@@ -55,7 +55,7 @@ import com.tom.rv2ide.eventbus.events.editor.LazyDocumentTextProvider
 import com.tom.rv2ide.flashbar.Flashbar
 import com.tom.rv2ide.lsp.api.ILanguageClient
 import com.tom.rv2ide.lsp.api.ILanguageServer
-import com.tom.rv2ide.lsp.java.utils.CancelChecker
+import com.tom.rv2ide.language.services.java.utils.CancelChecker
 import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.DefinitionParams
 import com.tom.rv2ide.lsp.models.DefinitionResult

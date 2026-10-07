@@ -18,8 +18,8 @@
 package com.tom.rv2ide.projects.classpath
 
 import com.google.common.collect.ImmutableSet
-import com.tom.rv2ide.javac.services.fs.CachedJarFileSystem
-import com.tom.rv2ide.javac.services.fs.CachingJarFileSystemProvider
+import com.tom.rv2ide.language.compiler.javac.fs.CachedJarFileSystem
+import com.tom.rv2ide.language.compiler.javac.fs.CachingJarFileSystemProvider
 import java.io.File
 import java.nio.file.FileVisitResult
 import java.nio.file.FileVisitResult.CONTINUE

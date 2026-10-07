@@ -54,7 +54,7 @@
 -keep class * implements org.antlr.v4.runtime.Lexer {
     <init>(...);
 }
--keep class * extends com.tom.rv2ide.lsp.java.providers.completion.IJavaCompletionProvider {
+-keep class * extends com.tom.rv2ide.language.services.java.providers.completion.IJavaCompletionProvider {
     <init>(...);
 }
 -keep class com.tom.rv2ide.editor.api.IEditor { *; }

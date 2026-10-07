@@ -51,7 +51,7 @@ import com.tom.rv2ide.editor.R.layout
 import com.tom.rv2ide.editor.databinding.LayoutPopupMenuItemBinding
 import com.tom.rv2ide.editor.ui.EditorActionsMenu.ActionsListAdapter.VH
 import com.tom.rv2ide.lsp.api.ILanguageServerRegistry
-import com.tom.rv2ide.lsp.java.JavaLanguageServer
+import com.tom.rv2ide.language.services.java.JavaLanguageServer
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.lsp.xml.XMLLanguageServer
 import com.tom.rv2ide.resources.R

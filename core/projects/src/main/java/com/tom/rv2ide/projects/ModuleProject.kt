@@ -21,7 +21,7 @@ import android.text.TextUtils
 import androidx.annotation.RestrictTo
 import com.tom.rv2ide.builder.model.IJavaCompilerSettings
 import com.tom.rv2ide.common.logging.IdeLogConfig
-import com.tom.rv2ide.javac.services.fs.CacheFSInfoSingleton
+import com.tom.rv2ide.language.compiler.javac.fs.CacheFSInfoSingleton
 import com.tom.rv2ide.lookup.Lookup
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.projects.classpath.ZipFileClasspathReader
