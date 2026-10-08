@@ -17,10 +17,9 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.javac.config.JavacConfigProvider
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticResult
-import com.tom.rv2ide.projects.IProjectManager
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
 import com.tom.rv2ide.utils.Environment
@@ -38,7 +37,9 @@ import org.jetbrains.kotlin.analysis.api.standalone.buildStandaloneAnalysisAPISe
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtLibraryModule
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtSourceModule
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
+import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
+import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiManager
@@ -49,15 +50,14 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtPsiFactory
 
 /**
- * Builds and owns the standalone Kotlin Analysis API session used by [KotlinAnalysisLspConnection].
+ * Builds and owns the standalone Kotlin Analysis API session used by [KotlinAnalysisBackendConnection].
  *
- * TODO(ACS-KT-ANALYSIS-EXPERIMENT): the spike analyses without a project read/write lock; lock
- *  discipline is not implemented yet.
+ * Analysis calls are executed under the standalone application's read action by the backend connection.
  */
-internal class KotlinAnalysisEngine(
-    private val classpathProvider: KotlinClasspathProvider,
+internal class KotlinStandaloneAnalysisRuntime(
+    private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
-) {
+) : KotlinAnalysisRuntime {
 
   private val disposable = Disposer.newDisposable("acs-kotlin-analysis")
   private val closed = AtomicBoolean(false)
@@ -65,7 +65,7 @@ internal class KotlinAnalysisEngine(
   private var sourceModulesByProjectPath: Map<String, KaSourceModule> = emptyMap()
 
   @OptIn(KaExperimentalApi::class, KaImplementationDetail::class, K1Deprecation::class)
-  fun start(): Boolean {
+  override fun start(): Boolean {
     val moduleProjects = resolveModuleProjects()
     val sourceRoots = moduleProjects.flatMap { it.getSourceDirectories() }
         .filter(File::isDirectory)
@@ -73,6 +73,7 @@ internal class KotlinAnalysisEngine(
         .distinct()
     if (sourceRoots.isEmpty()) {
       KlsLogs.warn("No Kotlin source roots found for the Kotlin Analysis API engine")
+      disposeQuietly()
       return false
     }
     val classpathRoots =
@@ -154,24 +155,27 @@ internal class KotlinAnalysisEngine(
     }
   }
 
-  fun analyze(path: Path, snapshot: ActiveDocumentSnapshot? = null): DiagnosticResult? {
+  override fun analyze(path: Path, snapshot: ActiveDocumentSnapshot?): DiagnosticResult? {
     val currentSession = session ?: return null
 
-    if (snapshot != null) {
-      return analyzeInMemoryText(currentSession.project, path, snapshot)
-    }
-
-    val virtualFile = VirtualFileManager.getInstance().findFileByNioPath(path) ?: return null
-    virtualFile.refresh(false, false)
-    val psiManager = PsiManager.getInstance(currentSession.project)
-    val psiFile = psiManager.findFile(virtualFile)
-    val ktFile = psiFile as? KtFile ?: return null
-
     return try {
-      val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
-      DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_SERVER)
+      if (snapshot == null) {
+        val virtualFile = VirtualFileManager.getInstance().findFileByNioPath(path) ?: return null
+        virtualFile.refresh(false, false)
+        ApplicationManager.getApplication().runReadAction(
+            Computable {
+              val psiManager = PsiManager.getInstance(currentSession.project)
+              val psiFile = psiManager.findFile(virtualFile)
+              val ktFile = psiFile as? KtFile ?: return@Computable null
+              val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
+              DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_SERVER)
+            },
+        )
+      } else {
+        analyzeInMemoryText(currentSession.project, path, snapshot)
+      }
     } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis API disk analysis failed for: {}", path, t)
+      KlsLogs.warn("Kotlin Analysis API analysis failed for: {}", path, t)
       null
     }
   }
@@ -183,24 +187,33 @@ internal class KotlinAnalysisEngine(
       snapshot: ActiveDocumentSnapshot,
   ): DiagnosticResult? {
     return try {
-      val physicalFile = findPhysicalKtFile(project, path)
-      val module = sourceModuleFor(path)
-      val factory = if (physicalFile != null) {
-        KtPsiFactory.contextual(physicalFile, markGenerated = true, eventSystemEnabled = false)
-      } else {
-        KtPsiFactory(project, markGenerated = true, eventSystemEnabled = false)
-      }
-      val ktFile = factory.createFile(path.fileName.toString(), snapshot.content)
-      if (module != null) {
-        ktFile.contextModule = module
-      }
-      val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
-      DiagnosticResult(
-          path,
-          diagnostics,
-          DiagnosticResult.CHANNEL_SERVER,
-          snapshot.version,
-          snapshot.revision,
+      ApplicationManager.getApplication().runReadAction(
+          Computable {
+            val physicalFile = findPhysicalKtFile(project, path)
+            val module = sourceModuleFor(path)
+            val factory =
+                if (physicalFile != null) {
+                  KtPsiFactory.contextual(
+                      physicalFile,
+                      markGenerated = true,
+                      eventSystemEnabled = false,
+                  )
+                } else {
+                  KtPsiFactory(project, markGenerated = true, eventSystemEnabled = false)
+                }
+            val ktFile = factory.createFile(path.fileName.toString(), snapshot.content)
+            if (module != null) {
+              ktFile.contextModule = module
+            }
+            val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
+            DiagnosticResult(
+                path,
+                diagnostics,
+                DiagnosticResult.CHANNEL_SERVER,
+                snapshot.version,
+                snapshot.revision,
+            )
+          },
       )
     } catch (t: Throwable) {
       KlsLogs.warn("Kotlin Analysis API in-memory analysis failed for: {}", path, t)
@@ -214,12 +227,12 @@ internal class KotlinAnalysisEngine(
   }
 
   private fun sourceModuleFor(path: Path): KaSourceModule? {
-    val moduleProject = IProjectManager.getInstance().getWorkspace()?.findModuleForFile(path, false)
+    val moduleProject = classpathProvider.workspace?.findModuleForFile(path, false)
         ?: return sourceModulesByProjectPath.values.singleOrNull()
     return sourceModulesByProjectPath[moduleProject.path]
   }
 
-  fun close() {
+  override fun close() {
     disposeQuietly()
   }
 
@@ -236,7 +249,7 @@ internal class KotlinAnalysisEngine(
     }
   }
   private fun resolveModuleProjects(): List<ModuleProject> {
-    val workspace = IProjectManager.getInstance().getWorkspace() ?: return emptyList()
+    val workspace = classpathProvider.workspace ?: return emptyList()
     val directModules = buildList {
       add(workspace.getRootProject())
       addAll(workspace.getSubProjects())
@@ -262,16 +275,4 @@ internal class KotlinAnalysisEngine(
   private fun resolveJdkRelease(jdkHome: File): Int =
       Regex("java-(\\d+)").find(jdkHome.name)?.groupValues?.get(1)?.toIntOrNull() ?: 17
 
-  companion object {
-    private const val ENGINE_PROBE_CLASS =
-        "org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISessionBuilder"
-
-    fun isEngineBundled(): Boolean =
-        try {
-          Class.forName(ENGINE_PROBE_CLASS)
-          true
-        } catch (_: Throwable) {
-          false
-        }
-  }
 }

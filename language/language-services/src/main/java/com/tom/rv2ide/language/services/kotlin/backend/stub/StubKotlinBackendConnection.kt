@@ -18,8 +18,8 @@ package com.tom.rv2ide.language.services.kotlin.backend.stub
 
 import android.content.Context
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 
@@ -29,7 +29,7 @@ import com.tom.rv2ide.lsp.models.DiagnosticResult
  * This does not start a real server yet. It only keeps upper layers stable while
  * a future backend implementation is integrated behind the same interfaces.
  */
-class StubKotlinLspConnection(context: Context) : KotlinLspConnection {
+class StubKotlinBackendConnection(context: Context) : KotlinBackendConnection {
   private val appContext = context.applicationContext
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
 
@@ -41,7 +41,7 @@ class StubKotlinLspConnection(context: Context) : KotlinLspConnection {
     KlsLogs.info("Stub Kotlin backend installed diagnostics callback")
   }
 
-  override fun startServer(classpathProvider: KotlinClasspathProvider): Boolean {
+  override fun startBackend(classpathProvider: KotlinProjectClasspathProvider): Boolean {
     KlsLogs.warn(
         "Stub Kotlin backend selected. No real Kotlin language server process will be started. projectFilesDir={}",
         appContext.filesDir.absolutePath,
@@ -62,7 +62,7 @@ class StubKotlinLspConnection(context: Context) : KotlinLspConnection {
     KlsLogs.warn("Stub Kotlin backend ignoring notification: {}", method)
   }
 
-  override fun shutdown() {
+  override fun close() {
     KlsLogs.info("Stub Kotlin backend shutdown")
     diagnosticsCallback = null
   }

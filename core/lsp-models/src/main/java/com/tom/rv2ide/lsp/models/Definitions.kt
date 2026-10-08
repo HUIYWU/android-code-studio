@@ -28,6 +28,9 @@ data class DefinitionParams(
     var file: Path,
     var position: Position,
     override val cancelChecker: ICancelChecker,
-) : CancellableRequestParams
+) : CancellableRequestParams {
+  var documentVersion: Int = -1
+  var documentRevision: Long = -1L
+}
 
 data class DefinitionResult(var locations: List<Location>)

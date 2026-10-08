@@ -19,11 +19,12 @@ package com.tom.rv2ide.language.services.kotlin.request
 
 import com.google.gson.JsonObject
 import com.tom.rv2ide.lsp.models.*
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.completion.KotlinCompletionConverter
 import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
-import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentManager
+import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.projects.FileManager
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -34,15 +35,18 @@ import kotlinx.coroutines.*
  */
 
 class KotlinRequestHandler(
-    private val connection: KotlinLspConnection,
-    private val documentManager: KotlinDocumentManager,
+    private val connection: KotlinBackendConnection,
+    private val documentManager: KotlinDocumentSync,
 ) {
+
+  private fun isCurrentDocument(file: java.nio.file.Path, version: Int, revision: Long): Boolean {
+    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return version < 0 && revision < 0L
+    return (version < 0 || snapshot.version == version) &&
+        (revision < 0L || snapshot.revision == revision)
+  }
 
   companion object {
     private const val COMPLETION_TIMEOUT = 10000L
-    private const val DEBOUNCE_DELAY = 0L
-    private const val HOVER_DEBOUNCE_MS = 350L
-    private const val HOVER_MIN_INTERVAL_MS = 500L
   }
 
   private val completionConverter = KotlinCompletionConverter()
@@ -54,17 +58,17 @@ class KotlinRequestHandler(
   // Debouncing for rapid typing
   private val lastCompletionRequest = AtomicLong(0)
   private val completionRequestSeq = AtomicLong(0)
-  private val lastHoverRequest = AtomicLong(0)
-  private var activeCompletionJob: Job? = null
-  private var javaCompilerBridge: KotlinJavaCompilerBridge? = null
 
   fun setJavaCompilerBridge(bridge: KotlinJavaCompilerBridge) {
-    this.javaCompilerBridge = bridge
     completionConverter.setJavaCompilerBridge(bridge)
   }
 
   suspend fun hover(params: DefinitionParams): MarkupContent =
       withContext(Dispatchers.IO) {
+        val requestGeneration = connection.generation
+        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          return@withContext MarkupContent("", MarkupKind.PLAIN)
+        }
         val deferred = CompletableDeferred<MarkupContent>()
 
         // Hover is re-enabled. This path previously had to be hard-disabled after
@@ -76,8 +80,10 @@ class KotlinRequestHandler(
         // the feature behind a permanent product switch.
 
         try {
-          documentManager.ensureDocumentOpen(params.file)
-
+          documentManager.ensureDocumentOpen(
+              params.file,
+              FileManager.getActiveDocumentSnapshot(params.file)?.content,
+          )
           val uri = params.file.toUri().toString()
           val lspParams = JsonObject().apply {
             add("textDocument", JsonObject().apply { addProperty("uri", uri) })
@@ -96,7 +102,10 @@ class KotlinRequestHandler(
             }
           }
 
-          withTimeoutOrNull(3000) { deferred.await() } ?: MarkupContent("", MarkupKind.PLAIN)
+          val result = withTimeoutOrNull(3000) { deferred.await() }
+          if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+            result ?: MarkupContent("", MarkupKind.PLAIN)
+          } else MarkupContent("", MarkupKind.PLAIN)
         } catch (e: Exception) {
           KlsLogs.debug("Hover request failed: {}", e.message)
           MarkupContent("", MarkupKind.PLAIN)
@@ -104,11 +113,16 @@ class KotlinRequestHandler(
       }
 
   suspend fun complete(params: CompletionParams): CompletionResult = coroutineScope {
+      val requestGeneration = connection.generation
+      fun isCurrentRequest(): Boolean =
+          requestGeneration == connection.generation && connection.isReady && connection.isInitialized &&
+              !params.cancelChecker.isCancelled() &&
+              isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
+      if (!isCurrentRequest()) return@coroutineScope CompletionResult(emptyList())
       if (params.position.line < 0 || params.position.column < 0) {
           return@coroutineScope CompletionResult(emptyList())
       }
 
-      activeCompletionJob?.cancel()
 
       val requestTimestamp = System.currentTimeMillis()
       val requestId = completionRequestSeq.incrementAndGet()
@@ -128,7 +142,7 @@ class KotlinRequestHandler(
 
       delay(50L) // Reduced from 100L
 
-      if (lastCompletionRequest.get() != requestTimestamp || completionRequestSeq.get() != requestId) {
+      if (lastCompletionRequest.get() != requestTimestamp || completionRequestSeq.get() != requestId || !isCurrentRequest()) {
           KlsLogs.debug("completion stale drop before sync requestId={}", requestId)
           return@coroutineScope CompletionResult(emptyList())
       }
@@ -143,7 +157,7 @@ class KotlinRequestHandler(
           val currentTime = System.currentTimeMillis()
           val lastSync = lastSyncTime[uri] ?: 0L
 
-          if (completionRequestSeq.get() != requestId) {
+          if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop before document sync requestId={}", requestId)
               return@coroutineScope CompletionResult(emptyList())
           }
@@ -161,7 +175,7 @@ class KotlinRequestHandler(
               lastSyncTime[uri] = currentTime
           }
 
-          if (completionRequestSeq.get() != requestId) {
+          if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop after document sync requestId={}", requestId)
               return@coroutineScope CompletionResult(emptyList())
           }
@@ -178,7 +192,7 @@ class KotlinRequestHandler(
           connection.sendRequest("textDocument/completion", lspParams) { result ->
               launch {
                   try {
-                      if (completionRequestSeq.get() != requestId) {
+                      if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
                           KlsLogs.debug("completion stale drop before response processing requestId={}", requestId)
                           deferred.complete(CompletionResult(emptyList()))
                           return@launch
@@ -190,17 +204,19 @@ class KotlinRequestHandler(
                           return@launch
                       }
 
-                      val itemsArray = when {
-                          result.has("items") -> result.getAsJsonArray("items")
-                          result.isJsonArray -> result.asJsonArray
-                          else -> {
-                              KlsLogs.debug("completion result shape unsupported requestId={}", requestId)
-                              deferred.complete(CompletionResult(emptyList()))
-                              return@launch
-                          }
-                      }
+val itemsArray = when {
+                           result.has("items") -> result.getAsJsonArray("items")
+                           result.has("result") && result.get("result").isJsonArray ->
+                               result.getAsJsonArray("result")
+                           result.isJsonArray -> result.asJsonArray
+                           else -> {
+                               KlsLogs.debug("completion result shape unsupported requestId={}", requestId)
+                               deferred.complete(CompletionResult(emptyList()))
+                               return@launch
+                           }
+                       }
 
-                      if (completionRequestSeq.get() != requestId) {
+                      if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
                           KlsLogs.debug("completion stale drop before convert requestId={} lspItemCount={}", requestId, itemsArray.size())
                           deferred.complete(CompletionResult(emptyList()))
                           return@launch
@@ -208,7 +224,7 @@ class KotlinRequestHandler(
 
                       val items = completionConverter.convertWithClasspathEnhancement(itemsArray, fileContent, prefix)
 
-                      if (completionRequestSeq.get() != requestId) {
+                      if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
                           KlsLogs.debug("completion stale drop after convert requestId={} convertedItemCount={}", requestId, items.size)
                           deferred.complete(CompletionResult(emptyList()))
                           return@launch
@@ -256,9 +272,16 @@ class KotlinRequestHandler(
 
   suspend fun findReferences(params: ReferenceParams): ReferenceResult =
       withContext(Dispatchers.IO) {
+        val requestGeneration = connection.generation
+        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          return@withContext ReferenceResult(emptyList())
+        }
         val deferred = CompletableDeferred<ReferenceResult>()
 
-        documentManager.ensureDocumentOpen(params.file)
+        documentManager.ensureDocumentOpen(
+            params.file,
+            FileManager.getActiveDocumentSnapshot(params.file)?.content,
+        )
 
         val lspParams =
             JsonObject().apply {
@@ -286,14 +309,24 @@ class KotlinRequestHandler(
           deferred.complete(ReferenceResult(locations))
         }
 
-        withTimeoutOrNull(5000) { deferred.await() } ?: ReferenceResult(emptyList())
+        val result = withTimeoutOrNull(5000) { deferred.await() }
+        if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          result ?: ReferenceResult(emptyList())
+        } else ReferenceResult(emptyList())
       }
 
   suspend fun findDefinition(params: DefinitionParams): DefinitionResult =
       withContext(Dispatchers.IO) {
+        val requestGeneration = connection.generation
+        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          return@withContext DefinitionResult(emptyList())
+        }
         val deferred = CompletableDeferred<DefinitionResult>()
 
-        documentManager.ensureDocumentOpen(params.file)
+        documentManager.ensureDocumentOpen(
+            params.file,
+            FileManager.getActiveDocumentSnapshot(params.file)?.content,
+        )
 
         val lspParams =
             JsonObject().apply {
@@ -315,15 +348,25 @@ class KotlinRequestHandler(
           deferred.complete(DefinitionResult(locations))
         }
 
-        withTimeoutOrNull(5000) { deferred.await() } ?: DefinitionResult(emptyList())
+        val result = withTimeoutOrNull(5000) { deferred.await() }
+        if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          result ?: DefinitionResult(emptyList())
+        } else DefinitionResult(emptyList())
       }
 
   suspend fun signatureHelp(params: SignatureHelpParams): SignatureHelp =
       withContext(Dispatchers.IO) {
+        val requestGeneration = connection.generation
+        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          return@withContext SignatureHelp(emptyList(), -1, -1)
+        }
         val deferred = CompletableDeferred<SignatureHelp>()
 
         try {
-          documentManager.ensureDocumentOpen(params.file)
+          documentManager.ensureDocumentOpen(
+              params.file,
+              FileManager.getActiveDocumentSnapshot(params.file)?.content,
+          )
 
           val uri = params.file.toUri().toString()
           if (params.content != null && params.content!!.isNotEmpty()) {
@@ -386,11 +429,10 @@ class KotlinRequestHandler(
             deferred.complete(help)
           }
 
-          withTimeoutOrNull(3000) { deferred.await() }
-              ?: run {
-                KlsLogs.warn("Signature help request timed out")
-                SignatureHelp(emptyList(), 0, 0)
-              }
+          val result = withTimeoutOrNull(3000) { deferred.await() }
+          if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+            result ?: SignatureHelp(emptyList(), 0, 0)
+          } else SignatureHelp(emptyList(), 0, 0)
         } catch (e: Exception) {
           KlsLogs.error("Error requesting signature help", e)
           deferred.complete(SignatureHelp(emptyList(), 0, 0))
@@ -579,7 +621,8 @@ class KotlinRequestHandler(
   }
 
   private fun convertToLocations(result: JsonObject?): List<com.tom.rv2ide.models.Location> {
-    return result?.asJsonArray?.map { element ->
+    val locations = result?.getAsJsonArray("result") ?: return emptyList()
+    return locations.map { element ->
       val loc = element.asJsonObject
       val range = loc.getAsJsonObject("range")
       val start = range.getAsJsonObject("start")
@@ -601,6 +644,6 @@ class KotlinRequestHandler(
                       ),
               ),
       )
-    } ?: emptyList()
+    }
   }
 }

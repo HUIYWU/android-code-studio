@@ -19,7 +19,7 @@ package com.tom.rv2ide.language.services.kotlin.backend
 /**
  * Identifiers for selectable Kotlin LSP backend implementations.
  */
-enum class KotlinLspBackendId {
+enum class KotlinBackendId {
   FWCD,
   STUB,
   ANALYSIS,

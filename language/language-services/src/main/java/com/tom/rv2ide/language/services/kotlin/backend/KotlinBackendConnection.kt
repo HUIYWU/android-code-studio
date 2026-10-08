@@ -18,21 +18,29 @@
 package com.tom.rv2ide.language.services.kotlin.backend
 
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.lsp.models.DiagnosticResult
+import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
+import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
 
 /**
- * Minimal abstraction over the active Kotlin LSP transport/backend connection.
+ * Shared lifecycle and document capability contract for Kotlin backends.
  *
- * The goal of this interface is to decouple higher-level Kotlin editing logic
- * (document sync, requests, workspace setup, formatting, diagnostics wiring)
- * from the concrete backend process implementation.
- *
- * The interface intentionally stays small so different Kotlin backends can share
- * the same upper-layer integration with minimal behavioral drift.
+ * The contract is used by both the external FWCD process backend and the in-process
+ * Analysis backend. JSON-RPC methods remain available because FWCD uses them directly;
+ * Analysis handles only the subset needed by the shared document and diagnostics layer.
  */
-interface KotlinLspConnection {
+interface KotlinBackendConnection {
   val isReady: Boolean
+  val state: KotlinBackendState
+    get() = if (isReady) KotlinBackendState.READY else KotlinBackendState.NEW
+  val generation: Long
+    get() = 0L
+  val isInitialized: Boolean
+    get() = false
+
+  fun supportsDocument(path: java.nio.file.Path): Boolean =
+      path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
 
   fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit)
   /**
@@ -41,14 +49,23 @@ interface KotlinLspConnection {
    * @return true only when the transport is ready to receive JSON-RPC messages. Callers must not
    *   send initialize or other requests when this returns false.
    */
-  fun startServer(classpathProvider: KotlinClasspathProvider): Boolean
+  fun startBackend(classpathProvider: KotlinProjectClasspathProvider): Boolean
 
+  fun refreshEnvironment(classpathProvider: KotlinProjectClasspathProvider): Boolean = isReady
+
+  fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
+    sendRequest("initialize", params, callback)
+  }
+
+  fun markInitialized() = Unit
+
+  fun markInitializationFailed() = close()
 
   fun sendRequest(method: String, params: JsonObject, callback: (JsonObject?) -> Unit)
 
   fun sendNotification(method: String, params: JsonObject)
 
   fun sendNotificationOrThrow(method: String, params: JsonObject)
+  fun close()
 
-  fun shutdown()
 }

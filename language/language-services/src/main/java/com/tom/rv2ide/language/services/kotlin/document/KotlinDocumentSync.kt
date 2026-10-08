@@ -18,7 +18,7 @@
 package com.tom.rv2ide.language.services.kotlin.document
 
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -26,8 +26,8 @@ import java.util.concurrent.ConcurrentHashMap
 /*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
-class KotlinDocumentManager(
-    private val connection: KotlinLspConnection,
+class KotlinDocumentSync(
+    private val connection: KotlinBackendConnection,
     private val isServerReady: () -> Boolean = { true },
 ) {
 
@@ -48,6 +48,7 @@ class KotlinDocumentManager(
   private val pendingOpenDocuments = ConcurrentHashMap<String, PendingOpenDocument>()
 
   fun ensureDocumentOpen(file: Path, content: String? = null, version: Int? = null) {
+    if (!connection.supportsDocument(file)) return
     val uri = file.toUri().toString()
     if (openedDocuments.contains(uri)) {
       return
@@ -107,6 +108,7 @@ class KotlinDocumentManager(
   }
 
   private fun openDocumentNow(file: Path, uri: String, text: String, version: Int): Boolean {
+    if (!connection.supportsDocument(file) || !isServerReady()) return false
     setDocumentVersion(uri, version)
 
     val params =
@@ -147,7 +149,19 @@ class KotlinDocumentManager(
   }
 
   fun notifyDocumentChange(file: Path, newText: String, version: Int) {
+    if (!connection.supportsDocument(file)) return
     val uri = file.toUri().toString()
+
+    if (!isServerReady()) {
+      pendingOpenDocuments[uri] = PendingOpenDocument(
+          file = file,
+          uri = uri,
+          text = newText,
+          version = version,
+          queuedAtMs = android.os.SystemClock.elapsedRealtime(),
+      )
+      return
+    }
 
     if (!openedDocuments.contains(uri)) {
       KlsLogs.warn("Document not opened, opening it first: {}", uri)
@@ -176,6 +190,7 @@ class KotlinDocumentManager(
   }
 
   fun notifyDocumentSave(file: Path, text: String? = null) {
+    if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
     if (!openedDocuments.contains(uri)) {
       return

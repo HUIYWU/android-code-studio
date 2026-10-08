@@ -17,33 +17,33 @@
 package com.tom.rv2ide.language.services.kotlin.backend.stub
 
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendContext
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendId
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendId
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import java.io.File
 
 /**
  * No-op configurator for backend skeleton wiring.
  */
-class StubKotlinLspBackendConfigurator(
-    private val context: KotlinLspBackendContext,
-) : KotlinLspBackendConfigurator {
+class StubKotlinBackendConfigurator(
+    private val context: KotlinBackendContext,
+) : KotlinBackendConfigurator {
   override fun resolveWorkspaceRoot(): File =
-      context.mainModuleWorkspaceRoot(KotlinLspBackendId.STUB)
+      context.mainModuleWorkspaceRoot(KotlinBackendId.STUB)
 
   override fun initializationOptions(): JsonObject? = null
 
-  override fun beforeServerStart(connection: KotlinLspConnection) {
+  override fun beforeBackendStart(connection: KotlinBackendConnection) {
     KlsLogs.info("Stub Kotlin backend: no pre-start workspace configuration")
   }
 
-  override fun afterServerInitialized(connection: KotlinLspConnection, hasKotlinSources: Boolean) {
+  override fun afterBackendInitialized(connection: KotlinBackendConnection, hasSupportedDocuments: Boolean) {
     KlsLogs.info("Stub Kotlin backend: no post-initialize workspace configuration")
   }
 
-  override fun onClasspathReloaded(connection: KotlinLspConnection) {}
+  override fun onEnvironmentRefreshed(connection: KotlinBackendConnection) {}
 
-  override fun applyFormattingStyle(connection: KotlinLspConnection, style: String) {}
+  override fun applyFormattingStyle(connection: KotlinBackendConnection, style: String) {}
 }

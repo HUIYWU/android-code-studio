@@ -83,6 +83,8 @@ class CompletionTooltipManager(private val context: Context, private val editor:
     val ideEditor = editor as? IDEEditor ?: return
     val file = ideEditor.file ?: return
     val languageServer = ideEditor.languageServer ?: return
+    val requestVersion = ideEditor.currentDocumentVersion
+    val requestRevision = ideEditor.currentDocumentRevision
 
     currentJob =
         scope.launch {
@@ -114,7 +116,10 @@ class CompletionTooltipManager(private val context: Context, private val editor:
                     file = file.toPath(),
                     position = com.tom.rv2ide.models.Position(line, column),
                     cancelChecker = cancelChecker,
-                )
+                ).apply {
+                  documentVersion = requestVersion
+                  documentRevision = requestRevision
+                }
 
             val hoverResult = withContext(Dispatchers.IO) { languageServer.hover(params) }
 

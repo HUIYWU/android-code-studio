@@ -90,6 +90,8 @@ class HoverTooltipManager(private val context: Context, private val editor: IDEE
     val file = editor.file ?: return
     val languageServer = editor.languageServer ?: return
     val generation = requestGeneration
+    val requestVersion = editor.currentDocumentVersion
+    val requestRevision = editor.currentDocumentRevision
 
     currentJob =
         scope.launch {
@@ -117,7 +119,10 @@ class HoverTooltipManager(private val context: Context, private val editor: IDEE
                     file = file.toPath(),
                     position = Position(line, column),
                     cancelChecker = cancelChecker,
-                )
+                ).apply {
+                  documentVersion = requestVersion
+                  documentRevision = requestRevision
+                }
 
             val hoverResult = withContext(Dispatchers.IO) { languageServer.hover(params) }
 

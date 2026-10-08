@@ -29,7 +29,10 @@ data class ReferenceParams(
     var position: Position,
     var includeDeclaration: Boolean,
     override val cancelChecker: ICancelChecker,
-) : CancellableRequestParams
+) : CancellableRequestParams {
+  var documentVersion: Int = -1
+  var documentRevision: Long = -1L
+}
 
 enum class ReferenceRole {
   DEFINITION,

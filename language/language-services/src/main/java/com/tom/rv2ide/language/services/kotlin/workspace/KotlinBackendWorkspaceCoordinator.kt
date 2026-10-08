@@ -19,11 +19,9 @@ package com.tom.rv2ide.language.services.kotlin.workspace
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendContext
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerProvider
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinCompilerService
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.android.AndroidModule
@@ -36,14 +34,14 @@ import kotlinx.coroutines.*
 /*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
-class KotlinWorkspaceSetup(
+class KotlinBackendWorkspaceCoordinator(
     private val workspace: IWorkspace,
-    private val backendContext: KotlinLspBackendContext,
-    private val backendConfigurator: KotlinLspBackendConfigurator,
+    private val backendContext: KotlinBackendContext,
+    private val backendConfigurator: KotlinBackendConfigurator,
 ) {
 
 
-  private var compilerService: KotlinCompilerService? = null
+  @Volatile private var closed = false
   private val classpathProvider = backendContext.classpathProvider
 
   private var buildWatcher: WatchService? = null
@@ -51,7 +49,10 @@ class KotlinWorkspaceSetup(
   private val watchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
   private val resolvedWorkspaceRootDir: File by lazy { backendConfigurator.resolveWorkspaceRoot() }
 
-  fun setup(connection: KotlinLspConnection, onInitialized: (Boolean) -> Unit = {}) {
+  fun setup(connection: KotlinBackendConnection, onInitialized: (Boolean) -> Unit = {}) {
+    if (closed) return
+    val alreadyInitialized = connection.isReady && connection.isInitialized
+
     val workspaceRootDir = resolvedWorkspaceRootDir
     val workspaceRoot = workspaceRootDir.toPath().toUri().toString()
     KlsLogs.infoThrottled(
@@ -61,8 +62,8 @@ class KotlinWorkspaceSetup(
         workspaceRoot,
         workspace.getProjectDir().absolutePath,
     )
-    val hasKotlinSources = hasKotlinSourceFiles(workspaceRootDir)
-    if (hasKotlinSources) {
+    val hasSupportedDocuments = hasSupportedKotlinDocuments(workspaceRootDir, connection)
+    if (hasSupportedDocuments) {
       LogStream.emitLineBlocking("Starting Kotlin language server...")
     } else {
       KlsLogs.infoThrottled(
@@ -74,19 +75,23 @@ class KotlinWorkspaceSetup(
     }
 
 
-    initializeCompilerService()
-    classpathProvider.initialize(compilerService)
 
     startBuildWatcher(connection)
 
-    backendConfigurator.beforeServerStart(connection)
-    if (!connection.startServer(classpathProvider)) {
+    backendConfigurator.beforeBackendStart(connection)
+    if (!connection.startBackend(classpathProvider)) {
       val message = "Kotlin language server failed to start; initialize request was not sent. Check KLS logs for launcher stderr and exit code."
       KlsLogs.error(message)
-      if (hasKotlinSources) {
+      if (hasSupportedDocuments) {
         LogStream.emitLineBlocking(message)
       }
       onInitialized(false)
+      return
+    }
+
+    if (alreadyInitialized && connection.isInitialized) {
+      backendConfigurator.onEnvironmentRefreshed(connection)
+      onInitialized(true)
       return
     }
 
@@ -94,29 +99,32 @@ class KotlinWorkspaceSetup(
 
     KlsLogs.debugThrottled("kls:init-request", 5000L, "Sending initialize request...")
 
-    connection.sendRequest("initialize", initParams) { result ->
+    connection.initialize(initParams) { result ->
+      if (closed) return@initialize
       val capabilities = result?.get("capabilities")?.takeIf { it.isJsonObject }?.asJsonObject
       if (result == null || capabilities == null) {
         val message = "Kotlin language server initialize failed; backend did not return capabilities."
         KlsLogs.error(message)
-        if (hasKotlinSources) {
+        if (hasSupportedDocuments) {
           LogStream.emitLineBlocking(message)
         }
-        connection.shutdown()
+        connection.markInitializationFailed()
         onInitialized(false)
-        return@sendRequest
+        return@initialize
       }
 
       KlsLogs.infoThrottled("kls:init-success", 5000L, "Server initialized successfully")
       connection.sendNotification("initialized", JsonObject())
+      connection.markInitialized()
       onInitialized(true)
 
-      backendConfigurator.afterServerInitialized(connection, hasKotlinSources)
+      backendConfigurator.afterBackendInitialized(connection, hasSupportedDocuments)
     }
   }
 
-  private fun startBuildWatcher(connection: KotlinLspConnection) {
+  private fun startBuildWatcher(connection: KotlinBackendConnection) {
     try {
+      if (closed || buildWatcher != null) return
       buildWatcher = FileSystems.getDefault().newWatchService()
 
       // Watch all Android module build directories
@@ -130,6 +138,8 @@ class KotlinWorkspaceSetup(
 
       if (modulesToWatch.isEmpty()) {
         KlsLogs.warn("No build directories found to watch")
+        buildWatcher?.close()
+        buildWatcher = null
         return
       }
 
@@ -190,9 +200,9 @@ class KotlinWorkspaceSetup(
               KlsLogs.infoThrottled(
                   "kls:build-reload",
                   2000L,
-                  "Build changes detected, reloading classpath and index...",
+                  "Build changes detected, refreshing Kotlin backend environment...",
               )
-              reloadClasspathAndIndex(connection)
+              refreshBackendEnvironment(connection)
               lastReloadTime = System.currentTimeMillis()
                     } else {
                       // New changes came in, reset timer
@@ -203,7 +213,7 @@ class KotlinWorkspaceSetup(
 
                 key.reset()
               } catch (e: Exception) {
-                if (e is CancellationException) break
+                if (e is CancellationException || e is ClosedWatchServiceException) break
                 KlsLogs.warn("Error in build watcher", e)
               }
             }
@@ -214,47 +224,53 @@ class KotlinWorkspaceSetup(
       KlsLogs.error("Failed to start build watcher", e)
     }
   }
-  private suspend fun reloadClasspathAndIndex(connection: KotlinLspConnection) {
+  private suspend fun refreshBackendEnvironment(connection: KotlinBackendConnection) {
     withContext(Dispatchers.IO) {
       try {
-        KlsLogs.infoThrottled("kls:reload-start", 3000L, "=== RELOADING CLASSPATH AND INDEX ===")
-
-        // Invalidate classpath cache
+        KlsLogs.infoThrottled("kls:reload-start", 3000L, "=== REFRESHING KOTLIN BACKEND ENVIRONMENT ===")
         classpathProvider.invalidateCache()
 
-        backendConfigurator.onClasspathReloaded(connection)
+        val refreshed = connection.refreshEnvironment(classpathProvider)
+        if (!refreshed) {
+          KlsLogs.error("Kotlin backend environment refresh failed")
+          return@withContext
+        }
 
-        KlsLogs.infoThrottled("kls:reload-success", 3000L, "Classpath and index reloaded successfully")
+        backendConfigurator.onEnvironmentRefreshed(connection)
+        KlsLogs.infoThrottled(
+            "kls:reload-success",
+            3000L,
+            "Kotlin backend environment refreshed successfully",
+        )
       } catch (e: Exception) {
-        KlsLogs.error("Failed to reload classpath and index", e)
+        KlsLogs.error("Failed to refresh Kotlin backend environment", e)
       }
     }
   }
 
   fun cleanup() {
+    if (closed) return
+    closed = true
     try {
       // Stop build watcher
       watcherJob?.cancel()
       buildWatcher?.close()
       watchScope.cancel()
 
-      compilerService?.destroy()
-      KotlinCompilerProvider.getInstance().destroy()
-      com.tom.rv2ide.language.services.kotlin.compiler.KotlinSourceFileManager.clearCache()
     } catch (e: Exception) {
-      KlsLogs.warn("Error cleaning up compiler service", e)
+      KlsLogs.warn("Error closing Kotlin workspace coordinator", e)
     }
   }
 
-  private fun hasKotlinSourceFiles(root: File): Boolean {
+  private fun hasSupportedKotlinDocuments(root: File, connection: KotlinBackendConnection): Boolean {
     if (!root.exists() || !root.isDirectory) return false
 
     return try {
       root.walkTopDown()
           .onEnter { dir -> !shouldSkipKotlinSourceScanDir(dir) }
-          .any { file -> file.isFile && (file.extension == "kt" || file.extension == "kts") }
+          .any { file -> file.isFile && connection.supportsDocument(file.toPath()) }
     } catch (e: Exception) {
-      KlsLogs.warn("Failed to scan Kotlin source files under {}", root.absolutePath, e)
+      KlsLogs.warn("Failed to scan supported Kotlin files under {}", root.absolutePath, e)
       true
     }
   }
@@ -266,23 +282,6 @@ class KotlinWorkspaceSetup(
         name == ".idea" ||
         name == "build" ||
         name == ".acside"
-  }
-
-  private fun initializeCompilerService() {
-    try {
-      val mainModule = backendContext.findMainAndroidModule()
-      if (mainModule != null) {
-        compilerService = KotlinCompilerProvider.get(mainModule)
-        KlsLogs.info("Initialized compiler service for: {}", mainModule.path)
-        LogStream.emitLineBlocking("Initialized compiler service for: ${mainModule.path}")
-      } else {
-        KlsLogs.warn("No Android module found, using default compiler")
-        compilerService = KotlinCompilerService.NO_MODULE_COMPILER
-      }
-    } catch (e: Exception) {
-      KlsLogs.error("Failed to initialize compiler service", e)
-      compilerService = KotlinCompilerService.NO_MODULE_COMPILER
-    }
   }
 
   private fun createInitParams(workspaceRoot: String): JsonObject {

@@ -15,41 +15,23 @@
  *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.tom.rv2ide.language.services.kotlin.compiler
+package com.tom.rv2ide.language.services.kotlin.classpath
 
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
-import com.tom.rv2ide.projects.util.RuntimeProbe
-import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
-import com.tom.rv2ide.projects.classpath.ClassInfo
-import com.tom.rv2ide.projects.classpath.IClasspathReader
-import com.tom.rv2ide.projects.classpath.ZipFileClasspathReader
 import java.io.File
 import java.util.zip.ZipFile
 
 /*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
-class KotlinClasspathProvider {
+class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
 
-  private var compilerService: KotlinCompilerService? = null
-  private val classpathReader: IClasspathReader = ZipFileClasspathReader()
-  private val classpathReaderMarker = "ACS_MARKER_KOTLIN_CLASSPATH_PROVIDER_ZIP_V1"
 
   private var cachedClasspathList: List<String>? = null
   private var cachedClasspath: String? = null
-
-  private val enableGradleCacheScriptingFallback: Boolean
-    get() = System.getProperty("androidcodestudio.kls.enableGradleCacheScriptingFallback", "false").toBoolean()
-
-
-  fun initialize(service: KotlinCompilerService?) {
-    this.compilerService = service
-    // Clear cache on re-initialization
-    cachedClasspathList = null
-    cachedClasspath = null
-  }
 
   private fun isLikelyAgpGeneratedSourceDir(dir: File): Boolean {
     val normalized = dir.absolutePath.replace('\\', '/').lowercase()
@@ -117,11 +99,11 @@ class KotlinClasspathProvider {
 
   fun getJavaSourceRootsList(): List<String> {
     return try {
-      val workspace = IProjectManager.getInstance().getWorkspace() ?: return emptyList()
+      val currentWorkspace = workspace ?: return emptyList()
       val sourceRoots = linkedSetOf<String>()
 
-      val allProjects = mutableListOf(workspace.getRootProject())
-      allProjects.addAll(workspace.getSubProjects())
+      val allProjects = mutableListOf(currentWorkspace.getRootProject())
+      allProjects.addAll(currentWorkspace.getSubProjects())
 
       allProjects.filterIsInstance<ModuleProject>().forEach { project ->
         when (project) {
@@ -179,7 +161,6 @@ class KotlinClasspathProvider {
 
 
     val classpaths = mutableSetOf<String>()
-    val compilerServicePaths = mutableListOf<String>()
     val projectDerivedFallbackAdded = mutableSetOf<String>()
     // Keep provenance only for this collection pass. It is diagnostic data used to
     // distinguish project dependencies from Kotlin compiler/tooling implementation jars.
@@ -195,30 +176,14 @@ class KotlinClasspathProvider {
       }
     }
 
-    // First, try to get classpaths from the compiler service
-    val service = compilerService
-    if (service != null) {
-      try {
-        val allClassPaths = service.getFileManager().getAllClassPaths()
-        for (cp in allClassPaths) {
-          compilerServicePaths.add(cp.absolutePath)
-          addClasspathEntry(cp, classpaths)
-          recordClasspathOrigin(cp, "compilerService")
-        }
-      } catch (e: Exception) {
-        KlsLogs.error("Failed to get classpath from compiler service", e)
-      }
-    }
-
     // Then, enhance with project system classpaths
     try {
-      val projectManager = IProjectManager.getInstance()
-      val workspace = projectManager.getWorkspace()
+      val currentWorkspace = workspace
 
-      if (workspace != null) {
+      if (currentWorkspace != null) {
         // Get all projects (root + subprojects)
-        val allProjects = mutableListOf(workspace.getRootProject())
-        allProjects.addAll(workspace.getSubProjects())
+        val allProjects = mutableListOf(currentWorkspace.getRootProject())
+        allProjects.addAll(currentWorkspace.getSubProjects())
 
         for (project in allProjects) {
           if (project is ModuleProject) {
@@ -275,64 +240,13 @@ class KotlinClasspathProvider {
       KlsLogs.error("Failed to get classpath from project system", e)
     }
 
-    val beforeScriptingFallback = classpaths.toSet()
-    if (enableGradleCacheScriptingFallback) {
-      addKotlinScriptingJarsFromGradleCache(classpaths)
-      recordNewClasspathOrigins(beforeScriptingFallback, "gradleScriptingFallback")
-    } else {
-      KlsLogs.debug("Gradle cache scripting fallback disabled")
-    }
-    val scriptingFallbackAdded = classpaths.toSet() - beforeScriptingFallback
-
     val existingPaths = classpaths.filter { File(it).exists() }.toList()
-    logCompilerServiceClasspathDiff(compilerServicePaths, existingPaths)
-    logClasspathLayerSummary(existingPaths, projectDerivedFallbackAdded, scriptingFallbackAdded)
+    logClasspathLayerSummary(existingPaths, projectDerivedFallbackAdded)
     logCompilerToolingClasspathOrigins(existingPaths, classpathOrigins)
     KlsLogs.info("Total classpath entries: {}, existing: {}", classpaths.size, existingPaths.size)
 
     cachedClasspathList = existingPaths
     return existingPaths
-  }
-
-  private fun logCompilerServiceClasspathDiff(
-      compilerServicePaths: List<String>,
-      providerPaths: List<String>,
-  ) {
-    val compilerSet = compilerServicePaths.toSet()
-    val providerSet = providerPaths.toSet()
-    val compilerOnly = compilerSet - providerSet
-    val providerOnly = providerSet - compilerSet
-
-    fun interesting(paths: Set<String>): List<String> =
-        paths.filter { path ->
-          val normalized = path.lowercase()
-          normalized.contains("android") ||
-              normalized.contains("androidx") ||
-              normalized.contains("kotlin") ||
-              normalized.contains("gradle") ||
-              normalized.contains("cache")
-        }
-
-    val compilerOnlyInteresting = interesting(compilerOnly)
-    val providerOnlyInteresting = interesting(providerOnly)
-
-    KlsLogs.info(
-        "Compiler/provider classpath diff: compilerServiceCount={}, providerCount={}, compilerOnly={}, providerOnly={}",
-        compilerServicePaths.size,
-        providerPaths.size,
-        compilerOnly.size,
-        providerOnly.size,
-    )
-    KlsLogs.info(
-        "Compiler-only interesting paths: count={}, preview={}",
-        compilerOnlyInteresting.size,
-        compilerOnlyInteresting.take(20).joinToString(prefix = "[", postfix = if (compilerOnlyInteresting.size > 20) ", ...]" else "]"),
-    )
-    KlsLogs.info(
-        "Provider-only interesting paths: count={}, preview={}",
-        providerOnlyInteresting.size,
-        providerOnlyInteresting.take(20).joinToString(prefix = "[", postfix = if (providerOnlyInteresting.size > 20) ", ...]" else "]"),
-    )
   }
 
   private fun logCompilerToolingClasspathOrigins(
@@ -364,13 +278,11 @@ class KotlinClasspathProvider {
   private fun logClasspathLayerSummary(
       existingPaths: List<String>,
       projectDerivedFallbackAdded: Set<String>,
-      scriptingFallbackAdded: Set<String>,
   ) {
     val existingSet = existingPaths.toSet()
     val projectDerivedExisting = projectDerivedFallbackAdded.filter { it in existingSet }
-    val scriptingExisting = scriptingFallbackAdded.filter { it in existingSet }
     val authoritativeCount =
-        existingSet.size - projectDerivedExisting.size - scriptingExisting.size
+        existingSet.size - projectDerivedExisting.size
 
     fun preview(paths: Collection<String>): String =
         if (paths.isEmpty()) {
@@ -380,91 +292,17 @@ class KotlinClasspathProvider {
         }
 
     KlsLogs.info(
-        "Classpath layer summary: authoritativeExisting={}, projectDerivedFallbackExisting={}, scriptingFallbackExisting={}",
+        "Classpath layer summary: authoritativeExisting={}, projectDerivedFallbackExisting={}, ",
         authoritativeCount,
         projectDerivedExisting.size,
-        scriptingExisting.size,
     )
     KlsLogs.info(
         "Project-derived fallback existing preview: {}",
         preview(projectDerivedExisting),
     )
-    KlsLogs.info(
-        "Scripting fallback existing preview: {}",
-        preview(scriptingExisting),
-    )
+
   }
 
-
-  private fun gradleHomeCandidates(): List<File> {
-    val raw =
-        listOf(
-            File(System.getProperty("user.home", ""), ".gradle"),
-            File("/data/data/com.tom.rv2ide/files/home/.gradle"),
-            File("/storage/emulated/0/.gradle"),
-            // Android app's own gradle cache fallback
-            File(System.getProperty("user.home", ""), "../../.gradle"),
-        )
-
-    val seen = mutableSetOf<String>()
-    val unique = mutableListOf<File>()
-    raw.forEach { dir ->
-      val key = runCatching { dir.canonicalPath }.getOrElse { dir.absolutePath }
-      if (seen.add(key)) {
-        unique.add(dir)
-      }
-    }
-    return unique
-  }
-
-  private fun gradleModulesCacheDirs(gradleHome: File): List<File> =
-      listOf(File(gradleHome, "caches/modules-2/files-2.1"))
-
-  private fun isRuntimeJarCandidate(file: File): Boolean =
-      file.isFile &&
-          file.extension == "jar" &&
-          !file.name.contains("sources") &&
-          !file.name.contains("javadoc")
-
-  private fun collectArtifactJarsFromGradleModulesCache(
-      modulesCache: File,
-      group: String,
-      artifact: String,
-  ): Set<String> {
-    val artifactDir = File(modulesCache, "${group.replace('.', File.separatorChar)}/$artifact")
-    if (!artifactDir.exists()) return emptySet()
-
-    return artifactDir
-        .walkTopDown()
-        .filter(::isRuntimeJarCandidate)
-        .map { it.absolutePath }
-        .toSet()
-  }
-
-  private fun collectVersionedKotlinArtifactJars(
-      artifactBaseDir: File,
-      preferredVersion: String?,
-  ): Set<String> {
-    if (!artifactBaseDir.exists()) return emptySet()
-
-    val versionDirs = artifactBaseDir.listFiles()?.filter { it.isDirectory } ?: return emptySet()
-    val versionDir =
-        if (preferredVersion != null) {
-          versionDirs.find { it.name == preferredVersion }
-        } else {
-          null
-        } ?: versionDirs.maxByOrNull { it.name } ?: return emptySet()
-
-    return versionDir
-        .listFiles()
-        ?.asSequence()
-        ?.filter { it.isDirectory }
-        ?.flatMap { hashDir -> hashDir.listFiles().orEmpty().asSequence() }
-        ?.filter(::isRuntimeJarCandidate)
-        ?.map { it.absolutePath }
-        ?.toSet()
-        ?: emptySet()
-  }
 
   private fun addClasspathEntry(file: File, classpaths: MutableSet<String>) {
     if (!file.exists()) return
@@ -500,29 +338,6 @@ class KotlinClasspathProvider {
     }
   }
 
-  /** Resolves Maven coordinates to JAR file in Gradle cache. */
-  private fun resolveFromGradleCache(coordinates: String): File? {
-    val parts = coordinates.split(":")
-    if (parts.size != 3) return null
-
-    val (group, name, version) = parts
-    val groupPath = group.replace(".", "/")
-
-    // Check Gradle cache
-    val userHome = System.getProperty("user.home")
-    val cacheDir = File(userHome, ".gradle/caches/modules-2/files-2.1")
-    val artifactDir = File(cacheDir, "$groupPath/$name/$version")
-
-    if (!artifactDir.exists()) return null
-
-    // Find the JAR (skip sources/javadoc)
-    return artifactDir
-        .walkTopDown()
-        .filter { it.extension == "jar" }
-        .filterNot { it.name.contains("-sources") }
-        .filterNot { it.name.contains("-javadoc") }
-        .firstOrNull()
-  }
   private fun addAndroidGeneratedSources(module: AndroidModule, classpaths: MutableSet<String>) {
     try {
       val buildDir = module.buildDir
@@ -577,115 +392,6 @@ class KotlinClasspathProvider {
     } catch (e: Exception) {
       KlsLogs.error("Failed to add Android generated sources for module: {}", module.projectDir.absolutePath, e)
     }
-  }
-
-  /**
-   * Adds Kotlin scripting JARs from Gradle's cache These are needed for .kts file support and are
-   * already downloaded by Gradle
-   */
-  private fun addKotlinScriptingJarsFromGradleCache(classpaths: MutableSet<String>) {
-    try {
-      val gradleHomeDirs = gradleHomeCandidates()
-
-      val kotlinVersion = getKotlinVersionFromProject()
-
-      val scriptingArtifacts =
-          listOf(
-              "kotlin-script-runtime",
-              "kotlin-scripting-common",
-              "kotlin-scripting-jvm",
-              "kotlin-scripting-compiler-embeddable",
-          )
-
-      var foundCount = 0
-
-      for (gradleHome in gradleHomeDirs) {
-        if (!gradleHome.exists()) continue
-
-        val modulesCaches =
-            gradleModulesCacheDirs(gradleHome).map { File(it, "org.jetbrains.kotlin") }
-
-        var foundInThisGradleHome = 0
-        modulesCaches.forEach { modulesCache ->
-          if (!modulesCache.exists()) {
-            KlsLogs.debug("Gradle cache not found at: {}", modulesCache.absolutePath)
-            return@forEach
-          }
-
-          scriptingArtifacts.forEach { artifactName ->
-            val artifactDir = File(modulesCache, artifactName)
-            val jars = collectVersionedKotlinArtifactJars(artifactDir, kotlinVersion)
-            jars.forEach { jarPath ->
-              if (classpaths.add(jarPath)) {
-                foundCount++
-                foundInThisGradleHome++
-              }
-            }
-          }
-        }
-
-        if (foundInThisGradleHome > 0) {
-          KlsLogs.info("Added {} Kotlin scripting JARs from Gradle cache fallback", foundCount)
-          break
-        }
-      }
-
-      if (foundCount == 0) {
-        KlsLogs.info("Gradle cache scripting fallback found no matching Kotlin scripting JARs")
-      }
-    } catch (e: Exception) {
-      KlsLogs.error("Failed to add Kotlin scripting JARs from Gradle cache", e)
-    }
-  }
-
-  /** Attempts to detect the Kotlin version used in the project */
-  private fun getKotlinVersionFromProject(): String? {
-    try {
-      val projectManager = IProjectManager.getInstance()
-      val workspace = projectManager.getWorkspace() ?: return null
-
-      // Check build.gradle.kts for kotlin version
-      val rootProject = workspace.getRootProject()
-      val buildFile = File(rootProject.path, "build.gradle.kts")
-
-      if (buildFile.exists()) {
-        val content = buildFile.readText()
-
-        // Look for kotlin("jvm") version or kotlin plugin version
-        val versionRegex = """kotlin\("jvm"\)\s+version\s+"([^"]+)"""".toRegex()
-        val match = versionRegex.find(content)
-        if (match != null) {
-          val version = match.groupValues[1]
-          KlsLogs.info("Detected Kotlin version from build.gradle.kts: {}", version)
-          return version
-        }
-
-        // Alternative pattern: id("org.jetbrains.kotlin.jvm") version "x.y.z"
-        val altRegex = """id\("org\.jetbrains\.kotlin\.[^"]+"\)\s+version\s+"([^"]+)"""".toRegex()
-        val altMatch = altRegex.find(content)
-        if (altMatch != null) {
-          val version = altMatch.groupValues[1]
-          KlsLogs.info("Detected Kotlin version: {}", version)
-          return version
-        }
-      }
-
-      // Fallback: check gradle.properties or libs.versions.toml
-      val propertiesFile = File(rootProject.path, "gradle.properties")
-      if (propertiesFile.exists()) {
-        val props = java.util.Properties()
-        propertiesFile.inputStream().use { props.load(it) }
-        val version = props.getProperty("kotlin.version") ?: props.getProperty("kotlinVersion")
-        if (version != null) {
-          KlsLogs.info("Detected Kotlin version from gradle.properties: {}", version)
-          return version
-        }
-      }
-    } catch (e: Exception) {
-      KlsLogs.debug("Could not detect Kotlin version", e)
-    }
-
-    return null
   }
 
   /**
@@ -784,112 +490,16 @@ class KotlinClasspathProvider {
     }
   }
 
-  /** Recursively scans directories for Java/Kotlin source files */
-  private fun scanForSourceDirectories(dir: File, classpaths: MutableSet<String>, maxDepth: Int) {
-    if (maxDepth <= 0) return
-
-    try {
-      val files = dir.listFiles() ?: return
-
-      // Check if current directory contains source files
-      val hasSourceFiles =
-          files.any { it.isFile && (it.extension == "java" || it.extension == "kt") }
-
-      if (hasSourceFiles && !classpaths.contains(dir.absolutePath)) {
-        classpaths.add(dir.absolutePath)
-        KlsLogs.debug("Discovered source directory: {}", dir.absolutePath)
-      }
-
-      // Recurse into subdirectories
-      files
-          .filter { it.isDirectory }
-          .forEach { subDir -> scanForSourceDirectories(subDir, classpaths, maxDepth - 1) }
-    } catch (e: Exception) {
-      KlsLogs.debug("Error scanning directory: {}", dir.absolutePath, e)
-    }
-  }
-
-  /** Find compiled .class directories in intermediates */
-  private fun findCompiledClassDirectories(intermediatesDir: File, classpaths: MutableSet<String>) {
-    try {
-      val classDirectories =
-          listOf(
-              "compile_library_classes_jar/debug/classes.jar",
-              "compile_app_classes_jar/debug/classes.jar",
-              "transforms/classes/debug",
-              "javac/debug/classes",
-              "kotlin-classes/debug",
-          )
-
-      classDirectories.forEach { path ->
-        val dir = File(intermediatesDir, path)
-        if (dir.exists()) {
-          classpaths.add(dir.absolutePath)
-          KlsLogs.info("✓ Added compiled classes: {}", path)
-        }
-      }
-    } catch (e: Exception) {
-      KlsLogs.debug("Error finding compiled class directories", e)
-    }
-  }
-
   fun getAndroidSdkPath(): String {
-    // First try from compiler service
-    val serviceResult =
-        try {
-          compilerService?.let { service ->
-            val bootClassPaths = service.getFileManager().getBootClassPaths()
-            val androidJar = bootClassPaths.find { it.name == "android.jar" }
-            androidJar?.parentFile?.parentFile?.parentFile?.absolutePath
-          }
-        } catch (e: Exception) {
-          KlsLogs.error("Failed to get Android SDK path from compiler service", e)
-          null
-        }
-
-    if (!serviceResult.isNullOrEmpty()) {
-      return serviceResult
-    }
-
-    // Fallback to project system
     return try {
-      val projectManager = IProjectManager.getInstance()
-      val workspace = projectManager.getWorkspace()
-
-      if (workspace != null) {
-        val androidModules = workspace.androidProjects()
-        val firstModule = androidModules.firstOrNull()
-
-        if (firstModule != null) {
-          val androidJar = firstModule.bootClassPaths.find { it.name == "android.jar" }
-          if (androidJar != null) {
-            val platformDir = androidJar.parentFile
-            if (platformDir != null) {
-              val sdkRoot = platformDir.parentFile
-              if (sdkRoot != null) {
-                return sdkRoot.absolutePath
-              }
-            }
-          }
-        }
-      }
-      ""
+      val currentWorkspace = workspace
+      val androidModule = currentWorkspace?.androidProjects()?.firstOrNull()
+      val androidJar = androidModule?.bootClassPaths?.find { it.name == "android.jar" }
+      val platformDir = androidJar?.parentFile
+      platformDir?.parentFile?.parentFile?.absolutePath ?: ""
     } catch (e: Exception) {
       KlsLogs.error("Failed to get Android SDK path from project system", e)
       ""
-    }
-  }
-
-  /** Lists all classes available in the current classpath. */
-  fun listClassesInClasspath(): Set<ClassInfo> {
-    val classpathFiles = getClasspathList().map { File(it) }.filter { it.exists() }
-    RuntimeProbe.mark("KotlinClasspathProvider.listClassesInClasspath files=${classpathFiles.size}")
-    KlsLogs.info("{} files={}", classpathReaderMarker, classpathFiles.size)
-    return try {
-      classpathReader.listClasses(classpathFiles).toSet()
-    } catch (e: Exception) {
-      KlsLogs.error("Failed to list classes in classpath", e)
-      emptySet()
     }
   }
 

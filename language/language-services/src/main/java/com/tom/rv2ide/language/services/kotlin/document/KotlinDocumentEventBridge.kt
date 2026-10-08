@@ -23,49 +23,41 @@ import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
 
-class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
+class KotlinDocumentEventBridge(
+    private val documentManager: KotlinDocumentSync,
+    private val supportsDocument: (java.nio.file.Path) -> Boolean,
+) {
 
-  private val lastChangeTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
-  private val changeThrottleMs = 100L // Only process changes every 100ms
   private val lastSaveTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val saveDebounceMs = 350L
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
   fun onContentChange(event: com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent) {
     val file = event.changedFile
-    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+    if (!supportsDocument(file)) return
 
     val uri = file.toUri().toString()
 
     try {
-      val content = event.newText
+      val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
+      val content = snapshot.content
       val currentTime = System.currentTimeMillis()
-      val lastChange = lastChangeTime[uri] ?: 0L
-      val deltaSinceLastChange = currentTime - lastChange
+      val currentVersion = documentManager.getDocumentVersion(uri)
 
-      // Throttle rapid changes
-      if (deltaSinceLastChange < changeThrottleMs) {
-        return
-      }
-
-      lastChangeTime[uri] = currentTime
-
-      if (content != null && event.version > 0) {
-        val currentVersion = documentManager.getDocumentVersion(uri)
-        if (event.version > currentVersion) {
-          documentManager.setDocumentVersion(uri, event.version)
-          documentManager.notifyDocumentChange(file, content, event.version)
-          // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of
-          // relying on stale disk content or a no-op save hook.
-          val lastSaved = lastSaveTime[uri] ?: 0L
-          val deltaSinceLastSave = currentTime - lastSaved
-          if (deltaSinceLastSave >= saveDebounceMs) {
-            documentManager.notifyDocumentSave(file, content)
-            lastSaveTime[uri] = currentTime
-          }
+      if (snapshot.version >= 0 &&
+          (!documentManager.isDocumentOpen(uri) || snapshot.version > currentVersion)) {
+        documentManager.setDocumentVersion(uri, snapshot.version)
+        documentManager.notifyDocumentChange(file, content, snapshot.version)
+        // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of
+        // relying on stale disk content or a no-op save hook.
+        val lastSaved = lastSaveTime[uri] ?: 0L
+        val deltaSinceLastSave = currentTime - lastSaved
+        if (deltaSinceLastSave >= saveDebounceMs) {
+          documentManager.notifyDocumentSave(file, content)
+          lastSaveTime[uri] = currentTime
         }
       } else {
-        KlsLogs.debug("Skip Kotlin document change without in-memory content: {}", uri)
+        KlsLogs.debug("Skip Kotlin document change without a newer in-memory snapshot: {}", uri)
       }
     } catch (e: Exception) {
       KlsLogs.error("Failed to handle document change", e)
@@ -75,27 +67,31 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
   fun onFileOpened(event: com.tom.rv2ide.eventbus.events.editor.DocumentOpenEvent) {
     val file = event.openedFile
-    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+    if (!supportsDocument(file)) return
 
     KlsLogs.debug("Document open event for: {}", file)
-    val initialText = event.text.ifEmpty { com.tom.rv2ide.projects.FileManager.getDocumentContents(file) }
-    documentManager.ensureDocumentOpen(file, initialText, event.version)
+    val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file)
+    documentManager.ensureDocumentOpen(
+        file,
+        snapshot?.content ?: event.text,
+        snapshot?.version ?: event.version,
+    )
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
   fun onFileSelected(event: com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent) {
     val file = event.selectedFile
-    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+    if (!supportsDocument(file)) return
     KlsLogs.debug("Document selected event for: {}", file)
-    val selectedText = com.tom.rv2ide.projects.FileManager.getDocumentContents(file)
-    documentManager.ensureDocumentOpen(file, selectedText)
-    documentManager.notifyDocumentSave(file, selectedText)
+    val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
+    documentManager.ensureDocumentOpen(file, snapshot.content, snapshot.version)
+    documentManager.notifyDocumentSave(file, snapshot.content)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
   fun onFileSaved(event: com.tom.rv2ide.eventbus.events.editor.DocumentSaveEvent) {
     val file = event.savedFile
-    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+    if (!supportsDocument(file)) return
 
     documentManager.notifyDocumentSave(file)
   }
@@ -103,9 +99,10 @@ class KotlinEventHandler(private val documentManager: KotlinDocumentManager) {
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
   fun onFileClosed(event: com.tom.rv2ide.eventbus.events.editor.DocumentCloseEvent) {
     val file = event.closedFile
-    if (!(file.toString().endsWith(".kt") || file.toString().endsWith(".kts"))) return
+    if (!supportsDocument(file)) return
 
     KlsLogs.debug("Document close event for: {}", file)
+    lastSaveTime.remove(file.toUri().toString())
     documentManager.closeDocument(file)
   }
 }

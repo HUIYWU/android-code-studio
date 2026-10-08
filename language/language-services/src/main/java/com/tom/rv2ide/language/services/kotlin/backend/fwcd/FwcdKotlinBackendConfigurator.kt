@@ -18,10 +18,10 @@ package com.tom.rv2ide.language.services.kotlin.backend.fwcd
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendContext
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendId
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendId
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
@@ -32,15 +32,14 @@ import java.security.MessageDigest
  * Configurator for the fwcd/kotlin-language-server backend.
  *
  * Owns fwcd-specific initializationOptions, runtime `workspace/didChangeConfiguration`
- * payloads, the ACS workspace-symbol snapshot cache and ktfmt formatting settings.
+ * payloads and ktfmt formatting settings.
  */
-class FwcdKotlinLspBackendConfigurator(
-    private val context: KotlinLspBackendContext,
-) : KotlinLspBackendConfigurator {
+class FwcdKotlinBackendConfigurator(
+    private val context: KotlinBackendContext,
+) : KotlinBackendConfigurator {
 
   private val workspace = context.workspace
   private val classpathProvider = context.classpathProvider
-  private val indexCache = KotlinIndexCache(workspace.getProjectDir().absolutePath)
 
   override fun resolveWorkspaceRoot(): File {
     val projectRoot = workspace.getProjectDir()
@@ -51,7 +50,7 @@ class FwcdKotlinLspBackendConfigurator(
       )
       return projectRoot
     }
-    return context.mainModuleWorkspaceRoot(KotlinLspBackendId.FWCD)
+    return context.mainModuleWorkspaceRoot(KotlinBackendId.FWCD)
   }
 
   override fun initializationOptions(): JsonObject {
@@ -114,34 +113,17 @@ class FwcdKotlinLspBackendConfigurator(
     return initOptions
   }
 
-  @Volatile private var startupClasspathHash: String = ""
-  @Volatile private var startupCacheValid = false
+  override fun beforeBackendStart(connection: KotlinBackendConnection) = Unit
 
-  override fun beforeServerStart(connection: KotlinLspConnection) {
-    val currentClasspath = classpathProvider.getClasspathList()
-    startupClasspathHash = indexCache.computeClasspathHash(currentClasspath)
-    startupCacheValid = indexCache.isCacheValid(startupClasspathHash)
-
-    KlsLogs.infoThrottled("kls:cache-status", 5000L, "Cache status: {}", if (startupCacheValid) "VALID" else "INVALID/MISSING")
-    KlsLogs.debugThrottled("kls:cache-stats", 5000L, "{}", indexCache.getCacheStats())
+  override fun afterBackendInitialized(connection: KotlinBackendConnection, hasSupportedDocuments: Boolean) {
+    sendFwcdRuntimeConfig(connection)
   }
 
-  override fun afterServerInitialized(connection: KotlinLspConnection, hasKotlinSources: Boolean) {
-    if (startupCacheValid) {
-      restoreCachedIndex(connection, hasKotlinSources)
-    } else {
-      triggerIndexing(connection, startupClasspathHash, hasKotlinSources)
-    }
+  override fun onEnvironmentRefreshed(connection: KotlinBackendConnection) {
+    sendFwcdRuntimeConfig(connection)
   }
 
-  override fun onClasspathReloaded(connection: KotlinLspConnection) {
-    indexCache.clearCache()
-    val currentClasspath = classpathProvider.getClasspathList()
-    val currentHash = indexCache.computeClasspathHash(currentClasspath)
-    triggerIndexing(connection, currentHash, hasKotlinSources = true)
-  }
-
-  override fun applyFormattingStyle(connection: KotlinLspConnection, style: String) {
+  override fun applyFormattingStyle(connection: KotlinBackendConnection, style: String) {
     val indentSize =
         when (style) {
           "google",
@@ -181,69 +163,6 @@ class FwcdKotlinLspBackendConfigurator(
 
     connection.sendNotification("workspace/didChangeConfiguration", configParams)
     KlsLogs.debug("Sent formatting configuration: style={}, indent={}", style, indentSize)
-  }
-
-  private fun restoreCachedIndex(connection: KotlinLspConnection, hasKotlinSources: Boolean) {
-    if (!hasKotlinSources) {
-      sendFwcdRuntimeConfig(connection)
-      return
-    }
-
-    KlsLogs.infoThrottled("kls:restore-cache-start", 5000L, "Restoring cached workspace-symbol snapshot...")
-
-    val cachedSymbols = indexCache.loadCache()
-    if (cachedSymbols != null && cachedSymbols.size() > 0) {
-      // This does not restore fwcd's internal SymbolIndex. It only reuses ACS' last
-      // workspace/symbol snapshot. Server-side indexing intentionally remains enabled so
-      // completion, standard-library symbols and diagnostics stay correct.
-      sendFwcdRuntimeConfig(connection)
-      KlsLogs.infoThrottled(
-          "kls:restore-cache-success",
-          5000L,
-          "Cache restored with {} symbols",
-          cachedSymbols.size(),
-      )
-    } else {
-      val currentClasspath = classpathProvider.getClasspathList()
-      val currentHash = indexCache.computeClasspathHash(currentClasspath)
-      triggerIndexing(connection, currentHash, hasKotlinSources)
-    }
-  }
-
-  private fun triggerIndexing(
-      connection: KotlinLspConnection,
-      classpathHash: String,
-      hasKotlinSources: Boolean,
-  ) {
-    KlsLogs.infoThrottled("kls:trigger-indexing", 3000L, "Triggering classpath indexing...")
-    sendFwcdRuntimeConfig(connection)
-    if (!hasKotlinSources) {
-      return
-    }
-
-    // Request symbols to warm up and cache the index
-    val symbolParams = JsonObject().apply { addProperty("query", "") }
-
-    connection.sendRequest("workspace/symbol", symbolParams) { result ->
-      try {
-        val symbols =
-            when {
-              result == null -> JsonArray()
-              result.has("symbols") -> result.getAsJsonArray("symbols") ?: JsonArray()
-              result.has("result") -> result.getAsJsonArray("result") ?: JsonArray()
-              else -> JsonArray()
-            }
-        val symbolCount = symbols.size()
-        KlsLogs.infoThrottled("kls:indexing-complete", 3000L, "Indexing warm-up complete, found {} symbols", symbolCount)
-
-        // Save to cache
-        if (symbolCount > 0) {
-          indexCache.saveCache(symbols, classpathHash)
-        }
-      } catch (e: Exception) {
-        KlsLogs.warn("Failed to warm up Kotlin symbols", e)
-      }
-    }
   }
 
   private fun sha256Hex(lines: Collection<String>): String {
@@ -477,11 +396,6 @@ class FwcdKotlinLspBackendConfigurator(
                         )
                       },
                   )
-                  // ACS keeps fwcd indexing enabled even when restoring the local workspace-symbol
-                  // cache. The local cache is only a startup optimization/UI hint and must not be
-                  // treated as a request to disable the server-side symbol index, because completion,
-                  // standard-library symbols, diagnostics and Android/Compose classpath scenarios rely
-                  // on fwcd maintaining its own index.
                   add(
                       "indexing",
                       JsonObject().apply {
@@ -499,7 +413,7 @@ class FwcdKotlinLspBackendConfigurator(
     }
   }
 
-  private fun sendFwcdRuntimeConfig(connection: KotlinLspConnection) {
+  private fun sendFwcdRuntimeConfig(connection: KotlinBackendConnection) {
     val configParams = createFwcdRuntimeConfig()
     connection.sendNotification("workspace/didChangeConfiguration", configParams)
   }

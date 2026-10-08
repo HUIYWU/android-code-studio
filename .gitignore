@@ -9,3 +9,7 @@
 
 # Ignore Gradle build output directory
 # build 警惕使用，将会递归忽视目录应使用/build
+/build
+
+# software backup
+.backup

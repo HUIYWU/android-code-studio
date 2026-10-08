@@ -19,8 +19,8 @@ package com.tom.rv2ide.language.services.kotlin.format
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendConfigurator
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.settings.KotlinLspSettings
 import com.tom.rv2ide.lsp.models.CodeFormatResult
@@ -37,8 +37,8 @@ import org.slf4j.LoggerFactory
  */
 
 class KotlinCodeFormatProvider(
-    private val connection: KotlinLspConnection,
-    private val backendConfigurator: KotlinLspBackendConfigurator,
+    private val connection: KotlinBackendConnection,
+    private val backendConfigurator: KotlinBackendConfigurator,
 ) {
 
   companion object {
@@ -52,8 +52,8 @@ class KotlinCodeFormatProvider(
       return CodeFormatResult(false, mutableListOf())
     }
 
-    if (!(filePath.toString().endsWith(".kt") || filePath.toString().endsWith(".kts"))) {
-      KlsLogs.debug("Not a Kotlin file: {}", filePath)
+    if (!connection.supportsDocument(filePath)) {
+      KlsLogs.debug("Backend does not support formatting document: {}", filePath)
       return CodeFormatResult(false, mutableListOf())
     }
 

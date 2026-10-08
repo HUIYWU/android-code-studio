@@ -16,24 +16,10 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend
 
-import com.google.gson.JsonObject
-import java.io.File
-
 /**
- * Backend-specific hooks that customize otherwise generic Kotlin workspace setup.
- *
- * One instance is created per workspace by [KotlinLspBackendSpec.createConfigurator].
+ * Bundles the transport connection and the per-workspace configurator factory for one concrete backend.
  */
-interface KotlinLspBackendConfigurator {
-  fun resolveWorkspaceRoot(): File
-
-  fun initializationOptions(): JsonObject?
-
-  fun beforeServerStart(connection: KotlinLspConnection)
-
-  fun afterServerInitialized(connection: KotlinLspConnection, hasKotlinSources: Boolean)
-
-  fun onClasspathReloaded(connection: KotlinLspConnection)
-
-  fun applyFormattingStyle(connection: KotlinLspConnection, style: String)
-}
+class KotlinBackendSpec(
+    val connection: KotlinBackendConnection,
+    val createConfigurator: (KotlinBackendContext) -> KotlinBackendConfigurator,
+)

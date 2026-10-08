@@ -16,16 +16,16 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend
 
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
 import java.io.File
 
-class KotlinLspBackendContext(
+class KotlinBackendContext(
     val workspace: IWorkspace,
-    val classpathProvider: KotlinClasspathProvider,
+    val classpathProvider: KotlinProjectClasspathProvider,
 ) {
 
   fun findMainAndroidModule(): ModuleProject? {
@@ -46,7 +46,7 @@ class KotlinLspBackendContext(
     return null
   }
 
-  fun mainModuleWorkspaceRoot(backendId: KotlinLspBackendId): File {
+  fun mainModuleWorkspaceRoot(backendId: KotlinBackendId): File {
     val mainModule = findMainAndroidModule()
     if (mainModule != null) {
       val moduleDir = mainModule.projectDir

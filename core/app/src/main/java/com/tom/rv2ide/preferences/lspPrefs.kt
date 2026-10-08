@@ -20,7 +20,7 @@ package com.tom.rv2ide.preferences
 import androidx.preference.Preference
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.tom.rv2ide.app.BaseApplication
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspBackendId
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendId
 import com.tom.rv2ide.language.services.kotlin.settings.KotlinLspSettings
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.preferences.internal.LSPPreferences.ACS_KOTLIN_LSP_BACKEND
@@ -366,27 +366,27 @@ private fun getStatus(installed: Boolean): String {
     context.getString(string.status_not_installed)
   }
 }
-private fun activeKotlinBackendId(): KotlinLspBackendId {
+private fun activeKotlinBackendId(): KotlinBackendId {
   return when (LSPPreferences.kotlinLspBackend.trim().lowercase()) {
-    LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> KotlinLspBackendId.STUB
-    LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> KotlinLspBackendId.ANALYSIS
-    else -> KotlinLspBackendId.FWCD
+    LSPPreferences.KOTLIN_LSP_BACKEND_STUB -> KotlinBackendId.STUB
+    LSPPreferences.KOTLIN_LSP_BACKEND_ANALYSIS -> KotlinBackendId.ANALYSIS
+    else -> KotlinBackendId.FWCD
   }
 }
 
 private fun activeKotlinBackendManifestId(): String =
     when (activeKotlinBackendId()) {
-      KotlinLspBackendId.FWCD -> "fwcd"
-      KotlinLspBackendId.STUB -> "stub"
-      KotlinLspBackendId.ANALYSIS -> "analysis"
+      KotlinBackendId.FWCD -> "fwcd"
+      KotlinBackendId.STUB -> "stub"
+      KotlinBackendId.ANALYSIS -> "analysis"
     }
 
 private fun isActiveKotlinBackendInstalled(): Boolean =
 
     when (activeKotlinBackendId()) {
-      KotlinLspBackendId.FWCD -> isDirectoryInstalled(File(Environment.SERVERS_KOTLIN_DIR, "fwcd"))
-      KotlinLspBackendId.STUB -> true
-      KotlinLspBackendId.ANALYSIS -> true
+      KotlinBackendId.FWCD -> isDirectoryInstalled(File(Environment.SERVERS_KOTLIN_DIR, "fwcd"))
+      KotlinBackendId.STUB -> true
+      KotlinBackendId.ANALYSIS -> true
     }
 
 private fun isDirectoryInstalled(dir: File): Boolean {

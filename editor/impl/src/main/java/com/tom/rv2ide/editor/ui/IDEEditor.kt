@@ -132,6 +132,10 @@ constructor(
     private set
   private var imePopupRefreshPosted = false
   private var fileVersion = 0
+  val currentDocumentVersion: Int
+    get() = fileVersion
+  val currentDocumentRevision: Long
+    get() = documentRevision
   // Event-provided stamp, kept locally so editor:impl remains independent from core:projects.
   private var documentRevision = -1L
   internal var isModified = false
@@ -410,11 +414,18 @@ constructor(
     }
     val languageServer = this.languageServer ?: return
     val file = file ?: return
+    val requestVersion = fileVersion
+    val requestRevision = documentRevision
+    val requestPosition = cursorLSPPosition
 
     launchCancellableAsyncWithProgress(string.msg_finding_definition) { _, cancelChecker ->
           val result =
               safeGet("definition request") {
-                val params = DefinitionParams(file.toPath(), cursorLSPPosition, cancelChecker)
+                val params =
+                    DefinitionParams(file.toPath(), requestPosition, cancelChecker).apply {
+                      documentVersion = requestVersion
+                      documentRevision = requestRevision
+                    }
                 languageServer.findDefinition(params)
               }
 
@@ -429,11 +440,18 @@ constructor(
     }
     val languageServer = this.languageServer ?: return
     val file = file ?: return
+    val requestVersion = fileVersion
+    val requestRevision = documentRevision
+    val requestPosition = cursorLSPPosition
 
     launchCancellableAsyncWithProgress(string.msg_finding_references) { _, cancelChecker ->
           val result =
               safeGet("references request") {
-                val params = ReferenceParams(file.toPath(), cursorLSPPosition, true, cancelChecker)
+                val params =
+                    ReferenceParams(file.toPath(), requestPosition, true, cancelChecker).apply {
+                      documentVersion = requestVersion
+                      documentRevision = requestRevision
+                    }
                 languageServer.findReferences(params)
               }
 

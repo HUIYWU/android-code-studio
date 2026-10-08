@@ -16,7 +16,7 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend.fwcd
 
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.utils.Environment
 import java.io.File
@@ -32,17 +32,17 @@ import org.json.JSONObject
  * - process HOME: [Environment.HOME]
  * - XDG config/cache roots: `${Environment.HOME}/.config` and `${Environment.HOME}/.cache`
  *
- * This backend reuses [BaseStdioKotlinLspConnection], while executable discovery
+ * This backend reuses [BaseStdioKotlinBackendConnection], while executable discovery
  * and process command construction differ from the bundled javacs backend.
  */
-class FwcdKotlinLspConnection : BaseStdioKotlinLspConnection() {
+class FwcdKotlinBackendConnection : BaseStdioKotlinBackendConnection() {
   private val manifestPathCandidates =
       listOf(
           File(Environment.HOME, "acs/docs/misc/language-server-manifest.sample.json"),
           File(Environment.HOME, "docs/misc/language-server-manifest.sample.json"),
       )
 
-  override fun startProcess(classpathProvider: KotlinClasspathProvider): Process? {
+  override fun startProcess(classpathProvider: KotlinProjectClasspathProvider): Process? {
     val serverHome = runtimeDir()
     if (!serverHome.exists()) {
       KlsLogs.error(
@@ -216,7 +216,7 @@ put("KOTLIN_LANGUAGE_SERVER_SKIP_CLASSPATH_RESOLUTION", "true")
 
   private fun buildKotlinLanguageServerOpts(
       serverHome: File,
-      classpathProvider: KotlinClasspathProvider,
+      classpathProvider: KotlinProjectClasspathProvider,
       sqliteNativeConfig: SqliteNativeConfig?,
       xdgCacheHome: File,
   ): String {

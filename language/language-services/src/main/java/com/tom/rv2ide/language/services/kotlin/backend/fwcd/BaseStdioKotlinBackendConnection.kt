@@ -18,8 +18,11 @@ package com.tom.rv2ide.language.services.kotlin.backend.fwcd
 
 import com.google.gson.Gson
 import com.google.gson.JsonObject
-import com.tom.rv2ide.language.services.kotlin.backend.KotlinLspConnection
-import com.tom.rv2ide.language.services.kotlin.compiler.KotlinClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendState
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
+import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import java.io.BufferedInputStream
@@ -40,7 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Subclasses only need to provide a started [Process]. Request tracking, message
  * framing, reader threads, JSON parsing and diagnostics dispatch stay shared.
  */
-abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
+abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
   companion object {
     private const val BUFFER_SIZE = 32768
     private const val MAX_CONTENT_LENGTH = 10485760
@@ -51,17 +54,76 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
   private var writer: BufferedWriter? = null
   private var input: BufferedInputStream? = null
   @Volatile private var ready = false
+  @Volatile private var initialized = false
+  @Volatile private var failed = false
+  @Volatile private var closed = false
+  @Volatile private var backendGeneration = 0L
 
   override val isReady: Boolean
-    get() = ready
+    get() = ready && !failed && !closed
+
+  override val state: KotlinBackendState
+    get() = when {
+      closed -> KotlinBackendState.CLOSED
+      failed -> KotlinBackendState.FAILED
+      initialized -> KotlinBackendState.READY
+      ready -> KotlinBackendState.STARTING
+      else -> KotlinBackendState.NEW
+    }
+
+  override val generation: Long
+    get() = backendGeneration
+
+  override val isInitialized: Boolean
+    get() = initialized
+
+  override fun markInitialized() {
+    if (isReady) {
+      failed = false
+      initialized = true
+    }
+  }
+
+  override fun markInitializationFailed() {
+    initialized = false
+    ready = false
+    failed = true
+    try {
+      writer?.close()
+    } catch (_: Exception) {}
+    try {
+      input?.close()
+    } catch (_: Exception) {}
+    try {
+      process?.destroy()
+    } catch (_: Exception) {}
+    process = null
+    writer = null
+    input = null
+    pendingRequests.values.forEach { callback ->
+      try {
+        callback.invoke(null)
+      } catch (e: Exception) {
+        KlsLogs.warn("Failed to notify pending Kotlin LSP request about initialization failure", e)
+      }
+    }
+    pendingRequests.clear()
+  }
+
+  override fun refreshEnvironment(classpathProvider: KotlinProjectClasspathProvider): Boolean {
+    if (!isReady || !initialized) return false
+    backendGeneration++
+    return true
+  }
+
   private val nextId = AtomicInteger(1)
   private val pendingRequests = ConcurrentHashMap<Int, (JsonObject?) -> Unit>()
   private val notificationHandler = KotlinNotificationHandler()
   private val executorService = Executors.newFixedThreadPool(2)
 
-  protected abstract fun startProcess(classpathProvider: KotlinClasspathProvider): Process?
+  protected abstract fun startProcess(classpathProvider: KotlinProjectClasspathProvider): Process?
 
-  protected open fun onProcessStarted(process: Process, classpathProvider: KotlinClasspathProvider) = Unit
+  protected open fun onProcessStarted(process: Process, classpathProvider: KotlinProjectClasspathProvider) = Unit
 
   protected open fun onProcessStartFailed(error: Exception) {
     KlsLogs.error("Failed to start Kotlin LSP backend process", error)
@@ -75,16 +137,28 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
     notificationHandler.setDiagnosticsCallback(callback)
   }
 
-  override fun startServer(classpathProvider: KotlinClasspathProvider): Boolean {
+  override fun supportsDocument(path: java.nio.file.Path): Boolean =
+      path.kotlinDocumentKind(isGradleScript = true) != KotlinDocumentKind.UNSUPPORTED
+
+  override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
+    sendRequest("initialize", params, callback)
+  }
+
+  override fun startBackend(classpathProvider: KotlinProjectClasspathProvider): Boolean {
+    if (closed) return false
     if (ready && process?.isAlive == true) {
+      failed = false
       KlsLogs.debugThrottled("kls:already-running", 3000L, "{} already running", logPrefix())
       return true
     }
 
     ready = false
+    initialized = false
+    failed = false
     try {
       val startedProcess = startProcess(classpathProvider) ?: run {
         KlsLogs.error("{} launch did not produce a process; initialize will not be sent", logPrefix())
+        failed = true
         return false
       }
       process = startedProcess
@@ -107,13 +181,16 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
             startedProcess.exitValue(),
         )
         ready = false
+        failed = true
         return false
       }
+      backendGeneration++
       ready = true
       KlsLogs.info("{} transport ready: processId={}", logPrefix(), processId(startedProcess))
       return true
     } catch (e: Exception) {
       ready = false
+      failed = true
       onProcessStartFailed(e)
       return false
     }
@@ -273,6 +350,8 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
                 val exitCode = startedProcess.waitFor()
                 if (process === startedProcess) {
                    ready = false
+                   initialized = false
+                   failed = !closed
                    process = null
                    writer = null
                    input = null
@@ -374,7 +453,10 @@ abstract class BaseStdioKotlinLspConnection : KotlinLspConnection {
     }
   }
 
-  override fun shutdown() {
+  override fun close() {
+    if (closed) return
+    closed = true
+    initialized = false
     ready = false
     try {
       sendRequest("shutdown", JsonObject()) {}
