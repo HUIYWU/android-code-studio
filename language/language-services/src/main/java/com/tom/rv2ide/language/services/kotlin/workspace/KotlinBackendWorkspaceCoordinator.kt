@@ -38,6 +38,7 @@ class KotlinBackendWorkspaceCoordinator(
     private val workspace: IWorkspace,
     private val backendContext: KotlinBackendContext,
     private val backendConfigurator: KotlinBackendConfigurator,
+    private val resyncDocuments: () -> Unit = {},
 ) {
 
 
@@ -69,7 +70,7 @@ class KotlinBackendWorkspaceCoordinator(
       KlsLogs.infoThrottled(
           "kls:no-kotlin-sources",
           5000L,
-          "No Kotlin source files found under {}; symbol warm-up will be skipped",
+          "No supported Kotlin documents found under {}",
           workspaceRootDir.absolutePath,
       )
     }
@@ -237,6 +238,7 @@ class KotlinBackendWorkspaceCoordinator(
         }
 
         backendConfigurator.onEnvironmentRefreshed(connection)
+        resyncDocuments()
         KlsLogs.infoThrottled(
             "kls:reload-success",
             3000L,

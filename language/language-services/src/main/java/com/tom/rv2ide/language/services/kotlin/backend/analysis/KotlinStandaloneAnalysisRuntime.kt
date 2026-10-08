@@ -20,7 +20,6 @@ import com.tom.rv2ide.javac.config.JavacConfigProvider
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticResult
-import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
 import com.tom.rv2ide.utils.Environment
 import java.io.File
@@ -30,6 +29,7 @@ import org.jetbrains.kotlin.K1Deprecation
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.contextModule
 import org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISession
@@ -63,26 +63,21 @@ internal class KotlinStandaloneAnalysisRuntime(
   private val closed = AtomicBoolean(false)
   private var session: StandaloneAnalysisAPISession? = null
   private var sourceModulesByProjectPath: Map<String, KaSourceModule> = emptyMap()
+  private var projectContext: KotlinAnalysisProjectContext? = null
 
   @OptIn(KaExperimentalApi::class, KaImplementationDetail::class, K1Deprecation::class)
   override fun start(): Boolean {
-    val moduleProjects = resolveModuleProjects()
-    val sourceRoots = moduleProjects.flatMap { it.getSourceDirectories() }
-        .filter(File::isDirectory)
-        .map(File::toPath)
-        .distinct()
+    val context = KotlinAnalysisProjectContext.create(
+        classpathProvider.workspace ?: return false,
+        classpathProvider,
+    )
+    projectContext = context
+    val sourceRoots = context.modules.flatMap { it.sourceRoots }
     if (sourceRoots.isEmpty()) {
       KlsLogs.warn("No Kotlin source roots found for the Kotlin Analysis API engine")
       disposeQuietly()
       return false
     }
-    val classpathRoots =
-        classpathProvider
-            .getClasspathList()
-            .map { File(it) }
-            .filter { it.exists() }
-            .map { it.toPath() }
-
     Environment.JAVA_HOME?.let { jdkHome ->
       System.setProperty(JavacConfigProvider.PROP_ANDROIDIDE_JAVA_HOME, jdkHome.absolutePath)
     }
@@ -98,54 +93,60 @@ internal class KotlinStandaloneAnalysisRuntime(
         }
 
     return try {
-      session =
-          buildStandaloneAnalysisAPISession(disposable, true, configuration) {
-            buildKtModuleProvider {
+      session = buildStandaloneAnalysisAPISession(disposable, true, configuration) {
+        buildKtModuleProvider {
+          this.platform = platform
+          val contextsByPath = context.modules.associateBy { it.modulePath }
+          val libraryModules = linkedMapOf<String, KaLibraryModule>()
+
+          fun buildLibraryModule(moduleContext: KotlinAnalysisModuleContext): KaLibraryModule {
+            libraryModules[moduleContext.modulePath]?.let { return it }
+            val libraryModule = addModule(buildKtLibraryModule {
+              libraryName = "acs-classpath-${moduleContext.modulePath}"
               this.platform = platform
-              val libraryModule = buildKtLibraryModule {
-                libraryName = "acs-classpath"
-                this.platform = platform
-                addBinaryRoots(classpathRoots)
-              }
-               addModule(libraryModule)
-               val builtModules = linkedMapOf<String, KaSourceModule>()
-               val building = mutableSetOf<String>()
+              addBinaryRoots(
+                  (moduleContext.binaryRoots + moduleContext.bootClasspaths).distinct()
+              )
+            })
+            libraryModules[moduleContext.modulePath] = libraryModule
+            return libraryModule
+          }
 
-               fun buildSourceModule(module: ModuleProject): KaSourceModule {
-                 builtModules[module.path]?.let { return it }
-                 if (!building.add(module.path)) {
-                   KlsLogs.warn("Skipping cyclic Kotlin module dependency at ${module.path}")
-                   return builtModules[module.path]
-                       ?: error("Kotlin module is being built before registration: ${module.path}")
-                 }
-                 val dependencies = module.getCompileModuleProjects()
-                     .filter { it.path != module.path && it.path !in building }
-                     .distinctBy { it.path }
-                     .map(::buildSourceModule)
-                 val sourceModule = addModule(buildKtSourceModule {
-                   moduleName = module.path
-                   this.platform = platform
-                   addSourceRoots(
-                       module.getSourceDirectories()
-                           .filter(File::isDirectory)
-                           .map(File::toPath)
-                   )
-                   addRegularDependency(libraryModule)
-                   dependencies.forEach(::addRegularDependency)
-                 })
-                 building.remove(module.path)
-                 builtModules[module.path] = sourceModule
-                 return sourceModule
-               }
+          val builtModules = linkedMapOf<String, KaSourceModule>()
+          val building = mutableSetOf<String>()
 
-                moduleProjects.forEach(::buildSourceModule)
-                sourceModulesByProjectPath = builtModules.toMap()
-             }
-           }
+          fun buildSourceModule(moduleContext: KotlinAnalysisModuleContext): KaSourceModule {
+            builtModules[moduleContext.modulePath]?.let { return it }
+            if (!building.add(moduleContext.modulePath)) {
+              KlsLogs.warn("Skipping cyclic Kotlin module dependency at ${moduleContext.modulePath}")
+              return builtModules[moduleContext.modulePath]
+                  ?: error("Kotlin module is being built before registration: ${moduleContext.modulePath}")
+            }
+            val dependencies = moduleContext.compileModulePaths
+                .filter { it != moduleContext.modulePath && it !in building }
+                .mapNotNull(contextsByPath::get)
+                .map(::buildSourceModule)
+            val sourceModule = addModule(buildKtSourceModule {
+              moduleName = moduleContext.modulePath
+              this.platform = platform
+              addSourceRoots(moduleContext.sourceRoots)
+              addRegularDependency(buildLibraryModule(moduleContext))
+              dependencies.forEach(::addRegularDependency)
+            })
+            building.remove(moduleContext.modulePath)
+            builtModules[moduleContext.modulePath] = sourceModule
+            return sourceModule
+          }
+
+          context.modules.forEach(::buildLibraryModule)
+          context.modules.forEach(::buildSourceModule)
+          sourceModulesByProjectPath = builtModules.toMap()
+        }
+      }
       KlsLogs.info(
-          "Kotlin Analysis API engine ready (sourceRoots={}, classpathRoots={})",
+          "Kotlin Analysis API engine ready (modules={}, sourceRoots={})",
+          context.modules.size,
           sourceRoots.size,
-          classpathRoots.size,
       )
       true
     } catch (t: Throwable) {
@@ -227,9 +228,11 @@ internal class KotlinStandaloneAnalysisRuntime(
   }
 
   private fun sourceModuleFor(path: Path): KaSourceModule? {
-    val moduleProject = classpathProvider.workspace?.findModuleForFile(path, false)
+    val context = projectContext ?: return sourceModulesByProjectPath.values.singleOrNull()
+    val workspace = classpathProvider.workspace ?: return null
+    val moduleContext = context.moduleFor(path, workspace)
         ?: return sourceModulesByProjectPath.values.singleOrNull()
-    return sourceModulesByProjectPath[moduleProject.path]
+    return sourceModulesByProjectPath[moduleContext.modulePath]
   }
 
   override fun close() {
@@ -242,36 +245,13 @@ internal class KotlinStandaloneAnalysisRuntime(
     }
     session = null
     sourceModulesByProjectPath = emptyMap()
+    projectContext = null
     try {
       Disposer.dispose(disposable)
     } catch (t: Throwable) {
       KlsLogs.warn("Failed to dispose the Kotlin Analysis API session", t)
     }
   }
-  private fun resolveModuleProjects(): List<ModuleProject> {
-    val workspace = classpathProvider.workspace ?: return emptyList()
-    val directModules = buildList {
-      add(workspace.getRootProject())
-      addAll(workspace.getSubProjects())
-    }.filterIsInstance<ModuleProject>()
-
-    val modules = linkedMapOf<String, ModuleProject>()
-    val visiting = mutableSetOf<String>()
-
-    fun collect(module: ModuleProject) {
-      if (modules.containsKey(module.path) || !visiting.add(module.path)) {
-        return
-      }
-      modules[module.path] = module
-      module.getCompileModuleProjects().forEach(::collect)
-      visiting.remove(module.path)
-    }
-
-    directModules.forEach(::collect)
-    return modules.values.toList()
-  }
-
-
   private fun resolveJdkRelease(jdkHome: File): Int =
       Regex("java-(\\d+)").find(jdkHome.name)?.groupValues?.get(1)?.toIntOrNull() ?: 17
 

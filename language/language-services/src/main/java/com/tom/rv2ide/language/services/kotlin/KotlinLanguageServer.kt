@@ -131,7 +131,12 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     val backendContext = KotlinBackendContext(workspace, KotlinProjectClasspathProvider(workspace))
     val backendConfigurator = backendSpec.createConfigurator(backendContext)
     formatProvider = KotlinCodeFormatProvider(connection, backendConfigurator)
-    workspaceCoordinator = KotlinBackendWorkspaceCoordinator(workspace, backendContext, backendConfigurator)
+    workspaceCoordinator = KotlinBackendWorkspaceCoordinator(
+        workspace,
+        backendContext,
+        backendConfigurator,
+        documentSync::resyncActiveDocuments,
+    )
     backendReady = false
     documentSync.clear()
     val currentSetup = workspaceCoordinator ?: return
@@ -156,13 +161,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       }
 
       backendReady = true
-      documentSync.flushPendingOpens()
-      com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
-          .filter(connection::supportsDocument)
-          .forEach { file ->
-            val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file)
-            documentSync.ensureDocumentOpen(file, snapshot?.content, snapshot?.version)
-          }
+      documentSync.resyncActiveDocuments()
 
       if (!EventBus.getDefault().isRegistered(this)) {
         EventBus.getDefault().register(this)

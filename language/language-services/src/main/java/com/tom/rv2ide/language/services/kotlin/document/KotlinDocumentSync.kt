@@ -20,6 +20,7 @@ package com.tom.rv2ide.language.services.kotlin.document
 import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.projects.FileManager
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,24 +32,13 @@ class KotlinDocumentSync(
     private val isServerReady: () -> Boolean = { true },
 ) {
 
-  private data class PendingOpenDocument(
-      val file: Path,
-      val uri: String,
-      val text: String,
-      val version: Int,
-      val queuedAtMs: Long,
-  )
-
-
   companion object {
     private const val INITIAL_DID_SAVE_DELAY_MS = 1000L
   }
   private val openedDocuments = ConcurrentHashMap.newKeySet<String>()
   private val documentVersions = ConcurrentHashMap<String, Int>()
-  private val pendingOpenDocuments = ConcurrentHashMap<String, PendingOpenDocument>()
-
   fun ensureDocumentOpen(file: Path, content: String? = null, version: Int? = null) {
-    if (!connection.supportsDocument(file)) return
+    if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
     if (openedDocuments.contains(uri)) {
       return
@@ -65,46 +55,7 @@ class KotlinDocumentSync(
 
     val requestedVersion = version ?: (getDocumentVersion(uri) + 1).coerceAtLeast(1)
 
-    if (!isServerReady()) {
-      pendingOpenDocuments[uri] =
-          PendingOpenDocument(
-              file = file,
-              uri = uri,
-              text = text,
-              version = requestedVersion,
-              queuedAtMs = android.os.SystemClock.elapsedRealtime(),
-          )
-      return
-    }
-
     openDocumentNow(file, uri, text, requestedVersion)
-  }
-
-  fun flushPendingOpens() {
-    if (!isServerReady()) {
-      return
-    }
-
-    val pending = pendingOpenDocuments.values.sortedBy { it.queuedAtMs }
-    if (pending.isEmpty()) {
-      return
-    }
-
-    pending.forEach { pendingOpen ->
-      if (openedDocuments.contains(pendingOpen.uri)) {
-        pendingOpenDocuments.remove(pendingOpen.uri)
-        return@forEach
-      }
-
-      if (openDocumentNow(
-            pendingOpen.file,
-            pendingOpen.uri,
-            pendingOpen.text,
-            pendingOpen.version,
-        )) {
-        pendingOpenDocuments.remove(pendingOpen.uri)
-      }
-    }
   }
 
   private fun openDocumentNow(file: Path, uri: String, text: String, version: Int): Boolean {
@@ -127,7 +78,6 @@ class KotlinDocumentSync(
     return try {
       connection.sendNotificationOrThrow("textDocument/didOpen", params)
       openedDocuments.add(uri)
-      pendingOpenDocuments.remove(uri)
 
       // Keep the initial open path responsive. The follow-up didSave is only a bootstrap lint
       // trigger for servers that need an explicit save after open, so it can be delayed until
@@ -149,19 +99,8 @@ class KotlinDocumentSync(
   }
 
   fun notifyDocumentChange(file: Path, newText: String, version: Int) {
-    if (!connection.supportsDocument(file)) return
+    if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
-
-    if (!isServerReady()) {
-      pendingOpenDocuments[uri] = PendingOpenDocument(
-          file = file,
-          uri = uri,
-          text = newText,
-          version = version,
-          queuedAtMs = android.os.SystemClock.elapsedRealtime(),
-      )
-      return
-    }
 
     if (!openedDocuments.contains(uri)) {
       KlsLogs.warn("Document not opened, opening it first: {}", uri)
@@ -222,7 +161,6 @@ class KotlinDocumentSync(
 
   fun closeDocument(file: Path) {
     val uri = file.toUri().toString()
-    pendingOpenDocuments.remove(uri)
     if (openedDocuments.remove(uri)) {
       documentVersions.remove(uri)
       val params =
@@ -242,6 +180,15 @@ class KotlinDocumentSync(
   fun clear() {
     openedDocuments.clear()
     documentVersions.clear()
-    pendingOpenDocuments.clear()
+  }
+
+  fun resyncActiveDocuments() {
+    clear()
+    FileManager.getActiveDocumentFiles()
+        .filter(connection::supportsDocument)
+        .forEach { file ->
+          val snapshot = FileManager.getActiveDocumentSnapshot(file)
+          ensureDocumentOpen(file, snapshot?.content, snapshot?.version)
+        }
   }
 }

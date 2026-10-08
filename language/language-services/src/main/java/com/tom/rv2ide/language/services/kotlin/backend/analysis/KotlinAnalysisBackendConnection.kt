@@ -124,14 +124,14 @@ class KotlinAnalysisBackendConnection internal constructor(
         cancelScheduledDiagnostics()
         val wasInitialized = initialized
         val oldRuntime = runtime
-        runtime = null
-        initialized = false
-        closeRuntime(oldRuntime)
-
         val newRuntime = createRuntime(classpathProvider)
         if (newRuntime == null) {
-          stateRef.set(KotlinBackendState.FAILED)
-          KlsLogs.error("Kotlin Analysis API backend environment refresh failed")
+          stateRef.set(if (oldRuntime != null) KotlinBackendState.READY else KotlinBackendState.FAILED)
+          initialized = wasInitialized
+          KlsLogs.error("Kotlin Analysis API backend environment refresh failed; keeping current runtime")
+          if (initialized && oldRuntime != null) {
+            rescheduleActiveDocuments()
+          }
           return@executeOnAnalysisQueue false
         }
 
@@ -139,6 +139,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         initialized = wasInitialized
         generationCounter.incrementAndGet()
         stateRef.set(KotlinBackendState.READY)
+        closeRuntime(oldRuntime)
         if (initialized) {
           rescheduleActiveDocuments()
         }

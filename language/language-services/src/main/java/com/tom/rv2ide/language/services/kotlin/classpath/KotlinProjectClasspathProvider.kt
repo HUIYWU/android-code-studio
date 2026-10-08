@@ -153,11 +153,32 @@ class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
 
   private fun containsJavaSources(dir: File): Boolean =
     dir.isDirectory && dir.walkTopDown().maxDepth(2).any { it.isFile && it.extension.equals("java", ignoreCase = true) }
+  fun getModuleClasspath(module: ModuleProject, allModules: Collection<ModuleProject>): Set<File> {
+    val variantClassJars = allModules
+        .filterIsInstance<AndroidModule>()
+        .flatMap { it.getSelectedVariant()?.mainArtifact?.classJars.orEmpty() }
+        .map { it.absoluteFile.toPath().normalize().toFile() }
+        .toSet()
+    val moduleOutputs = allModules
+        .flatMap { it.getModuleClasspaths() }
+        .map { it.absoluteFile.toPath().normalize().toFile() }
+        .filterNot { it in variantClassJars }
+        .toSet()
+    val compileClasspaths = module.getCompileClasspaths()
+        .asSequence()
+        .map { it.absoluteFile.toPath().normalize().toFile() }
+        .filter(File::exists)
+        .toList()
+    return compileClasspaths
+        .filterNot { it in moduleOutputs }
+        .toCollection(linkedSetOf())
+  }
 
   fun getClasspathList(): List<String> {
     if (cachedClasspathList != null) {
       return cachedClasspathList!!
     }
+
 
 
     val classpaths = mutableSetOf<String>()
