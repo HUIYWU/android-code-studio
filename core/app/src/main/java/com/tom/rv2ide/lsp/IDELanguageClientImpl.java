@@ -23,7 +23,6 @@ import static com.tom.rv2ide.resources.R.drawable;
 import static com.tom.rv2ide.resources.R.string;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import com.tom.rv2ide.common.logging.IdeLogConfig;
 
 import com.blankj.utilcode.util.FileIOUtils;
 import com.blankj.utilcode.util.FileUtils;
@@ -67,7 +66,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.atomic.AtomicLong;
 import kotlin.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -131,175 +129,119 @@ public class IDELanguageClientImpl implements ILanguageClient {
     return mInstance != null;
   }
 
-// In IDELanguageClientImpl.java - Update the publishDiagnostics method
-
   @Override
   public void publishDiagnostics(DiagnosticResult result) {
-    final long totalStartMs = android.os.SystemClock.elapsedRealtime();
-    final String threadName = Thread.currentThread().getName();
-    final boolean isMainThread = android.os.Looper.myLooper() == android.os.Looper.getMainLooper();
-
-    if (result == DiagnosticResult.NO_UPDATE || !canUseActivity()) {
-      if (result == DiagnosticResult.NO_UPDATE) {
-        if (IdeLogConfig.shouldLogIde()) {
-          LOG.info("publishDiagnostics skipped: NO_UPDATE");
-        }
-      } else {
-        LOG.warn("publishDiagnostics skipped: activity unavailable");
-      }
-      return;
-    }
-
-    boolean error = result == null;
-    if (error) {
-      LOG.warn("publishDiagnostics skipped: result is null");
-      return;
-    }
-
-    File file = result.getFile().toFile();
-    final var activeSnapshot = FileManager.INSTANCE.getActiveDocumentSnapshot(result.getFile());
-    if (result.getDocumentVersion() != DiagnosticResult.UNKNOWN_DOCUMENT_VERSION
-        && (activeSnapshot == null
-            || activeSnapshot.getVersion() != result.getDocumentVersion()
-            || (result.getDocumentRevision() != DiagnosticResult.UNKNOWN_DOCUMENT_REVISION
-                && activeSnapshot.getRevision() != result.getDocumentRevision()))) {
-      if (IdeLogConfig.shouldLogInfo()) {
-        LOG.info(
-            "publishDiagnostics dropped: stale document result file={} resultVersion={} currentVersion={} resultRevision={} currentRevision={}",
-            file.getAbsolutePath(),
-            result.getDocumentVersion(),
-            activeSnapshot == null ? null : activeSnapshot.getVersion(),
-            result.getDocumentRevision(),
-            activeSnapshot == null ? null : activeSnapshot.getRevision());
-      }
-      return;
-    }
-    final String channel =
-        result.getChannel() == null || result.getChannel().isBlank()
-            ? DIAGNOSTIC_CHANNEL_DEFAULT
-            : result.getChannel();
-    final int incomingDiagnosticCount = result.getDiagnostics() == null ? -1 : result.getDiagnostics().size();
-    if (IdeLogConfig.shouldLogIde()) {
-      LOG.debug(
-          "publishDiagnostics received: file={}, exists={}, isFile={}, count={}, channel={}, documentVersion={}, documentRevision={}, thread={}, isMainThread={}",
-          file.getAbsolutePath(),
-          file.exists(),
-          file.isFile(),
-          incomingDiagnosticCount,
-          channel,
-          result.getDocumentVersion(),
-          result.getDocumentRevision(),
-          threadName,
-          isMainThread);
-    }
-    if (!file.exists() || !file.isFile()) {
-      LOG.warn("publishDiagnostics dropped: target file missing or not regular file={}", file);
-      return;
-    }
-
-    final List<DiagnosticItem> previousDiagnostics = getMergedDiagnostics(file);
-    putDiagnosticsForChannel(file, channel, result.getDiagnostics());
-    final List<DiagnosticItem> mergedDiagnostics = getMergedDiagnostics(file);
-    activity.handleDiagnosticsResultVisibility(mergedDiagnostics.isEmpty());
-
-    final long editorLookupStartMs = android.os.SystemClock.elapsedRealtime();
-    final var editorView = activity.getEditorForFile(file);
-    final long editorLookupCostMs = android.os.SystemClock.elapsedRealtime() - editorLookupStartMs;
-    if (IdeLogConfig.shouldLogIde()) {
-      LOG.debug(
-          "publishDiagnostics editor match: {} (editorLookupCostMs={})",
-          editorView != null ? "HIT" : "MISS",
-          editorLookupCostMs);
-    }
-
-    long mapRegionsCostMs = -1L;
-    long applyToEditorCostMs = -1L;
-    int contentLength = -1;
-
-    if (editorView != null) {
-      final var editor = editorView.getEditor();
-      if (editor != null) {
-        final var container = new DiagnosticsContainer();
-        try {
-          final var content = editor.getText();
-          contentLength = content.length();
-          final List<DiagnosticItem> editorDiagnostics = selectDiagnosticsForEditor(
-              mergedDiagnostics,
-              file,
-              contentLength);
-          final long mapRegionsStartMs = android.os.SystemClock.elapsedRealtime();
-          final LineIndex lineIndex = LineIndex.from(content);
-          final var regions = new ArrayList<io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion>(
-              editorDiagnostics.size());
-          for (DiagnosticItem diagnostic : editorDiagnostics) {
-            regions.add(diagnostic.asDiagnosticRegion(lineIndex));
-          }
-          container.addDiagnostics(regions);
-          mapRegionsCostMs = android.os.SystemClock.elapsedRealtime() - mapRegionsStartMs;
-
-        } catch (Throwable err) {
-          LOG.error("Unable to map DiagnosticItem to DiagnosticRegion", err);
-        }
-
-        final long applyToEditorStartMs = android.os.SystemClock.elapsedRealtime();
-        activity.runOnUiThread(() -> editor.setDiagnostics(container));
-        applyToEditorCostMs = android.os.SystemClock.elapsedRealtime() - applyToEditorStartMs;
-      } else {
-        LOG.warn(
-            "publishDiagnostics editor match MISS: CodeEditorView has null editor for file={}",
-            file.getAbsolutePath());
-      }
-    }
-
-    final boolean updateDiagnosticsAdapter =
-        shouldUpdateDiagnosticsAdapter(previousDiagnostics, mergedDiagnostics);
-
-    final long updateAdapterStartMs = android.os.SystemClock.elapsedRealtime();
-    if (updateDiagnosticsAdapter) {
-      activity.setDiagnosticsAdapter(newDiagnosticsAdapter());
-    }
-    final long updateAdapterCostMs = android.os.SystemClock.elapsedRealtime() - updateAdapterStartMs;
-    final long totalCostMs = android.os.SystemClock.elapsedRealtime() - totalStartMs;
+    publishDiagnostics(result, () -> true);
   }
 
-  /**
-   * Avoid rebuilding the bottom-sheet diagnostics list when a repeated publish has the same visible
-   * summary. The editor underline layer is still refreshed above; this only skips extra adapter
-   * allocation/binding work for duplicate diagnostic bursts.
-   */
+  @Override
+  public void publishDiagnostics(
+      @Nullable final DiagnosticResult result,
+      @NonNull final java.util.function.BooleanSupplier isCurrent) {
+    if (result == null || result == DiagnosticResult.NO_UPDATE) {
+      return;
+    }
+    if (!canUseActivity()) {
+      return;
+    }
+
+    activity.runOnUiThread(
+        () -> {
+          if (!canUseActivity() || !isCurrent.getAsBoolean()) {
+            return;
+          }
+
+          final File file = result.getFile().toFile();
+          final String channel =
+              result.getChannel() == null || result.getChannel().isBlank()
+                  ? DIAGNOSTIC_CHANNEL_DEFAULT
+                  : result.getChannel();
+          final List<DiagnosticItem> incoming =
+              result.getDiagnostics() == null
+                  ? Collections.emptyList()
+                  : new ArrayList<>(result.getDiagnostics());
+          final var activeSnapshot = FileManager.INSTANCE.getActiveDocumentSnapshot(result.getFile());
+          if ((result.getDocumentVersion() != DiagnosticResult.UNKNOWN_DOCUMENT_VERSION
+                  && (activeSnapshot == null
+                      || activeSnapshot.getVersion() != result.getDocumentVersion()))
+              || (result.getDocumentRevision() != DiagnosticResult.UNKNOWN_DOCUMENT_REVISION
+                  && (activeSnapshot == null
+                      || activeSnapshot.getRevision() != result.getDocumentRevision()))) {
+            return;
+          }
+
+          if ((!file.exists() || !file.isFile()) && !incoming.isEmpty()) {
+            return;
+          }
+
+          final List<DiagnosticItem> previousDiagnostics = getMergedDiagnostics(file);
+          putDiagnosticsForChannel(file, channel, incoming);
+          final List<DiagnosticItem> mergedDiagnostics = getMergedDiagnostics(file);
+          activity.handleDiagnosticsResultVisibility(buildMergedDiagnosticsSnapshot().isEmpty());
+
+          updateEditorDiagnostics(file, mergedDiagnostics);
+
+          if (shouldUpdateDiagnosticsAdapter(previousDiagnostics, mergedDiagnostics)) {
+            activity.setDiagnosticsAdapter(newDiagnosticsAdapter());
+          }
+        });
+  }
+
+  @Override
+  public void clearDiagnostics(java.nio.file.Path root, String channel) {
+    clearDiagnosticsMatching(root.normalize(), channel);
+  }
+
+  @Override
+  public void clearDiagnostics(String channel) {
+    clearDiagnosticsMatching(null, channel);
+  }
+
+  private void clearDiagnosticsMatching(@Nullable java.nio.file.Path root, String channel) {
+    if (!canUseActivity()) return;
+    activity.runOnUiThread(() -> {
+      if (!canUseActivity()) return;
+      final List<File> files;
+      synchronized (this) {
+        files = new ArrayList<>(diagnosticsByChannel.keySet());
+      }
+      for (File file : files) {
+        if (root != null && !file.toPath().normalize().startsWith(root)) continue;
+        putDiagnosticsForChannel(file, channel, Collections.emptyList());
+        updateEditorDiagnostics(file, getMergedDiagnostics(file));
+      }
+      activity.handleDiagnosticsResultVisibility(buildMergedDiagnosticsSnapshot().isEmpty());
+      activity.setDiagnosticsAdapter(newDiagnosticsAdapter());
+    });
+  }
+
+  private void updateEditorDiagnostics(File file, List<DiagnosticItem> diagnostics) {
+    final var editorView = activity.getEditorForFile(file);
+    if (editorView == null || editorView.getEditor() == null) return;
+    final var editor = editorView.getEditor();
+    final var container = new DiagnosticsContainer();
+    try {
+      final var content = editor.getText();
+      final var lineIndex = LineIndex.from(content);
+      final var regions = new ArrayList<io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion>();
+      for (DiagnosticItem diagnostic : selectDiagnosticsForEditor(diagnostics, file, content.length())) {
+        regions.add(diagnostic.asDiagnosticRegion(lineIndex));
+      }
+      container.addDiagnostics(regions);
+    } catch (Throwable err) {
+      LOG.error("Unable to map DiagnosticItem to DiagnosticRegion", err);
+    }
+    editor.setDiagnostics(container);
+  }
+
   private boolean shouldUpdateDiagnosticsAdapter(
       @Nullable final List<DiagnosticItem> previous,
       @Nullable final List<DiagnosticItem> current) {
-    final int previousSize = previous == null ? 0 : previous.size();
-    final int currentSize = current == null ? 0 : current.size();
-    if (previousSize != currentSize) {
-      return true;
-    }
-    if (previousSize == 0) {
-      return false;
-    }
-
-    final DiagnosticItem previousFirst = previous.get(0);
-    final DiagnosticItem currentFirst = current.get(0);
-    final DiagnosticItem previousLast = previous.get(previousSize - 1);
-    final DiagnosticItem currentLast = current.get(currentSize - 1);
-    return !sameDiagnosticSummary(previousFirst, currentFirst)
-        || !sameDiagnosticSummary(previousLast, currentLast);
-  }
-
-  private boolean sameDiagnosticSummary(
-      @Nullable final DiagnosticItem first,
-      @Nullable final DiagnosticItem second) {
-    if (first == second) {
-      return true;
-    }
-    if (first == null || second == null) {
-      return false;
-    }
-    return first.getSeverity() == second.getSeverity()
-        && Objects.equals(first.getCode(), second.getCode())
-        && Objects.equals(first.getMessage(), second.getMessage())
-        && Objects.equals(first.getRange(), second.getRange());
+    final List<DiagnosticItem> previousSafe =
+        previous == null ? Collections.emptyList() : previous;
+    final List<DiagnosticItem> currentSafe =
+        current == null ? Collections.emptyList() : current;
+    return !Objects.equals(previousSafe, currentSafe);
   }
 
   private List<DiagnosticItem> selectDiagnosticsForEditor(
@@ -346,7 +288,7 @@ public class IDELanguageClientImpl implements ILanguageClient {
     return selected;
   }
  
-  private List<DiagnosticItem> getMergedDiagnostics(@NonNull final File file) {
+  private synchronized List<DiagnosticItem> getMergedDiagnostics(@NonNull final File file) {
 
     final var byChannel = diagnosticsByChannel.get(file);
     if (byChannel == null || byChannel.isEmpty()) {
@@ -366,7 +308,7 @@ public class IDELanguageClientImpl implements ILanguageClient {
     return merged;
   }
 
-  private void putDiagnosticsForChannel(
+  private synchronized void putDiagnosticsForChannel(
       @NonNull final File file,
       @NonNull final String channel,
       @Nullable final List<DiagnosticItem> channelDiagnostics) {
@@ -547,7 +489,7 @@ public class IDELanguageClientImpl implements ILanguageClient {
     return new DiagnosticsAdapter(mapAsGroup(buildMergedDiagnosticsSnapshot()), activity);
   }
 
-  private Map<File, List<DiagnosticItem>> buildMergedDiagnosticsSnapshot() {
+  private synchronized Map<File, List<DiagnosticItem>> buildMergedDiagnosticsSnapshot() {
     final var merged = new HashMap<File, List<DiagnosticItem>>();
     for (final var entry : diagnosticsByChannel.entrySet()) {
       final var mergedDiagnostics = getMergedDiagnostics(entry.getKey());

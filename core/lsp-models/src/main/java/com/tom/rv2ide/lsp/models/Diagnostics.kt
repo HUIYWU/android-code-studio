@@ -21,6 +21,7 @@ import com.tom.rv2ide.lsp.models.DiagnosticSeverity.HINT
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity.INFO
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity.WARNING
 import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.models.Position
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion.SEVERITY_ERROR
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion.SEVERITY_NONE
@@ -100,6 +101,13 @@ class LineIndex private constructor(
     return (lineStarts[safeLine] + safeColumn).coerceIn(0, contentLength)
   }
 
+  fun indexToPosition(offset: Int): Position {
+    val index = offset.coerceIn(0, contentLength)
+    val found = lineStarts.binarySearch(index)
+    val line = if (found >= 0) found else -found - 2
+    return Position(line, index - lineStarts[line], index)
+  }
+
   companion object {
     /**
      * Builds a reusable line-start table for a diagnostics publish batch. This avoids repeatedly
@@ -109,10 +117,16 @@ class LineIndex private constructor(
     fun from(content: CharSequence): LineIndex {
       val starts = ArrayList<Int>()
       starts.add(0)
-      for (index in 0 until content.length) {
-        if (content[index] == '\n') {
-          starts.add(index + 1)
+      var index = 0
+      while (index < content.length) {
+        when (content[index].code) {
+          13 -> {
+            if (index + 1 < content.length && content[index + 1].code == 10) index++
+            starts.add(index + 1)
+          }
+          10 -> starts.add(index + 1)
         }
+        index++
       }
       return LineIndex(starts.toIntArray(), content.length)
     }
@@ -124,10 +138,13 @@ data class DiagnosticResult(
     var channel: String = DEFAULT_CHANNEL,
     var documentVersion: Int = UNKNOWN_DOCUMENT_VERSION,
     var documentRevision: Long = UNKNOWN_DOCUMENT_REVISION,
+    var backendGeneration: Long = UNKNOWN_BACKEND_GENERATION,
 ) {
   companion object {
     const val DEFAULT_CHANNEL = "default"
     const val CHANNEL_SERVER = "server"
+    const val CHANNEL_KOTLIN = "kotlin"
+    const val UNKNOWN_BACKEND_GENERATION = -1L
     const val UNKNOWN_DOCUMENT_VERSION = -1
     const val UNKNOWN_DOCUMENT_REVISION = -1L
 

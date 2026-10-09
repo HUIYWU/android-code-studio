@@ -21,8 +21,6 @@ import com.google.gson.JsonObject
 import com.tom.rv2ide.lsp.models.*
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projectdata.logs.LogStream
-import java.nio.file.Paths
-import org.slf4j.LoggerFactory
 
 /*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
@@ -30,24 +28,20 @@ import org.slf4j.LoggerFactory
 
 class KotlinNotificationHandler {
 
-  companion object {
-    private val log = LoggerFactory.getLogger(KotlinNotificationHandler::class.java)
-  }
-
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
 
   fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit) {
     this.diagnosticsCallback = callback
   }
 
-  fun handle(obj: JsonObject) {
+  fun handle(obj: JsonObject, generation: Long = DiagnosticResult.UNKNOWN_BACKEND_GENERATION) {
     val method = obj.get("method")?.asString ?: return
     val params = obj.getAsJsonObject("params")
 
     when (method) {
       "textDocument/publishDiagnostics" -> {
         KlsLogs.debug("Received diagnostics notification")
-        handlePublishDiagnostics(params)
+        handlePublishDiagnostics(params, generation)
       }
       "window/showMessage" -> {
         val message = params?.get("message")?.asString
@@ -62,10 +56,18 @@ class KotlinNotificationHandler {
     }
   }
 
-  private fun handlePublishDiagnostics(params: JsonObject?) {
+  private fun handlePublishDiagnostics(params: JsonObject?, generation: Long) {
     params ?: return
     val uri = params.get("uri")?.asString ?: return
-    val diagnosticsArray = params.getAsJsonArray("diagnostics") ?: return
+    val diagnosticsElement = params.get("diagnostics")
+    if (diagnosticsElement == null || !diagnosticsElement.isJsonArray) {
+      KlsLogs.warn("Ignoring malformed diagnostics payload without an array: {}", uri)
+      return
+    }
+    val diagnosticsArray = diagnosticsElement.asJsonArray
+    val documentVersion =
+        params.get("version")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
+            ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION
 
     KlsLogs.info("Received {} diagnostics for: {}", diagnosticsArray.size(), uri)
 
@@ -123,6 +125,11 @@ class KotlinNotificationHandler {
           }
         }
 
+    if (diagnostics.size != diagnosticsArray.size()) {
+      KlsLogs.warn("Ignoring malformed diagnostics batch: {}", uri)
+      return
+    }
+
     val filePath =
         try {
           java.nio.file.Paths.get(java.net.URI(uri))
@@ -130,17 +137,16 @@ class KotlinNotificationHandler {
           KlsLogs.error("Invalid URI: {}", uri, e)
           return
         }
-    if (diagnostics.isNotEmpty()) {
-      diagnosticsCallback?.invoke(
-          DiagnosticResult(filePath, diagnostics, DiagnosticResult.CHANNEL_SERVER)
-      )
-    } else {
-      // An empty publishDiagnostics payload is still semantically meaningful: it clears stale editor
-      // diagnostics for this file. Dropping the callback here makes the IDE behave as if nothing changed.
-      diagnosticsCallback?.invoke(
-          DiagnosticResult(filePath, emptyList(), DiagnosticResult.CHANNEL_SERVER)
-      )
-    }
+    diagnosticsCallback?.invoke(
+        DiagnosticResult(
+            filePath,
+            diagnostics,
+            DiagnosticResult.CHANNEL_KOTLIN,
+            documentVersion,
+            DiagnosticResult.UNKNOWN_DOCUMENT_REVISION,
+            generation,
+        )
+    )
 
   }
 

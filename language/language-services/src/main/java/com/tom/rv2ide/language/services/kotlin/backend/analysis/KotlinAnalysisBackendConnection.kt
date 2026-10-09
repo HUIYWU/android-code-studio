@@ -65,6 +65,9 @@ class KotlinAnalysisBackendConnection internal constructor(
   override val generation: Long
     get() = generationCounter.get()
 
+  override val diagnosticChannel: String
+    get() = DiagnosticResult.CHANNEL_KOTLIN
+
   override val isInitialized: Boolean
     get() = initialized
 
@@ -147,7 +150,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         true
       } ?: false
 
-override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
+  override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
     val result = executeOnAnalysisQueue {
       if (!isReady) return@executeOnAnalysisQueue null
       JsonObject().apply {
@@ -204,6 +207,16 @@ override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           scheduledJobs.remove(path)?.cancel(false)
+          diagnosticsCallback?.invoke(
+              DiagnosticResult(
+                  path,
+                  emptyList(),
+                  DiagnosticResult.CHANNEL_KOTLIN,
+                  DiagnosticResult.UNKNOWN_DOCUMENT_VERSION,
+                  DiagnosticResult.UNKNOWN_DOCUMENT_REVISION,
+                  generation,
+              )
+          )
         }
         else -> KlsLogs.debug("Analysis API Kotlin backend ignoring notification: {}", method)
       }
@@ -252,18 +265,22 @@ override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
     val callback = diagnosticsCallback ?: return
     val requestGeneration = generation
     val normalizedPath = path.normalize()
-    val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
+    val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
     try {
       val result = activeRuntime.analyze(normalizedPath, snapshot) ?: return
       if (requestGeneration != generation || state != KotlinBackendState.READY) return
       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
-      if ((snapshot == null) != (currentSnapshot == null) ||
-          snapshot?.version != currentSnapshot?.version ||
-          snapshot?.revision != currentSnapshot?.revision) {
-        return
-      }
-      callback.invoke(result)
+      if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
+          snapshot.revision != currentSnapshot.revision) return
+      callback.invoke(
+          result.copy(
+              channel = DiagnosticResult.CHANNEL_KOTLIN,
+              documentVersion = snapshot.version,
+              documentRevision = snapshot.revision,
+              backendGeneration = requestGeneration,
+          )
+      )
     } catch (t: Throwable) {
       KlsLogs.warn("Kotlin Analysis API diagnostics failed for: {}", normalizedPath, t)
     }

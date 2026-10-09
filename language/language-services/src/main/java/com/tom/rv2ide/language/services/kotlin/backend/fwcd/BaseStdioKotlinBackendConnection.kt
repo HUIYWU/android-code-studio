@@ -119,7 +119,7 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
   private val nextId = AtomicInteger(1)
   private val pendingRequests = ConcurrentHashMap<Int, (JsonObject?) -> Unit>()
   private val notificationHandler = KotlinNotificationHandler()
-  private val executorService = Executors.newFixedThreadPool(2)
+  private val executorService = Executors.newSingleThreadExecutor()
 
   protected abstract fun startProcess(classpathProvider: KotlinProjectClasspathProvider): Process?
 
@@ -169,6 +169,7 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
           )
       input = BufferedInputStream(startedProcess.inputStream, BUFFER_SIZE)
 
+      backendGeneration++
       startReaderThread()
       startErrorReaderThread(startedProcess)
       startExitWatcher(startedProcess)
@@ -184,7 +185,6 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
         failed = true
         return false
       }
-      backendGeneration++
       ready = true
       KlsLogs.info("{} transport ready: processId={}", logPrefix(), processId(startedProcess))
       return true
@@ -281,6 +281,7 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
 
   private fun startReaderThread() {
     val stream = input ?: return
+    val readerProcess = process ?: return
     Thread(
             {
               try {
@@ -316,7 +317,10 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
                   }
 
                   val json = String(payload, StandardCharsets.UTF_8)
-                  executorService.submit { handleMessage(json) }
+                  val receivedGeneration = generation
+                  executorService.submit {
+                    if (process === readerProcess) handleMessage(json, receivedGeneration)
+                  }
                 }
               } catch (e: Exception) {
                 KlsLogs.error("Error in reader thread", e)
@@ -411,7 +415,7 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
         .start()
   }
 
-  private fun handleMessage(json: String) {
+  private fun handleMessage(json: String, receivedGeneration: Long) {
     try {
       val obj = gson.fromJson(json, JsonObject::class.java)
 
@@ -444,7 +448,9 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
           callback.invoke(null)
         }
       } else if (obj.has("method")) {
-        notificationHandler.handle(obj)
+        if (receivedGeneration == generation && isReady) {
+          notificationHandler.handle(obj, receivedGeneration)
+        }
       } else {
         KlsLogs.warn("Message has neither id nor method: {}", json.take(200))
       }

@@ -35,6 +35,7 @@ import com.tom.rv2ide.lsp.api.IServerSettings
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.lsp.models.*
 import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.IWorkspace
 import java.nio.file.Path
 import kotlinx.coroutines.*
@@ -58,13 +59,17 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   private val documentSync = KotlinDocumentSync(connection) { backendReady && connection.isReady }
   private val requestHandler = KotlinRequestHandler(connection, documentSync)
-  private val documentEventBridge = KotlinDocumentEventBridge(documentSync, connection::supportsDocument)
+  private val documentEventBridge =
+      KotlinDocumentEventBridge(documentSync, connection::supportsDocument) { file ->
+        _client?.clearDiagnostics(file, connection.diagnosticChannel)
+      }
 
-  private var _client: ILanguageClient? = null
+  @Volatile private var _client: ILanguageClient? = null
   @Volatile private var backendReady = false
   private var disabledByPreference = false
   private var workspaceCoordinator: KotlinBackendWorkspaceCoordinator? = null
-  private var activeWorkspace: IWorkspace? = null
+  @Volatile private var activeWorkspace: IWorkspace? = null
+  private val diagnosticsEpoch = java.util.concurrent.atomic.AtomicLong()
 
 
   private lateinit var formatProvider: KotlinCodeFormatProvider
@@ -88,9 +93,17 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
             diagnostics.diagnostics.size,
             summarizeDiagnosticsForTrace(diagnostics.diagnostics),
         )
-        _client?.publishDiagnostics(
-            diagnostics.copy(channel = DiagnosticResult.CHANNEL_SERVER)
-        )
+        val epoch = diagnosticsEpoch.get()
+        val resultGeneration = diagnostics.backendGeneration
+        val receivedRevision = FileManager.getActiveDocumentSnapshot(diagnostics.file)?.revision
+        _client?.publishDiagnostics(diagnostics) {
+          epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
+              (resultGeneration == DiagnosticResult.UNKNOWN_BACKEND_GENERATION ||
+                  resultGeneration == connection.generation) &&
+              receivedRevision != null &&
+              FileManager.getActiveDocumentSnapshot(diagnostics.file)?.revision == receivedRevision &&
+              connection.supportsDocument(diagnostics.file)
+        }
 
       }
     }
@@ -116,6 +129,8 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     }
 
     val replacingWorkspace = activeWorkspace != null && activeWorkspace !== workspace
+    backendReady = false
+    clearKotlinDiagnostics()
     activeWorkspace = workspace
 
     if (!LSPPreferences.kotlinLspEnabled) {
@@ -135,7 +150,10 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         workspace,
         backendContext,
         backendConfigurator,
-        documentSync::resyncActiveDocuments,
+        {
+          clearKotlinDiagnostics()
+          documentSync.resyncActiveDocuments()
+        },
     )
     backendReady = false
     documentSync.clear()
@@ -279,20 +297,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     KlsLogs.debug("Formatting file: {}", fileToFormat)
 
     try {
-      // Ensure document is opened before formatting
-      documentSync.ensureDocumentOpen(fileToFormat)
-
-      // If content is provided in params, sync it first
-      if (params.content != null && params.content.toString().isNotEmpty()) {
-        val uri = fileToFormat.toUri().toString()
-        val currentVersion = documentSync.getDocumentVersion(uri)
-        val newVersion = currentVersion + 1
-        documentSync.setDocumentVersion(uri, newVersion)
-        documentSync.notifyDocumentChange(fileToFormat, params.content.toString(), newVersion)
-
-        // Give server a moment to process the change
-        Thread.sleep(100)
-      }
+      documentSync.syncActiveDocument(fileToFormat)
 
       val result = formatProvider.format(fileToFormat, params)
 
@@ -309,6 +314,8 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun shutdown() {
+    backendReady = false
+    clearKotlinDiagnostics()
     KlsLogs.info("Shutting down Kotlin Language Server...")
     try {
       org.greenrobot.eventbus.EventBus.getDefault().unregister(documentEventBridge)
@@ -328,6 +335,11 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     backendReady = false
     KlsLogs.info("Kotlin Language Server shutdown complete")
   }
+  private fun clearKotlinDiagnostics() {
+    diagnosticsEpoch.incrementAndGet()
+    _client?.clearDiagnostics(connection.diagnosticChannel)
+  }
+
   private fun summarizeDiagnosticsForTrace(diagnostics: List<DiagnosticItem>, limit: Int = 3): String {
     if (diagnostics.isEmpty()) return "[]"
     return diagnostics

@@ -28,6 +28,8 @@ import com.tom.rv2ide.lsp.models.ShowDocumentResult;
 import com.tom.rv2ide.models.Location;
 import java.io.File;
 import java.util.List;
+import java.nio.file.Path;
+import java.util.function.BooleanSupplier;
 
 /**
  * A language client handles notifications and events from a {@link ILanguageServer}.
@@ -42,6 +44,14 @@ public interface ILanguageClient {
    * @param result The diagnostic result.
    */
   void publishDiagnostics(DiagnosticResult result);
+
+  default void publishDiagnostics(DiagnosticResult result, BooleanSupplier isCurrent) {
+    if (isCurrent.getAsBoolean()) publishDiagnostics(result);
+  }
+
+  default void clearDiagnostics(Path file, String channel) {}
+
+  default void clearDiagnostics(String channel) {}
 
   /**
    * Get the diagnostic item in the given file at the given character position.

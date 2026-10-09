@@ -36,6 +36,8 @@ interface KotlinBackendConnection {
     get() = if (isReady) KotlinBackendState.READY else KotlinBackendState.NEW
   val generation: Long
     get() = 0L
+  val diagnosticChannel: String
+    get() = DiagnosticResult.CHANNEL_KOTLIN
   val isInitialized: Boolean
     get() = false
 

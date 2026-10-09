@@ -150,8 +150,8 @@ interface ILanguageServer {
    * Analyze the given file and provide diagnostics from the analyze result.
    *
    * @param file The file to analyze.
-   * @return The diagnostic result. Points to [DiagnosticResult.NO_UPDATE] if no diagnotic items are
-   *   available.
+   * @return The diagnostic result. Returns [DiagnosticResult.NO_UPDATE] when no new result is available.
+   *   A successful analysis with no diagnostics returns an empty diagnostic list.
    */
   suspend fun analyze(file: Path): DiagnosticResult
 

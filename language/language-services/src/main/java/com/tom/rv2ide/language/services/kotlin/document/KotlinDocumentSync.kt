@@ -37,15 +37,20 @@ class KotlinDocumentSync(
   }
   private val openedDocuments = ConcurrentHashMap.newKeySet<String>()
   private val documentVersions = ConcurrentHashMap<String, Int>()
+  private val documentRevisions = ConcurrentHashMap<String, Long>()
+  @Synchronized
   fun ensureDocumentOpen(file: Path, content: String? = null, version: Int? = null) {
     if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
+    val snapshot = FileManager.getActiveDocumentSnapshot(file)
     if (openedDocuments.contains(uri)) {
-      return
+      if (snapshot != null && snapshot.revision != documentRevisions[uri] &&
+          snapshot.version <= getDocumentVersion(uri)) {
+        closeDocument(file)
+      } else return
     }
-
     val text =
-        content
+        snapshot?.content ?: content
             ?: try {
               file.toFile().readText()
             } catch (e: Exception) {
@@ -53,14 +58,13 @@ class KotlinDocumentSync(
               return
             }
 
-    val requestedVersion = version ?: (getDocumentVersion(uri) + 1).coerceAtLeast(1)
+    val requestedVersion = snapshot?.version ?: version ?: 1
 
-    openDocumentNow(file, uri, text, requestedVersion)
+    openDocumentNow(file, uri, text, requestedVersion, snapshot?.revision)
   }
 
-  private fun openDocumentNow(file: Path, uri: String, text: String, version: Int): Boolean {
+  private fun openDocumentNow(file: Path, uri: String, text: String, version: Int, revision: Long?): Boolean {
     if (!connection.supportsDocument(file) || !isServerReady()) return false
-    setDocumentVersion(uri, version)
 
     val params =
         JsonObject().apply {
@@ -77,6 +81,8 @@ class KotlinDocumentSync(
 
     return try {
       connection.sendNotificationOrThrow("textDocument/didOpen", params)
+      revision?.let { documentRevisions[uri] = it }
+      documentVersions[uri] = version
       openedDocuments.add(uri)
 
       // Keep the initial open path responsive. The follow-up didSave is only a bootstrap lint
@@ -98,7 +104,8 @@ class KotlinDocumentSync(
     }
   }
 
-  fun notifyDocumentChange(file: Path, newText: String, version: Int) {
+  @Synchronized
+  private fun notifyDocumentChange(file: Path, newText: String, version: Int, revision: Long) {
     if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
 
@@ -107,6 +114,8 @@ class KotlinDocumentSync(
       ensureDocumentOpen(file, newText, version)
       return
     }
+
+    if (version <= getDocumentVersion(uri)) return
 
     val params =
         JsonObject().apply {
@@ -125,18 +134,21 @@ class KotlinDocumentSync(
           )
         }
 
-    connection.sendNotification("textDocument/didChange", params)
+    connection.sendNotificationOrThrow("textDocument/didChange", params)
+    documentRevisions[uri] = revision
+    documentVersions[uri] = version
   }
 
+  @Synchronized
   fun notifyDocumentSave(file: Path, text: String? = null) {
     if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
-    if (!openedDocuments.contains(uri)) {
-      return
-    }
+    if (!FileManager.isActive(file)) return
+    syncActiveDocument(file)
+    if (!openedDocuments.contains(uri)) return
 
     val currentText =
-        text
+        FileManager.getActiveDocumentSnapshot(file)?.content ?: text
             ?: try {
               file.toFile().readText()
             } catch (e: Exception) {
@@ -148,24 +160,39 @@ class KotlinDocumentSync(
         JsonObject().apply {
           add(
               "textDocument",
-              JsonObject().apply {
-                addProperty("uri", uri)
-                if (currentText != null) {
-                  addProperty("text", currentText)
-                }
-              },
+              JsonObject().apply { addProperty("uri", uri) },
           )
+          if (currentText != null) addProperty("text", currentText)
         }
     connection.sendNotification("textDocument/didSave", params)
   }
 
+  @Synchronized
   fun closeDocument(file: Path) {
     val uri = file.toUri().toString()
     if (openedDocuments.remove(uri)) {
       documentVersions.remove(uri)
+      documentRevisions.remove(uri)
       val params =
           JsonObject().apply { add("textDocument", JsonObject().apply { addProperty("uri", uri) }) }
       connection.sendNotification("textDocument/didClose", params)
+    }
+  }
+
+  @Synchronized
+  fun closeDocumentsUnder(root: Path) {
+    openedDocuments.toList().map { java.nio.file.Paths.get(java.net.URI(it)) }
+        .filter { it.normalize().startsWith(root.normalize()) }
+        .forEach(::closeDocument)
+  }
+
+  @Synchronized
+  fun syncActiveDocument(file: Path) {
+    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return
+    val uri = file.toUri().toString()
+    ensureDocumentOpen(file, snapshot.content, snapshot.version)
+    if (snapshot.version > getDocumentVersion(uri)) {
+      notifyDocumentChange(file, snapshot.content, snapshot.version, snapshot.revision)
     }
   }
 
@@ -173,15 +200,15 @@ class KotlinDocumentSync(
 
   fun getDocumentVersion(uri: String): Int = documentVersions.getOrDefault(uri, 0)
 
-  fun setDocumentVersion(uri: String, version: Int) {
-    documentVersions[uri] = version
-  }
-
+  @Synchronized
   fun clear() {
+    openedDocuments.toList().map { java.nio.file.Paths.get(java.net.URI(it)) }.forEach(::closeDocument)
     openedDocuments.clear()
     documentVersions.clear()
+    documentRevisions.clear()
   }
 
+  @Synchronized
   fun resyncActiveDocuments() {
     clear()
     FileManager.getActiveDocumentFiles()

@@ -17,6 +17,8 @@
 
 package com.tom.rv2ide.language.services.kotlin.document
 
+import com.tom.rv2ide.eventbus.events.file.FileDeletionEvent
+import com.tom.rv2ide.eventbus.events.file.FileRenameEvent
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 
 /*
@@ -26,12 +28,13 @@ import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 class KotlinDocumentEventBridge(
     private val documentManager: KotlinDocumentSync,
     private val supportsDocument: (java.nio.file.Path) -> Boolean,
+    private val clearDiagnostics: (java.nio.file.Path) -> Unit = {},
 ) {
 
   private val lastSaveTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val saveDebounceMs = 350L
 
-  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onContentChange(event: com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent) {
     val file = event.changedFile
     if (!supportsDocument(file)) return
@@ -46,8 +49,7 @@ class KotlinDocumentEventBridge(
 
       if (snapshot.version >= 0 &&
           (!documentManager.isDocumentOpen(uri) || snapshot.version > currentVersion)) {
-        documentManager.setDocumentVersion(uri, snapshot.version)
-        documentManager.notifyDocumentChange(file, content, snapshot.version)
+        documentManager.syncActiveDocument(file)
         // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of
         // relying on stale disk content or a no-op save hook.
         val lastSaved = lastSaveTime[uri] ?: 0L
@@ -64,21 +66,21 @@ class KotlinDocumentEventBridge(
     }
   }
 
-  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileOpened(event: com.tom.rv2ide.eventbus.events.editor.DocumentOpenEvent) {
     val file = event.openedFile
     if (!supportsDocument(file)) return
 
     KlsLogs.debug("Document open event for: {}", file)
-    val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file)
+    val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
     documentManager.ensureDocumentOpen(
         file,
-        snapshot?.content ?: event.text,
-        snapshot?.version ?: event.version,
+        snapshot.content,
+        snapshot.version,
     )
   }
 
-  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileSelected(event: com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent) {
     val file = event.selectedFile
     if (!supportsDocument(file)) return
@@ -88,7 +90,7 @@ class KotlinDocumentEventBridge(
     documentManager.notifyDocumentSave(file, snapshot.content)
   }
 
-  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileSaved(event: com.tom.rv2ide.eventbus.events.editor.DocumentSaveEvent) {
     val file = event.savedFile
     if (!supportsDocument(file)) return
@@ -96,13 +98,34 @@ class KotlinDocumentEventBridge(
     documentManager.notifyDocumentSave(file)
   }
 
-  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.ASYNC)
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileClosed(event: com.tom.rv2ide.eventbus.events.editor.DocumentCloseEvent) {
     val file = event.closedFile
-    if (!supportsDocument(file)) return
+    if (!supportsDocument(file) || com.tom.rv2ide.projects.FileManager.isActive(file)) return
 
     KlsLogs.debug("Document close event for: {}", file)
     lastSaveTime.remove(file.toUri().toString())
     documentManager.closeDocument(file)
+    clearDiagnostics(file)
   }
+
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
+  fun onFileDeleted(event: FileDeletionEvent) {
+    val root = event.file.toPath().normalize()
+    documentManager.closeDocumentsUnder(root)
+    lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
+    clearDiagnostics(root)
+  }
+
+  @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
+  fun onFileRenamed(event: FileRenameEvent) {
+    val root = event.file.toPath().normalize()
+    documentManager.closeDocumentsUnder(root)
+    lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
+    clearDiagnostics(root)
+    com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
+        .filter { it.startsWith(event.newFile.toPath().normalize()) && supportsDocument(it) }
+        .forEach(documentManager::syncActiveDocument)
+  }
+
 }

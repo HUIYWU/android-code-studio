@@ -26,7 +26,6 @@ import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.FileManager
 import java.nio.file.Paths
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 
@@ -50,10 +49,6 @@ class KotlinRequestHandler(
   }
 
   private val completionConverter = KotlinCompletionConverter()
-
-  // Track last sync time to avoid redundant syncs
-  private val lastSyncTime = ConcurrentHashMap<String, Long>()
-  private val syncThrottleMs = 0L
 
   // Debouncing for rapid typing
   private val lastCompletionRequest = AtomicLong(0)
@@ -154,26 +149,13 @@ class KotlinRequestHandler(
           val prefix = extractPrefix(fileContent, params.position)
 
           val uri = params.file.toUri().toString()
-          val currentTime = System.currentTimeMillis()
-          val lastSync = lastSyncTime[uri] ?: 0L
 
           if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop before document sync requestId={}", requestId)
               return@coroutineScope CompletionResult(emptyList())
           }
 
-          // Keep KLS in sync before requesting completion. The previous fire-and-forget sync could let
-          // textDocument/completion race ahead of didOpen/didChange, producing stale suggestions.
-          if (!documentManager.isDocumentOpen(uri)) {
-              documentManager.ensureDocumentOpen(params.file, fileContent.takeIf { it.isNotEmpty() })
-              lastSyncTime[uri] = currentTime
-          } else if (currentTime - lastSync > syncThrottleMs && fileContent.isNotEmpty()) {
-              val currentVersion = documentManager.getDocumentVersion(uri)
-              val newVersion = currentVersion + 1
-              documentManager.setDocumentVersion(uri, newVersion)
-              documentManager.notifyDocumentChange(params.file, fileContent, newVersion)
-              lastSyncTime[uri] = currentTime
-          }
+          documentManager.syncActiveDocument(params.file)
 
           if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop after document sync requestId={}", requestId)
@@ -363,18 +345,8 @@ val itemsArray = when {
         val deferred = CompletableDeferred<SignatureHelp>()
 
         try {
-          documentManager.ensureDocumentOpen(
-              params.file,
-              FileManager.getActiveDocumentSnapshot(params.file)?.content,
-          )
-
+          documentManager.syncActiveDocument(params.file)
           val uri = params.file.toUri().toString()
-          if (params.content != null && params.content!!.isNotEmpty()) {
-            val currentVersion = documentManager.getDocumentVersion(uri)
-            val newVersion = currentVersion + 1
-            documentManager.setDocumentVersion(uri, newVersion)
-            documentManager.notifyDocumentChange(params.file, params.content.toString(), newVersion)
-          }
 
           // Build context with trigger information
           val context =

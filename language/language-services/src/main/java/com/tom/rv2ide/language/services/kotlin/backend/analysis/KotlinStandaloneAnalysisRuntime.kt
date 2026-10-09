@@ -169,7 +169,7 @@ internal class KotlinStandaloneAnalysisRuntime(
               val psiFile = psiManager.findFile(virtualFile)
               val ktFile = psiFile as? KtFile ?: return@Computable null
               val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
-              DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_SERVER)
+              DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_KOTLIN)
             },
         )
       } else {
@@ -210,7 +210,7 @@ internal class KotlinStandaloneAnalysisRuntime(
             DiagnosticResult(
                 path,
                 diagnostics,
-                DiagnosticResult.CHANNEL_SERVER,
+                DiagnosticResult.CHANNEL_KOTLIN,
                 snapshot.version,
                 snapshot.revision,
             )
