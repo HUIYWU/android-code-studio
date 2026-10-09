@@ -78,8 +78,8 @@ public class SignatureHelpWindow extends BaseEditorWindow {
 
   @Nullable
   private CharSequence createSignatureText(@NonNull SignatureHelp signature) {
-    final var signatures = signature.getSignatures();
-    final var activeSignature = signature.getActiveSignature();
+    final var signatures = new java.util.ArrayList<>(signature.getSignatures());
+    var activeSignature = signature.getActiveSignature();
     final var activeParameter = signature.getActiveParameter();
     final SpannableStringBuilder sb = new SpannableStringBuilder();
 
@@ -94,6 +94,8 @@ public class SignatureHelpWindow extends BaseEditorWindow {
       return null;
     }
 
+    final var activeSignatureInfo = signatures.get(activeSignature);
+
     // remove all with non-applicable signatures
     signatures.removeIf(
         info -> {
@@ -106,6 +108,14 @@ public class SignatureHelpWindow extends BaseEditorWindow {
         });
 
     count = signatures.size();
+    if (count == 0) {
+      return null;
+    }
+    activeSignature = signatures.indexOf(activeSignatureInfo);
+    if (activeSignature < 0) {
+      activeSignature = 0;
+    }
+
     for (var i = 0; i < count; i++) {
       final var info = signatures.get(i);
       formatSignature(info, activeParameter, sb);

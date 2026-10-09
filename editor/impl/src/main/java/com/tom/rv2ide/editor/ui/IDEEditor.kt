@@ -350,6 +350,10 @@ constructor(
   }
 
   override fun signatureHelp() {
+    signatureHelpAt(null)
+  }
+
+  private fun signatureHelpAt(triggerEvent: ContentChangeEvent?) {
     if (isReleased) {
       return
     }
@@ -364,7 +368,7 @@ constructor(
     val requestFile = file.toPath()
     val requestVersion = fileVersion
     val requestRevision = documentRevision
-    val requestPosition = cursorLSPPosition
+    val requestPosition = signatureRequestPosition(triggerEvent)
     val requestContent = text.toString()
 
     editorScope
@@ -854,7 +858,6 @@ constructor(
 
         markModified()
         file ?: return@subscribeEvent
-
         // FileManager and completion requests must observe the same version as this editor edit.
         // Do not defer document-event construction to a coroutine: a later keystroke could then
         // pair this event's range/version with newer text and make every completion stale.
@@ -867,7 +870,6 @@ measureEditorInitStage("subscribeSelectionChange") {
         if (isReleased) {
           return@subscribeEvent
         }
-
         if (_diagnosticWindow?.isShowing == true) {
           _diagnosticWindow?.dismiss()
         }
@@ -1207,7 +1209,6 @@ measureEditorInitStage("subscribeSelectionChange") {
 
     eventDispatcher.dispatch(DocumentCloseEvent(file.toPath(), cursorLSPRange))
   }
-
   /**
    * Checks if the content change event should trigger signature help. Signature help trigger
    * characters are :
@@ -1216,6 +1217,25 @@ measureEditorInitStage("subscribeSelectionChange") {
    *
    * @param event The content change event.
    */
+
+
+  private fun signatureRequestPosition(event: ContentChangeEvent?): Position {
+    if (event == null) {
+      return cursorLSPPosition
+    }
+    val changedText = event.changedText.toString()
+    val index = when {
+      changedText.length == 2 && changedText[0] == '(' && changedText[1] == ')' ->
+          event.changeStart.index + 1
+      changedText.length == 1 && (changedText[0] == '(' || changedText[0] == ',') ->
+          event.changeEnd.index
+      else -> return cursorLSPPosition
+    }
+    val safeIndex = index.coerceIn(0, text.length)
+    val charPosition = text.getIndexer().getCharPosition(safeIndex)
+    return Position(charPosition.line, charPosition.column, charPosition.index)
+  }
+
   private fun checkForSignatureHelp(event: ContentChangeEvent) {
     if (isReleased) {
       return
@@ -1232,7 +1252,7 @@ measureEditorInitStage("subscribeSelectionChange") {
 
     val ch = event.changedText[0]
     if (ch == '(' || ch == ',') {
-      signatureHelp()
+      signatureHelpAt(event)
     }
   }
 

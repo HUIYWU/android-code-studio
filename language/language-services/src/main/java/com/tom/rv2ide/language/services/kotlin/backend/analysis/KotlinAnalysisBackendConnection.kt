@@ -251,7 +251,11 @@ class KotlinAnalysisBackendConnection internal constructor(
   }
 
   private fun scheduleDiagnostics(path: Path) {
-    if (!isReady || !initialized) return
+    if (!isReady || !initialized) {
+      KlsLogs.warn("Kotlin diagnostics schedule skipped: file={} ready={} initialized={}", path, isReady, initialized)
+      return
+    }
+    KlsLogs.warn("Kotlin diagnostics scheduled: file={}", path)
     scheduledJobs.remove(path)?.cancel(false)
     try {
       val job =
@@ -270,18 +274,66 @@ class KotlinAnalysisBackendConnection internal constructor(
   }
 
   private fun publishDiagnostics(path: Path) {
-    if (!isReady || !initialized) return
-    val callback = diagnosticsCallback ?: return
+    if (!isReady || !initialized) {
+      KlsLogs.warn("Kotlin diagnostics execution skipped: file={} ready={} initialized={}", path, isReady, initialized)
+      return
+    }
+    val callback = diagnosticsCallback ?: run {
+      KlsLogs.warn("Kotlin diagnostics execution skipped without callback: file={}", path)
+      return
+    }
     val requestGeneration = generation
     val normalizedPath = path.normalize()
-    val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
-    val activeRuntime = runtime ?: return
+    val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: run {
+      KlsLogs.warn("Kotlin diagnostics execution skipped without snapshot: file={}", normalizedPath)
+      return
+    }
+    val activeRuntime = runtime ?: run {
+      KlsLogs.warn("Kotlin diagnostics execution skipped without runtime: file={}", normalizedPath)
+      return
+    }
+    KlsLogs.warn(
+        "Kotlin diagnostics analyzing: file={} version={} revision={} generation={}",
+        normalizedPath,
+        snapshot.version,
+        snapshot.revision,
+        requestGeneration,
+    )
     try {
-      val result = activeRuntime.analyze(normalizedPath, snapshot) ?: return
-      if (requestGeneration != generation || state != KotlinBackendState.READY) return
+      val result = activeRuntime.analyze(normalizedPath, snapshot) ?: run {
+        KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
+        return
+      }
+      if (requestGeneration != generation || state != KotlinBackendState.READY) {
+        KlsLogs.warn(
+            "Kotlin diagnostics result dropped by backend state: file={} requestGeneration={} currentGeneration={} state={}",
+            normalizedPath,
+            requestGeneration,
+            generation,
+            state,
+        )
+        return
+      }
       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
       if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
-          snapshot.revision != currentSnapshot.revision) return
+          snapshot.revision != currentSnapshot.revision) {
+        KlsLogs.warn(
+            "Kotlin diagnostics result dropped as stale: file={} requestVersion={} currentVersion={} requestRevision={} currentRevision={}",
+            normalizedPath,
+            snapshot.version,
+            currentSnapshot?.version,
+            snapshot.revision,
+            currentSnapshot?.revision,
+        )
+        return
+      }
+      KlsLogs.warn(
+          "Kotlin diagnostics result ready: file={} version={} revision={} count={}",
+          normalizedPath,
+          snapshot.version,
+          snapshot.revision,
+          result.diagnostics.size,
+      )
       callback.invoke(
           result.copy(
               channel = DiagnosticResult.CHANNEL_KOTLIN,
@@ -330,10 +382,27 @@ class KotlinAnalysisBackendConnection internal constructor(
       isCurrent: (KotlinSemanticRequest) -> Boolean,
   ): ReferenceResult? = executeSemanticRequest(request, isCurrent) { it.findReferences(request) }
 
+  // TODO(XXX-XXX-EXPERIMENT): Remove signature boundary logging after the missing hints are verified.
   internal suspend fun signatureHelp(
       request: KotlinSemanticRequest,
       isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): SignatureHelp? = executeSemanticRequest(request, isCurrent) { it.signatureHelp(request) }
+  ): SignatureHelp? {
+    val result = executeSemanticRequest(request, isCurrent) { it.signatureHelp(request) }
+    KlsLogs.warn(
+        "Kotlin Analysis signature help boundary: file={} version={} revision={} generation={} line={} column={} signatures={} activeSignature={} activeParameter={} current={}",
+        request.file,
+        request.snapshot.version,
+        request.snapshot.revision,
+        request.backendGeneration,
+        request.line,
+        request.column,
+        result?.signatures?.size,
+        result?.activeSignature,
+        result?.activeParameter,
+        isCurrent(request),
+    )
+    return result
+  }
 
   private suspend fun <T> executeSemanticRequest(
       request: KotlinSemanticRequest,

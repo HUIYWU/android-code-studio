@@ -23,25 +23,43 @@ import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionResult
 import com.tom.rv2ide.lsp.models.DiagnosticResult
+import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MarkupContent
+import com.tom.rv2ide.lsp.models.MarkupKind
+import com.tom.rv2ide.lsp.models.ParameterInformation
 import com.tom.rv2ide.lsp.models.ReferenceResult
 import com.tom.rv2ide.lsp.models.SignatureHelp
+import com.tom.rv2ide.lsp.models.SignatureInformation
+import com.tom.rv2ide.models.Location
+import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
 import com.tom.rv2ide.utils.Environment
 import java.io.File
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicBoolean
 import org.jetbrains.kotlin.K1Deprecation
+import org.jetbrains.kotlin.analysis.api.KaContextParameterApi
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.analyze as kaAnalyze
+import org.jetbrains.kotlin.analysis.api.components.render
+import org.jetbrains.kotlin.analysis.api.components.resolveToCall
+import org.jetbrains.kotlin.analysis.api.components.resolveToSymbol
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.contextModule
+import org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource
+import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
+import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
+import org.jetbrains.kotlin.analysis.api.resolution.calls
+import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
 import org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISession
 import org.jetbrains.kotlin.analysis.api.standalone.buildStandaloneAnalysisAPISession
+import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtLibraryModule
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtSourceModule
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
@@ -50,18 +68,30 @@ import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
+import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiManager
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.JVMConfigurationKeys
+import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.platform.jvm.JvmPlatforms
+import org.jetbrains.kotlin.psi.KtCallElement
+import org.jetbrains.kotlin.psi.KtClassOrObject
+import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtNamedDeclaration
+import org.jetbrains.kotlin.psi.KtReferenceExpression
+import org.jetbrains.kotlin.psi.KtSimpleNameExpression
+import org.jetbrains.kotlin.psi.KtValueArgument
 import org.jetbrains.kotlin.psi.KtPsiFactory
+import org.jetbrains.kotlin.types.Variance
 
 /**
  * Builds and owns the standalone Kotlin Analysis API session used by [KotlinAnalysisBackendConnection].
  *
  * Analysis calls are executed under the standalone application's read action by the backend connection.
  */
+@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class)
 internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
@@ -206,15 +236,155 @@ internal class KotlinStandaloneAnalysisRuntime(
   override fun complete(request: KotlinSemanticRequest): CompletionResult? = null
 
   override fun hover(request: KotlinSemanticRequest): MarkupContent? =
-      withSemanticSnapshot(request) { null }
+      withSemanticSnapshot(request) { file ->
+        val symbol =
+            symbolAt(file, requestOffset(request)) as? KaDeclarationSymbol
+                ?: return@withSemanticSnapshot null
+        val declaration = symbol.render(KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
+        if (declaration.isEmpty()) {
+          null
+        } else {
+          MarkupContent("```kotlin\n$declaration\n```", MarkupKind.MARKDOWN)
+        }
+      }
 
   override fun findDefinition(request: KotlinSemanticRequest): DefinitionResult? =
-      withSemanticSnapshot(request) { null }
+      withSemanticSnapshot(request) { file ->
+        val symbol = symbolAt(file, requestOffset(request)) ?: return@withSemanticSnapshot DefinitionResult(emptyList())
+        val psi = runCatching { symbol.psi?.navigationElement }.getOrNull()
+            ?: return@withSemanticSnapshot DefinitionResult(emptyList())
+        val locationPsi = definitionTargetPsi(psi)
+        val location = locationForPsi(request, file, locationPsi)
+        DefinitionResult(if (location == null) emptyList() else listOf(location))
+      }
 
   override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? = null
 
   override fun signatureHelp(request: KotlinSemanticRequest): SignatureHelp? =
-      withSemanticSnapshot(request) { null }
+      withSemanticSnapshot(request) { file ->
+        val offset = requestOffset(request)
+        val callElement = callElementAt(file, offset)
+            ?: return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
+        val callInfo = runCatching { callElement.resolveToCall() }.getOrNull()
+            ?: return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
+        val functionCalls = callInfo.calls.filterIsInstance<KaFunctionCall<*>>()
+        val functionName = callElement.calleeExpression?.text?.takeIf { it.isNotBlank() } ?: "invoke"
+        val signatureEntries = functionCalls.mapNotNull { call ->
+          val signature = call.signature as? KaFunctionSignature<*> ?: return@mapNotNull null
+          val parameters = signature.valueParameters.map { parameter ->
+            val name = parameter.name.asString()
+            val type = parameter.returnType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)
+            ParameterInformation(
+                label = if (name.isEmpty()) type else "$name: $type",
+                documentation = MarkupContent(),
+            )
+          }
+          if (parameters.isEmpty()) return@mapNotNull null
+          val information = SignatureInformation(
+              label = "$functionName(${parameters.joinToString(", ") { it.label }})",
+              documentation = MarkupContent(),
+              parameters = parameters,
+          )
+          information to activeParameter(call, callElement, offset, signature)
+              .coerceIn(0, parameters.lastIndex)
+        }
+        if (signatureEntries.isEmpty()) {
+          return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
+        }
+        val signatures = signatureEntries.map { it.first }
+        val activeParameter = signatureEntries.firstOrNull()?.second ?: 0
+        SignatureHelp(signatures, 0, activeParameter)
+      }
+
+  private fun requestOffset(request: KotlinSemanticRequest): Int =
+      LineIndex.from(request.snapshot.content).lineColumnToIndex(request.line, request.column)
+
+  private fun KaSession.symbolAt(file: KtFile, offset: Int): KaSymbol? {
+    var element: PsiElement? = elementAt(file, offset)
+    while (element != null && element !is PsiFile) {
+      val reference = when (element) {
+        is KtSimpleNameExpression -> element.reference as? KtReference
+        is KtReferenceExpression -> element.reference as? KtReference
+        else -> null
+      }
+      if (reference != null) {
+        runCatching { reference.resolveToSymbol() }.getOrNull()?.let { return it }
+      }
+      element = element.parent
+    }
+    return null
+  }
+
+  private fun definitionTargetPsi(psi: PsiElement): PsiElement {
+    if (psi is KtConstructor<*>) {
+      var parent: PsiElement? = psi.parent
+      while (parent != null && parent !is KtClassOrObject) {
+        parent = parent.parent
+      }
+      if (parent is KtClassOrObject) {
+        return parent.getNameIdentifier() ?: psi
+      }
+    }
+    if (psi is KtNamedDeclaration) {
+      return psi.getNameIdentifier() ?: psi
+    }
+    return psi
+  }
+
+  private fun elementAt(file: KtFile, offset: Int): PsiElement? {
+    val safeOffset = offset.coerceIn(0, file.textLength)
+    return file.findElementAt(safeOffset)
+        ?: if (safeOffset > 0) file.findElementAt(safeOffset - 1) else null
+  }
+
+  private fun callElementAt(file: KtFile, offset: Int): KtCallElement? {
+    var element: PsiElement? = elementAt(file, offset)
+    while (element != null && element !is PsiFile) {
+      if (element is KtCallElement) return element
+      element = element.parent
+    }
+    return null
+  }
+
+  private fun activeParameter(
+      call: KaFunctionCall<*>,
+      callElement: KtCallElement,
+      offset: Int,
+      signature: KaFunctionSignature<*>,
+  ): Int {
+    val parameters = signature.valueParameters
+    val arguments = callElement.valueArguments.mapNotNull { it as? KtValueArgument }
+    val argument = arguments.firstOrNull { valueArgument ->
+      val range = valueArgument.textRange
+      range.containsOffset(offset) ||
+          (offset == range.endOffset &&
+              valueArgument.getArgumentExpression()?.textRange?.containsOffset(offset) == true)
+    }
+    val mapped = argument?.getArgumentExpression()?.let { call.argumentMapping[it] }
+    if (mapped != null) {
+      val mappedIndex = parameters.indexOfFirst { it.name == mapped.name }
+      if (mappedIndex >= 0) return mappedIndex
+    }
+    val precedingArguments = arguments.count { it.textRange.startOffset < offset }
+    return precedingArguments.coerceIn(0, parameters.lastIndex)
+  }
+
+  private fun locationForPsi(request: KotlinSemanticRequest, sourceFile: KtFile, psi: PsiElement): Location? {
+    val containingFile = runCatching { psi.containingFile }.getOrNull() ?: return null
+    val targetPath = when {
+      containingFile == sourceFile -> request.file
+      else -> containingFile.virtualFile?.path?.let(Paths::get) ?: return null
+    }
+    val range = runCatching { psi.textRange }.getOrNull() ?: return null
+    val text = runCatching { containingFile.text }.getOrNull() ?: return null
+    val lineIndex = LineIndex.from(text)
+    val startOffset = range.startOffset.coerceIn(0, text.length)
+    val endOffset = range.endOffset.coerceIn(startOffset, text.length)
+    return Location(
+        file = targetPath,
+        range = Range(lineIndex.indexToPosition(startOffset), lineIndex.indexToPosition(endOffset)),
+    )
+  }
 
   private fun <T> withSemanticSnapshot(
       request: KotlinSemanticRequest,

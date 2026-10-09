@@ -18,6 +18,7 @@ package com.tom.rv2ide.language.services.kotlin
 
 import android.content.Context
 import com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent
+import com.tom.rv2ide.language.services.kotlin.actions.KotlinCodeActionsMenu
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFactory
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
@@ -34,6 +35,7 @@ import com.tom.rv2ide.lsp.api.ILanguageServer
 import com.tom.rv2ide.lsp.api.IServerSettings
 import com.tom.rv2ide.preferences.internal.LSPPreferences
 import com.tom.rv2ide.lsp.models.*
+import com.tom.rv2ide.lsp.util.LSPEditorActions
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.IWorkspace
@@ -95,13 +97,36 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         val epoch = diagnosticsEpoch.get()
         val resultGeneration = diagnostics.backendGeneration
         val receivedRevision = FileManager.getActiveDocumentSnapshot(diagnostics.file)?.revision
+        KlsLogs.warn(
+            "Kotlin diagnostics received by server: file={} version={} revision={} count={} generation={}",
+            diagnostics.file,
+            diagnostics.documentVersion,
+            diagnostics.documentRevision,
+            diagnostics.diagnostics.size,
+            resultGeneration,
+        )
         _client?.publishDiagnostics(diagnostics) {
-          epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
+          val currentSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
+          val current = epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
               (resultGeneration == DiagnosticResult.UNKNOWN_BACKEND_GENERATION ||
                   resultGeneration == connection.generation) &&
               receivedRevision != null &&
-              FileManager.getActiveDocumentSnapshot(diagnostics.file)?.revision == receivedRevision &&
+              currentSnapshot?.revision == receivedRevision &&
               connection.supportsDocument(diagnostics.file)
+          if (!current) {
+            KlsLogs.warn(
+                "Kotlin diagnostics client publication dropped: file={} resultRevision={} currentRevision={} resultGeneration={} currentGeneration={} epochCurrent={} ready={} backendReady={}",
+                diagnostics.file,
+                diagnostics.documentRevision,
+                currentSnapshot?.revision,
+                resultGeneration,
+                connection.generation,
+                epoch == diagnosticsEpoch.get(),
+                connection.isReady,
+                backendReady,
+            )
+          }
+          current
         }
 
       }
@@ -122,6 +147,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun setupWorkspace(workspace: IWorkspace) {
+    LSPEditorActions.ensureActionsMenuRegistered(KotlinCodeActionsMenu)
     if (activeWorkspace === workspace && backendReady && connection.isReady) {
       KlsLogs.info("Kotlin language server workspace setup is already current")
       return
