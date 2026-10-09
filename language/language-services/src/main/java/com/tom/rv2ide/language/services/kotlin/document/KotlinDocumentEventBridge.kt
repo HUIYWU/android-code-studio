@@ -34,7 +34,6 @@ class KotlinDocumentEventBridge(
   private val lastSaveTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val saveDebounceMs = 350L
 
-  // TODO(XXX-XXX-EXPERIMENT): Remove Kotlin diagnostics refresh tracing after edit propagation is classified.
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onContentChange(event: com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent) {
     val file = event.changedFile
@@ -44,20 +43,11 @@ class KotlinDocumentEventBridge(
 
     try {
        val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
-       val content = snapshot.content
-       val currentTime = System.currentTimeMillis()
-       val currentVersion = documentManager.getDocumentVersion(uri)
-       KlsLogs.warn(
-           "Kotlin diagnostics document change: file={} snapshotVersion={} snapshotRevision={} serverVersion={} open={} contentLength={}",
-           file,
-           snapshot.version,
-           snapshot.revision,
-           currentVersion,
-           documentManager.isDocumentOpen(uri),
-           content.length,
-       )
-
-      if (snapshot.version >= 0 &&
+        val content = snapshot.content
+        val currentTime = System.currentTimeMillis()
+        val currentVersion = documentManager.getDocumentVersion(uri)
+ 
+       if (snapshot.version >= 0 &&
           (!documentManager.isDocumentOpen(uri) || snapshot.version > currentVersion)) {
         documentManager.syncActiveDocument(file)
         // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of

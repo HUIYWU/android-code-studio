@@ -214,7 +214,7 @@ internal class KotlinStandaloneAnalysisRuntime(
         analyzeInMemoryText(currentSession.project, path, snapshot)
       }
     } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis API analysis failed for: {}", path, t)
+      KlsLogs.warn("Kotlin Analysis API analysis failed for: $path", t)
       null
     }
   }

@@ -88,23 +88,9 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       }
 
       connection.setDiagnosticsCallback { diagnostics ->
-        KlsLogs.debug(
-            "KLS diagnostics forwarded from server: file={} count={} summary={}",
-            diagnostics.file,
-            diagnostics.diagnostics.size,
-            summarizeDiagnosticsForTrace(diagnostics.diagnostics),
-        )
         val epoch = diagnosticsEpoch.get()
         val resultGeneration = diagnostics.backendGeneration
         val receivedRevision = FileManager.getActiveDocumentSnapshot(diagnostics.file)?.revision
-        KlsLogs.warn(
-            "Kotlin diagnostics received by server: file={} version={} revision={} count={} generation={}",
-            diagnostics.file,
-            diagnostics.documentVersion,
-            diagnostics.documentRevision,
-            diagnostics.diagnostics.size,
-            resultGeneration,
-        )
         _client?.publishDiagnostics(diagnostics) {
           val currentSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
           val current = epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
@@ -113,19 +99,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
               receivedRevision != null &&
               currentSnapshot?.revision == receivedRevision &&
               connection.supportsDocument(diagnostics.file)
-          if (!current) {
-            KlsLogs.warn(
-                "Kotlin diagnostics client publication dropped: file={} resultRevision={} currentRevision={} resultGeneration={} currentGeneration={} epochCurrent={} ready={} backendReady={}",
-                diagnostics.file,
-                diagnostics.documentRevision,
-                currentSnapshot?.revision,
-                resultGeneration,
-                connection.generation,
-                epoch == diagnosticsEpoch.get(),
-                connection.isReady,
-                backendReady,
-            )
-          }
           current
         }
 
@@ -372,18 +345,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private fun clearKotlinDiagnostics() {
     diagnosticsEpoch.incrementAndGet()
     _client?.clearDiagnostics(connection.diagnosticChannel)
-  }
-
-  private fun summarizeDiagnosticsForTrace(diagnostics: List<DiagnosticItem>, limit: Int = 3): String {
-    if (diagnostics.isEmpty()) return "[]"
-    return diagnostics
-        .take(limit)
-        .joinToString(prefix = "[", postfix = if (diagnostics.size > limit) ", ...]" else "]") { diagnostic ->
-          val code = diagnostic.code.ifBlank { "<no-code>" }
-          val source = diagnostic.source.ifBlank { "<no-source>" }
-          val message = diagnostic.message.replace("\n", " ").take(80)
-          "$code|$source|$message"
-        }
   }
 
   @Subscribe(threadMode = ThreadMode.ASYNC)

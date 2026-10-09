@@ -134,13 +134,6 @@ class KotlinDocumentSync(
           )
         }
 
-    KlsLogs.warn(
-        "Kotlin diagnostics didChange: file={} version={} revision={} previousVersion={}",
-        file,
-        version,
-        revision,
-        getDocumentVersion(uri),
-    )
     connection.sendNotificationOrThrow("textDocument/didChange", params)
     documentRevisions[uri] = revision
     documentVersions[uri] = version
