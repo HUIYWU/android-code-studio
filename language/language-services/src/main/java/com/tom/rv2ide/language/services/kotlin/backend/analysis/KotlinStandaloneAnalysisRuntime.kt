@@ -206,7 +206,10 @@ internal class KotlinStandaloneAnalysisRuntime(
               val psiManager = PsiManager.getInstance(currentSession.project)
               val psiFile = psiManager.findFile(virtualFile)
               val ktFile = psiFile as? KtFile ?: return@Computable null
-              val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
+              val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(
+                   ktFile,
+                   "${path.normalize()} version=disk revision=disk",
+               )
               DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_KOTLIN)
             },
         )
@@ -214,7 +217,7 @@ internal class KotlinStandaloneAnalysisRuntime(
         analyzeInMemoryText(currentSession.project, path, snapshot)
       }
     } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis API analysis failed for: {}", path, t)
+      KlsLogs.warn("Kotlin Analysis API analysis failed for: $path", t)
       null
     }
   }
@@ -226,7 +229,10 @@ internal class KotlinStandaloneAnalysisRuntime(
   ): DiagnosticResult? = withSnapshotFile(project, path, snapshot) { file ->
     DiagnosticResult(
         path,
-        KotlinAnalysisDiagnostics.collectDiagnosticsFor(file),
+        KotlinAnalysisDiagnostics.collectDiagnosticsFor(
+             file,
+             "${path.normalize()} version=${snapshot.version} revision=${snapshot.revision}",
+         ),
         DiagnosticResult.CHANNEL_KOTLIN,
         snapshot.version,
         snapshot.revision,

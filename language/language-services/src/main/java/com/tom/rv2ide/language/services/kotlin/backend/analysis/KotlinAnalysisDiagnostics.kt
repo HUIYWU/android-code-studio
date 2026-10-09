@@ -19,6 +19,8 @@ import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.analyze as kaAnalyze
 import org.jetbrains.kotlin.analysis.api.components.KaDiagnosticCheckerFilter
 import org.jetbrains.kotlin.analysis.api.diagnostics.KaSeverity
@@ -28,8 +30,10 @@ import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.psi.KtFile
 
 internal object KotlinAnalysisDiagnostics {
-  fun collectDiagnosticsFor(file: KtFile): List<DiagnosticItem> =
+  fun collectDiagnosticsFor(file: KtFile, traceId: String? = null): List<DiagnosticItem> =
       kaAnalyze(file) {
+        val analysisSession = this
+        traceId?.let { trace(analysisSession, it, file, "before-checkers") }
         val text = file.text
         val lineIndex = LineIndex.from(text)
         val items = buildList {
@@ -46,8 +50,24 @@ internal object KotlinAnalysisDiagnostics {
                 }
               }
         }
-        items.distinct().sortedWith(DiagnosticItem.START_COMPARATOR)
+        items.distinct().sortedWith(DiagnosticItem.START_COMPARATOR).also {
+          traceId?.let { trace(analysisSession, it, file, "after-checkers") }
+        }
       }
+
+  private fun trace(session: KaSession, traceId: String, file: KtFile, stage: String) {
+    runCatching {
+      KotlinAnalysisCacheTrace.capture(session, file, traceId, stage)
+    }.onFailure { error ->
+      KlsLogs.warn(
+          "Kotlin Analysis cache trace failed: traceId={} stage={} type={} message={}",
+          traceId,
+          stage,
+          error.javaClass.name,
+          error.message,
+      )
+    }
+  }
 
   private fun item(
       lineIndex: LineIndex,
