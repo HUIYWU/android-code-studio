@@ -24,6 +24,11 @@ import com.tom.rv2ide.language.services.kotlin.backend.fwcd.FwcdKotlinBackendCon
 import com.tom.rv2ide.language.services.kotlin.backend.stub.StubKotlinBackendConfigurator
 import com.tom.rv2ide.language.services.kotlin.backend.stub.StubKotlinBackendConnection
 import com.tom.rv2ide.preferences.internal.LSPPreferences
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.AnalysisKotlinSemanticBackend
+import com.tom.rv2ide.language.services.kotlin.backend.fwcd.FwcdKotlinSemanticBackend
+import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
+import com.tom.rv2ide.language.services.kotlin.request.KotlinRequestHandler
+import com.tom.rv2ide.language.services.kotlin.semantic.EmptyKotlinSemanticBackend
 
 /**
  * Minimal factory for creating the active Kotlin LSP backend connection.
@@ -42,23 +47,31 @@ object KotlinBackendFactory {
     }
   }
 
-  fun createSpec(context: Context): KotlinBackendSpec {
-    return when (activeBackendId()) {
-      KotlinBackendId.FWCD ->
-          KotlinBackendSpec(
-              connection = FwcdKotlinBackendConnection(),
-              createConfigurator = ::FwcdKotlinBackendConfigurator,
-          )
-      KotlinBackendId.STUB ->
-          KotlinBackendSpec(
-              connection = StubKotlinBackendConnection(context),
-              createConfigurator = ::StubKotlinBackendConfigurator,
-          )
-      KotlinBackendId.ANALYSIS ->
-          KotlinBackendSpec(
-              connection = KotlinAnalysisBackendConnection(context.applicationInfo.sourceDir),
-              createConfigurator = ::KotlinAnalysisBackendConfigurator,
-          )
+  internal fun createSpec(context: Context): KotlinBackendSpec = when (activeBackendId()) {
+    KotlinBackendId.FWCD -> {
+      val connection = FwcdKotlinBackendConnection()
+      KotlinBackendSpec(
+          connection = connection,
+          createConfigurator = ::FwcdKotlinBackendConfigurator,
+          createSemanticBackend = { backendContext, documentSync, validator ->
+            val handler = KotlinRequestHandler(connection, documentSync, validator)
+            handler.setJavaCompilerBridge(KotlinJavaCompilerBridge(backendContext.workspace))
+            FwcdKotlinSemanticBackend(handler)
+          },
+      )
+    }
+    KotlinBackendId.STUB -> KotlinBackendSpec(
+        connection = StubKotlinBackendConnection(context),
+        createConfigurator = ::StubKotlinBackendConfigurator,
+        createSemanticBackend = { _, _, _ -> EmptyKotlinSemanticBackend },
+    )
+    KotlinBackendId.ANALYSIS -> {
+      val connection = KotlinAnalysisBackendConnection(context.applicationInfo.sourceDir)
+      KotlinBackendSpec(
+          connection = connection,
+          createConfigurator = ::KotlinAnalysisBackendConfigurator,
+          createSemanticBackend = { _, _, validator -> AnalysisKotlinSemanticBackend(connection, validator) },
+      )
     }
   }
 }

@@ -19,7 +19,13 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 import com.tom.rv2ide.javac.config.JavacConfigProvider
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
+import com.tom.rv2ide.lsp.models.CompletionResult
+import com.tom.rv2ide.lsp.models.DefinitionResult
 import com.tom.rv2ide.lsp.models.DiagnosticResult
+import com.tom.rv2ide.lsp.models.MarkupContent
+import com.tom.rv2ide.lsp.models.ReferenceResult
+import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
 import com.tom.rv2ide.utils.Environment
 import java.io.File
@@ -29,6 +35,8 @@ import org.jetbrains.kotlin.K1Deprecation
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
+import org.jetbrains.kotlin.analysis.api.KaSession
+import org.jetbrains.kotlin.analysis.api.analyze as kaAnalyze
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.contextModule
@@ -181,44 +189,74 @@ internal class KotlinStandaloneAnalysisRuntime(
     }
   }
 
-  @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
   private fun analyzeInMemoryText(
       project: Project,
       path: Path,
       snapshot: ActiveDocumentSnapshot,
-  ): DiagnosticResult? {
-    return try {
-      ApplicationManager.getApplication().runReadAction(
-          Computable {
-            val physicalFile = findPhysicalKtFile(project, path)
-            val module = sourceModuleFor(path)
-            val factory =
-                if (physicalFile != null) {
-                  KtPsiFactory.contextual(
-                      physicalFile,
-                      markGenerated = true,
-                      eventSystemEnabled = false,
-                  )
-                } else {
-                  KtPsiFactory(project, markGenerated = true, eventSystemEnabled = false)
-                }
-            val ktFile = factory.createFile(path.fileName.toString(), snapshot.content)
-            if (module != null) {
-              ktFile.contextModule = module
-            }
-            val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
-            DiagnosticResult(
-                path,
-                diagnostics,
-                DiagnosticResult.CHANNEL_KOTLIN,
-                snapshot.version,
-                snapshot.revision,
-            )
-          },
-      )
-    } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis API in-memory analysis failed for: {}", path, t)
-      null
+  ): DiagnosticResult? = withSnapshotFile(project, path, snapshot) { file ->
+    DiagnosticResult(
+        path,
+        KotlinAnalysisDiagnostics.collectDiagnosticsFor(file),
+        DiagnosticResult.CHANNEL_KOTLIN,
+        snapshot.version,
+        snapshot.revision,
+    )
+  }
+
+  override fun complete(request: KotlinSemanticRequest): CompletionResult? = null
+
+  override fun hover(request: KotlinSemanticRequest): MarkupContent? =
+      withSemanticSnapshot(request) { null }
+
+  override fun findDefinition(request: KotlinSemanticRequest): DefinitionResult? =
+      withSemanticSnapshot(request) { null }
+
+  override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? = null
+
+  override fun signatureHelp(request: KotlinSemanticRequest): SignatureHelp? =
+      withSemanticSnapshot(request) { null }
+
+  private fun <T> withSemanticSnapshot(
+      request: KotlinSemanticRequest,
+      action: KaSession.(KtFile) -> T?,
+  ): T? {
+    request.cancelChecker.abortIfCancelled()
+    val currentSession = session ?: return null
+    return withSnapshotFile(currentSession.project, request.file, request.snapshot) { file ->
+      request.cancelChecker.abortIfCancelled()
+      kaAnalyze(file) {
+        request.cancelChecker.abortIfCancelled()
+        val result = action(file)
+        request.cancelChecker.abortIfCancelled()
+        result
+      }
+    }
+  }
+
+  @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
+  private fun <T> withSnapshotFile(
+      project: Project,
+      path: Path,
+      snapshot: ActiveDocumentSnapshot,
+      action: (KtFile) -> T?,
+  ): T? = ApplicationManager.getApplication().runReadAction(
+      Computable { action(createAnalysisFile(project, path, snapshot)) }
+  )
+
+  @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
+  private fun createAnalysisFile(
+      project: Project,
+      path: Path,
+      snapshot: ActiveDocumentSnapshot,
+  ): KtFile {
+    val physicalFile = findPhysicalKtFile(project, path)
+    val factory = if (physicalFile != null) {
+      KtPsiFactory.contextual(physicalFile, markGenerated = true, eventSystemEnabled = false)
+    } else {
+      KtPsiFactory(project, markGenerated = true, eventSystemEnabled = false)
+    }
+    return factory.createFile(path.fileName.toString(), snapshot.content).apply {
+      sourceModuleFor(path)?.let { contextModule = it }
     }
   }
 

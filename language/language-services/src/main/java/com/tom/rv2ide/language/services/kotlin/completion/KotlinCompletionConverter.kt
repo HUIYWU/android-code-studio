@@ -29,7 +29,6 @@ import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.lsp.models.TextEdit
 import com.tom.rv2ide.models.Position
 import com.tom.rv2ide.models.Range
-import java.util.concurrent.Executors
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 
@@ -46,10 +45,6 @@ class KotlinCompletionConverter {
   private val snippetTransformer = SnippetTransformer()
   private val importResolver = KotlinImportResolver()
 
-  private val cpuDispatcher =
-      Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
-          .asCoroutineDispatcher()
-
   private var javaCompilerBridge: KotlinJavaCompilerBridge? = null
 
   fun setJavaCompilerBridge(bridge: KotlinJavaCompilerBridge) {
@@ -59,7 +54,7 @@ class KotlinCompletionConverter {
       itemsArray: JsonArray,
       fileContent: String,
       prefix: String,
-  ): List<CompletionItem> = withContext(cpuDispatcher) {
+  ): List<CompletionItem> = withContext(Dispatchers.Default) {
       KlsLogs.debug("Converting {} items with classpath enhancement", itemsArray.size())
 
       if (itemsArray.size() >= 50) {
@@ -155,7 +150,7 @@ class KotlinCompletionConverter {
       fileContent: String,
       prefix: String,
   ): List<CompletionItem> =
-      withContext(cpuDispatcher) {
+      withContext(Dispatchers.Default) {
         KlsLogs.debug("Received {} completion items", itemsArray.size())
 
         // Process items in parallel
@@ -195,15 +190,11 @@ class KotlinCompletionConverter {
         filteredItems
       }
 
-  fun cleanup() {
-    cpuDispatcher.close()
-  }
-
   suspend fun convertFast(
       itemsArray: JsonArray,
       fileContent: String,
       prefix: String,
-  ): List<CompletionItem> = withContext(cpuDispatcher) {
+  ): List<CompletionItem> = withContext(Dispatchers.Default) {
       KlsLogs.debug("Fast converting {} items", itemsArray.size())
   
       val cpuCount = Runtime.getRuntime().availableProcessors()

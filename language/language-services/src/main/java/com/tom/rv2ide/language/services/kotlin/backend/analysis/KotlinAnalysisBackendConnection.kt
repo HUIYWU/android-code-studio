@@ -15,7 +15,13 @@ import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathP
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
+import com.tom.rv2ide.lsp.models.CompletionResult
+import com.tom.rv2ide.lsp.models.DefinitionResult
 import com.tom.rv2ide.lsp.models.DiagnosticResult
+import com.tom.rv2ide.lsp.models.MarkupContent
+import com.tom.rv2ide.lsp.models.ReferenceResult
+import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.projects.FileManager
 import java.net.URI
 import java.nio.file.Path
@@ -28,6 +34,9 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** In-process Kotlin Analysis backend and its replaceable standalone runtime. */
 class KotlinAnalysisBackendConnection internal constructor(
@@ -299,6 +308,61 @@ class KotlinAnalysisBackendConnection internal constructor(
       closeRuntime(activeRuntime)
     }
     analysisQueue.shutdown()
+  }
+
+  internal suspend fun complete(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+  ): CompletionResult? = executeSemanticRequest(request, isCurrent) { it.complete(request) }
+
+  internal suspend fun hover(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+  ): MarkupContent? = executeSemanticRequest(request, isCurrent) { it.hover(request) }
+
+  internal suspend fun findDefinition(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+  ): DefinitionResult? = executeSemanticRequest(request, isCurrent) { it.findDefinition(request) }
+
+  internal suspend fun findReferences(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+  ): ReferenceResult? = executeSemanticRequest(request, isCurrent) { it.findReferences(request) }
+
+  internal suspend fun signatureHelp(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+  ): SignatureHelp? = executeSemanticRequest(request, isCurrent) { it.signatureHelp(request) }
+
+  private suspend fun <T> executeSemanticRequest(
+      request: KotlinSemanticRequest,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+      action: (KotlinAnalysisRuntime) -> T?,
+  ): T? = suspendCancellableCoroutine { continuation ->
+    fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
+        generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
+    if (!canExecute()) {
+      continuation.resume(null)
+      return@suspendCancellableCoroutine
+    }
+    try {
+      val task = analysisQueue.submit {
+        try {
+          val currentRuntime = runtime
+          val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+          if (continuation.isActive) continuation.resume(if (canExecute()) result else null)
+        } catch (e: java.util.concurrent.CancellationException) {
+          if (continuation.isActive) continuation.resumeWithException(e)
+        } catch (e: Throwable) {
+          KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, e)
+          if (continuation.isActive) continuation.resume(null)
+        }
+      }
+      continuation.invokeOnCancellation { task.cancel(false) }
+    } catch (e: RejectedExecutionException) {
+      if (continuation.isActive) continuation.resume(null)
+    }
   }
 
   private fun createRuntime(provider: KotlinProjectClasspathProvider): KotlinAnalysisRuntime? {

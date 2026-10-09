@@ -22,12 +22,12 @@ import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFactory
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
-import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentEventBridge
 import com.tom.rv2ide.language.services.kotlin.format.KotlinCodeFormatProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
-import com.tom.rv2ide.language.services.kotlin.request.KotlinRequestHandler
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticService
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequestValidator
 import com.tom.rv2ide.language.services.kotlin.workspace.KotlinBackendWorkspaceCoordinator
 import com.tom.rv2ide.lsp.api.ILanguageClient
 import com.tom.rv2ide.lsp.api.ILanguageServer
@@ -58,7 +58,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private val connection: KotlinBackendConnection = backendSpec.connection
 
   private val documentSync = KotlinDocumentSync(connection) { backendReady && connection.isReady }
-  private val requestHandler = KotlinRequestHandler(connection, documentSync)
+  @Volatile private var semanticService: KotlinSemanticService? = null
   private val documentEventBridge =
       KotlinDocumentEventBridge(documentSync, connection::supportsDocument) { file ->
         _client?.clearDiagnostics(file, connection.diagnosticChannel)
@@ -75,7 +75,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private lateinit var formatProvider: KotlinCodeFormatProvider
 
 
-  private lateinit var javaCompilerBridge: KotlinJavaCompilerBridge
 
   init {
     if (!LSPPreferences.kotlinLspEnabled) {
@@ -130,6 +129,8 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
     val replacingWorkspace = activeWorkspace != null && activeWorkspace !== workspace
     backendReady = false
+    semanticService?.close()
+    semanticService = null
     clearKotlinDiagnostics()
     activeWorkspace = workspace
 
@@ -146,6 +147,13 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     val backendContext = KotlinBackendContext(workspace, KotlinProjectClasspathProvider(workspace))
     val backendConfigurator = backendSpec.createConfigurator(backendContext)
     formatProvider = KotlinCodeFormatProvider(connection, backendConfigurator)
+    val validator = KotlinSemanticRequestValidator(connection, {
+      activeWorkspace === workspace && backendReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled
+    })
+    semanticService = KotlinSemanticService(
+        backendSpec.createSemanticBackend(backendContext, documentSync, validator),
+        validator,
+    )
     workspaceCoordinator = KotlinBackendWorkspaceCoordinator(
         workspace,
         backendContext,
@@ -186,8 +194,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       }
     }
 
-    javaCompilerBridge = KotlinJavaCompilerBridge(workspace)
-    requestHandler.setJavaCompilerBridge(javaCompilerBridge)
 
   }
 
@@ -200,7 +206,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       // Use async instead of blocking
       runBlocking {
         withTimeout(3000) {
-          val result = async(Dispatchers.Default) { requestHandler.complete(params) }
+          val result = async(Dispatchers.Default) { semanticService?.complete(params) ?: CompletionResult(emptyList()) }
           result.await()
         }
       }
@@ -211,7 +217,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   override suspend fun findReferences(params: ReferenceParams): ReferenceResult {
     return if (backendReady && connection.isReady && !disabledByPreference && LSPPreferences.kotlinLspEnabled && connection.supportsDocument(params.file)) {
-      requestHandler.findReferences(params)
+      semanticService?.findReferences(params) ?: ReferenceResult(emptyList())
     } else {
       ReferenceResult(emptyList())
     }
@@ -224,7 +230,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
             LSPPreferences.kotlinLspEnabled &&
             connection.supportsDocument(params.file)
     ) {
-      requestHandler.findDefinition(params)
+      semanticService?.findDefinition(params) ?: DefinitionResult(emptyList())
     } else {
       DefinitionResult(emptyList())
     }
@@ -238,7 +244,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
             LSPPreferences.kotlinLspEnabled &&
             connection.supportsDocument(params.file)
     ) {
-      requestHandler.hover(params)
+      semanticService?.hover(params) ?: MarkupContent()
     } else MarkupContent("", MarkupKind.PLAIN)
   }
 
@@ -255,7 +261,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
             LSPPreferences.kotlinLspEnabled &&
             connection.supportsDocument(params.file)
     ) {
-      requestHandler.signatureHelp(params)
+      semanticService?.signatureHelp(params) ?: SignatureHelp(emptyList(), 0, 0)
     } else {
       SignatureHelp(emptyList(), 0, 0)
     }
@@ -314,6 +320,8 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun shutdown() {
+    semanticService?.close()
+    semanticService = null
     backendReady = false
     clearKotlinDiagnostics()
     KlsLogs.info("Shutting down Kotlin Language Server...")

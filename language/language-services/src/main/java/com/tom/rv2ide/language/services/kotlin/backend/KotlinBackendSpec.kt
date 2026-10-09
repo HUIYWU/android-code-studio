@@ -16,10 +16,15 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend
 
+import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticBackend
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequestValidator
+
 /**
  * Bundles the transport connection and the per-workspace configurator factory for one concrete backend.
  */
-class KotlinBackendSpec(
+internal class KotlinBackendSpec(
     val connection: KotlinBackendConnection,
     val createConfigurator: (KotlinBackendContext) -> KotlinBackendConfigurator,
+    val createSemanticBackend: (KotlinBackendContext, KotlinDocumentSync, KotlinSemanticRequestValidator) -> KotlinSemanticBackend,
 )

@@ -24,7 +24,8 @@ import com.tom.rv2ide.language.services.kotlin.completion.KotlinCompletionConver
 import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
-import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
+import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequestValidator
 import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
@@ -33,16 +34,11 @@ import kotlinx.coroutines.*
  * @author Mohammed-baqer-null @ https://github.com/Mohammed-baqer-null
  */
 
-class KotlinRequestHandler(
+internal class KotlinRequestHandler(
     private val connection: KotlinBackendConnection,
     private val documentManager: KotlinDocumentSync,
+    private val validator: KotlinSemanticRequestValidator,
 ) {
-
-  private fun isCurrentDocument(file: java.nio.file.Path, version: Int, revision: Long): Boolean {
-    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return version < 0 && revision < 0L
-    return (version < 0 || snapshot.version == version) &&
-        (revision < 0L || snapshot.revision == revision)
-  }
 
   companion object {
     private const val COMPLETION_TIMEOUT = 10000L
@@ -50,18 +46,16 @@ class KotlinRequestHandler(
 
   private val completionConverter = KotlinCompletionConverter()
 
-  // Debouncing for rapid typing
-  private val lastCompletionRequest = AtomicLong(0)
   private val completionRequestSeq = AtomicLong(0)
 
   fun setJavaCompilerBridge(bridge: KotlinJavaCompilerBridge) {
     completionConverter.setJavaCompilerBridge(bridge)
   }
 
-  suspend fun hover(params: DefinitionParams): MarkupContent =
+  suspend fun hover(request: KotlinSemanticRequest): MarkupContent =
       withContext(Dispatchers.IO) {
-        val requestGeneration = connection.generation
-        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+
+        if (!validator.isCurrent(request)) {
           return@withContext MarkupContent("", MarkupKind.PLAIN)
         }
         val deferred = CompletableDeferred<MarkupContent>()
@@ -75,20 +69,22 @@ class KotlinRequestHandler(
         // the feature behind a permanent product switch.
 
         try {
-          documentManager.ensureDocumentOpen(
-              params.file,
-              FileManager.getActiveDocumentSnapshot(params.file)?.content,
-          )
-          val uri = params.file.toUri().toString()
+          documentManager.syncActiveDocument(request.file)
+          if (!validator.isCurrent(request)) return@withContext MarkupContent()
+          val uri = request.file.toUri().toString()
           val lspParams = JsonObject().apply {
             add("textDocument", JsonObject().apply { addProperty("uri", uri) })
             add("position", JsonObject().apply {
-              addProperty("line", params.position.line)
-              addProperty("character", params.position.column)
+              addProperty("line", request.line)
+              addProperty("character", request.column)
             })
           }
 
           connection.sendRequest("textDocument/hover", lspParams) { result ->
+            if (!validator.isCurrent(request)) {
+              deferred.complete(MarkupContent())
+              return@sendRequest
+            }
             try {
               deferred.complete(convertToHoverMarkup(result))
             } catch (e: Exception) {
@@ -98,46 +94,41 @@ class KotlinRequestHandler(
           }
 
           val result = withTimeoutOrNull(3000) { deferred.await() }
-          if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          if (validator.isCurrent(request)) {
             result ?: MarkupContent("", MarkupKind.PLAIN)
           } else MarkupContent("", MarkupKind.PLAIN)
+        } catch (e: java.util.concurrent.CancellationException) {
+          throw e
         } catch (e: Exception) {
           KlsLogs.debug("Hover request failed: {}", e.message)
           MarkupContent("", MarkupKind.PLAIN)
         }
       }
 
-  suspend fun complete(params: CompletionParams): CompletionResult = coroutineScope {
-      val requestGeneration = connection.generation
+  suspend fun complete(request: KotlinSemanticRequest): CompletionResult = coroutineScope {
+
       fun isCurrentRequest(): Boolean =
-          requestGeneration == connection.generation && connection.isReady && connection.isInitialized &&
-              !params.cancelChecker.isCancelled() &&
-              isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
+          validator.isCurrent(request)
       if (!isCurrentRequest()) return@coroutineScope CompletionResult(emptyList())
-      if (params.position.line < 0 || params.position.column < 0) {
-          return@coroutineScope CompletionResult(emptyList())
-      }
 
 
-      val requestTimestamp = System.currentTimeMillis()
       val requestId = completionRequestSeq.incrementAndGet()
-      lastCompletionRequest.set(requestTimestamp)
 
-      val initialContent = params.content?.toString() ?: ""
-      val initialPrefix = extractPrefix(initialContent, params.position)
+      val initialContent = request.snapshot.content
+      val initialPrefix = request.prefix ?: extractPrefix(initialContent, request.position())
       KlsLogs.debug(
           "completion request start requestId={} file={} line={} column={} prefix='{}' contentLength={}",
           requestId,
-          params.file,
-          params.position.line,
-          params.position.column,
+          request.file,
+          request.line,
+          request.column,
           initialPrefix,
           initialContent.length,
       )
 
       delay(50L) // Reduced from 100L
 
-      if (lastCompletionRequest.get() != requestTimestamp || completionRequestSeq.get() != requestId || !isCurrentRequest()) {
+      if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
           KlsLogs.debug("completion stale drop before sync requestId={}", requestId)
           return@coroutineScope CompletionResult(emptyList())
       }
@@ -145,17 +136,17 @@ class KotlinRequestHandler(
       return@coroutineScope try {
           val deferred = CompletableDeferred<CompletionResult>()
 
-          val fileContent = params.content?.toString() ?: ""
-          val prefix = extractPrefix(fileContent, params.position)
+          val fileContent = request.snapshot.content
+          val prefix = request.prefix ?: extractPrefix(fileContent, request.position())
 
-          val uri = params.file.toUri().toString()
+          val uri = request.file.toUri().toString()
 
           if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop before document sync requestId={}", requestId)
               return@coroutineScope CompletionResult(emptyList())
           }
 
-          documentManager.syncActiveDocument(params.file)
+          documentManager.syncActiveDocument(request.file)
 
           if (completionRequestSeq.get() != requestId || !isCurrentRequest()) {
               KlsLogs.debug("completion stale drop after document sync requestId={}", requestId)
@@ -165,10 +156,10 @@ class KotlinRequestHandler(
           val lspParams = JsonObject().apply {
               add("textDocument", JsonObject().apply { addProperty("uri", uri) })
               add("position", JsonObject().apply {
-                  addProperty("line", params.position.line)
-                  addProperty("character", params.position.column)
+                  addProperty("line", request.line)
+                  addProperty("character", request.column)
               })
-              add("context", createCompletionContext(params))
+              add("context", createCompletionContext(request))
           }
 
           connection.sendRequest("textDocument/completion", lspParams) { result ->
@@ -186,7 +177,7 @@ class KotlinRequestHandler(
                           return@launch
                       }
 
-val itemsArray = when {
+                       val itemsArray = when {
                            result.has("items") -> result.getAsJsonArray("items")
                            result.has("result") && result.get("result").isJsonArray ->
                                result.getAsJsonArray("result")
@@ -220,8 +211,10 @@ val itemsArray = when {
                           prefix,
                       )
                       deferred.complete(CompletionResult(items))
-                  } catch (e: Exception) {
-                      KlsLogs.error("Error processing completion requestId={}", requestId, e)
+                   } catch (e: java.util.concurrent.CancellationException) {
+                       throw e
+                   } catch (e: Exception) {
+                       KlsLogs.error("Error processing completion requestId={}", requestId, e)
                       deferred.complete(CompletionResult(emptyList()))
                   }
               }
@@ -231,6 +224,8 @@ val itemsArray = when {
               KlsLogs.debug("completion timed out requestId={}", requestId)
               CompletionResult(emptyList())
           }
+      } catch (e: java.util.concurrent.CancellationException) {
+        throw e
       } catch (e: Exception) {
           KlsLogs.error("Error during completion requestId={}", requestId, e)
           CompletionResult(emptyList())
@@ -252,102 +247,105 @@ val itemsArray = when {
     return line.substring(start, col)
   }
 
-  suspend fun findReferences(params: ReferenceParams): ReferenceResult =
+  suspend fun findReferences(request: KotlinSemanticRequest): ReferenceResult =
       withContext(Dispatchers.IO) {
-        val requestGeneration = connection.generation
-        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+
+        if (!validator.isCurrent(request)) {
           return@withContext ReferenceResult(emptyList())
         }
         val deferred = CompletableDeferred<ReferenceResult>()
 
-        documentManager.ensureDocumentOpen(
-            params.file,
-            FileManager.getActiveDocumentSnapshot(params.file)?.content,
-        )
+        documentManager.syncActiveDocument(request.file)
+          if (!validator.isCurrent(request)) return@withContext ReferenceResult(emptyList())
 
         val lspParams =
             JsonObject().apply {
               add(
                   "textDocument",
-                  JsonObject().apply { addProperty("uri", params.file.toUri().toString()) },
+                  JsonObject().apply { addProperty("uri", request.file.toUri().toString()) },
               )
               add(
                   "position",
                   JsonObject().apply {
-                    addProperty("line", params.position.line)
-                    addProperty("character", params.position.column)
+                    addProperty("line", request.line)
+                    addProperty("character", request.column)
                   },
               )
               add(
                   "context",
                   JsonObject().apply {
-                    addProperty("includeDeclaration", params.includeDeclaration)
+                    addProperty("includeDeclaration", request.includeDeclaration)
                   },
               )
             }
 
         connection.sendRequest("textDocument/references", lspParams) { result ->
+            if (!validator.isCurrent(request)) {
+              deferred.complete(ReferenceResult(emptyList()))
+              return@sendRequest
+            }
           val locations = convertToLocations(result)
           deferred.complete(ReferenceResult(locations))
         }
 
         val result = withTimeoutOrNull(5000) { deferred.await() }
-        if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+        if (validator.isCurrent(request)) {
           result ?: ReferenceResult(emptyList())
         } else ReferenceResult(emptyList())
       }
 
-  suspend fun findDefinition(params: DefinitionParams): DefinitionResult =
+  suspend fun findDefinition(request: KotlinSemanticRequest): DefinitionResult =
       withContext(Dispatchers.IO) {
-        val requestGeneration = connection.generation
-        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+
+        if (!validator.isCurrent(request)) {
           return@withContext DefinitionResult(emptyList())
         }
         val deferred = CompletableDeferred<DefinitionResult>()
 
-        documentManager.ensureDocumentOpen(
-            params.file,
-            FileManager.getActiveDocumentSnapshot(params.file)?.content,
-        )
+        documentManager.syncActiveDocument(request.file)
+          if (!validator.isCurrent(request)) return@withContext DefinitionResult(emptyList())
 
         val lspParams =
             JsonObject().apply {
               add(
                   "textDocument",
-                  JsonObject().apply { addProperty("uri", params.file.toUri().toString()) },
+                  JsonObject().apply { addProperty("uri", request.file.toUri().toString()) },
               )
               add(
                   "position",
                   JsonObject().apply {
-                    addProperty("line", params.position.line)
-                    addProperty("character", params.position.column)
+                    addProperty("line", request.line)
+                    addProperty("character", request.column)
                   },
               )
             }
 
         connection.sendRequest("textDocument/definition", lspParams) { result ->
+            if (!validator.isCurrent(request)) {
+              deferred.complete(DefinitionResult(emptyList()))
+              return@sendRequest
+            }
           val locations = convertToLocations(result)
           deferred.complete(DefinitionResult(locations))
         }
 
         val result = withTimeoutOrNull(5000) { deferred.await() }
-        if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+        if (validator.isCurrent(request)) {
           result ?: DefinitionResult(emptyList())
         } else DefinitionResult(emptyList())
       }
 
-  suspend fun signatureHelp(params: SignatureHelpParams): SignatureHelp =
+  suspend fun signatureHelp(request: KotlinSemanticRequest): SignatureHelp =
       withContext(Dispatchers.IO) {
-        val requestGeneration = connection.generation
-        if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+
+        if (!validator.isCurrent(request)) {
           return@withContext SignatureHelp(emptyList(), -1, -1)
         }
         val deferred = CompletableDeferred<SignatureHelp>()
 
         try {
-          documentManager.syncActiveDocument(params.file)
-          val uri = params.file.toUri().toString()
-
+          documentManager.syncActiveDocument(request.file)
+          if (!validator.isCurrent(request)) return@withContext SignatureHelp(emptyList(), 0, 0)
           // Build context with trigger information
           val context =
               JsonObject().apply {
@@ -355,12 +353,12 @@ val itemsArray = when {
                 addProperty("isRetrigger", false)
 
                 // Detect trigger character from content
-                if (params.content != null) {
-                  val content = params.content.toString()
+                if (request.snapshot.content.isNotEmpty()) {
+                  val content = request.snapshot.content
                   val lines = content.split("\n")
-                  if (params.position.line >= 0 && params.position.line < lines.size) {
-                    val currentLine = lines[params.position.line]
-                    val pos = params.position.column
+                  if (request.line >= 0 && request.line < lines.size) {
+                    val currentLine = lines[request.line]
+                    val pos = request.column
 
                     if (pos > 0 && pos <= currentLine.length) {
                       val triggerChar = currentLine[pos - 1]
@@ -377,13 +375,13 @@ val itemsArray = when {
               JsonObject().apply {
                 add(
                     "textDocument",
-                    JsonObject().apply { addProperty("uri", params.file.toUri().toString()) },
+                    JsonObject().apply { addProperty("uri", request.file.toUri().toString()) },
                 )
                 add(
                     "position",
                     JsonObject().apply {
-                      addProperty("line", params.position.line)
-                      addProperty("character", params.position.column)
+                      addProperty("line", request.line)
+                      addProperty("character", request.column)
                     },
                 )
                 add("context", context)
@@ -391,20 +389,26 @@ val itemsArray = when {
 
           KlsLogs.debug(
               "Requesting signature help at {}:{}",
-              params.position.line,
-              params.position.column,
+              request.line,
+              request.column,
           )
 
           connection.sendRequest("textDocument/signatureHelp", lspParams) { result ->
+            if (!validator.isCurrent(request)) {
+              deferred.complete(SignatureHelp(emptyList(), 0, 0))
+              return@sendRequest
+            }
             val help = convertToSignatureHelp(result)
             KlsLogs.debug("Received {} signature(s)", help.signatures.size)
             deferred.complete(help)
           }
 
           val result = withTimeoutOrNull(3000) { deferred.await() }
-          if (connection.generation == requestGeneration && connection.isReady && connection.isInitialized && !params.cancelChecker.isCancelled() && isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+          if (validator.isCurrent(request)) {
             result ?: SignatureHelp(emptyList(), 0, 0)
           } else SignatureHelp(emptyList(), 0, 0)
+        } catch (e: java.util.concurrent.CancellationException) {
+          throw e
         } catch (e: Exception) {
           KlsLogs.error("Error requesting signature help", e)
           deferred.complete(SignatureHelp(emptyList(), 0, 0))
@@ -573,16 +577,16 @@ val itemsArray = when {
     }
   }
 
-  private fun createCompletionContext(params: CompletionParams): JsonObject {
+  private fun createCompletionContext(request: KotlinSemanticRequest): JsonObject {
     return JsonObject().apply {
       addProperty("triggerKind", 1)
 
-      if (params.content != null) {
-        val content = params.content.toString()
+      if (request.snapshot.content.isNotEmpty()) {
+        val content = request.snapshot.content
         val lines = content.split("\n")
-        if (params.position.line < lines.size) {
-          val currentLine = lines[params.position.line]
-          val pos = params.position.column
+        if (request.line < lines.size) {
+          val currentLine = lines[request.line]
+          val pos = request.column
 
           if (pos > 0 && pos <= currentLine.length && currentLine[pos - 1] == '.') {
             addProperty("triggerCharacter", ".")
