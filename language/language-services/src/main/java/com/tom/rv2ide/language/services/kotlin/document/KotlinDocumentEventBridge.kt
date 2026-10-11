@@ -17,8 +17,10 @@
 
 package com.tom.rv2ide.language.services.kotlin.document
 
+import com.tom.rv2ide.eventbus.events.file.FileCreationEvent
 import com.tom.rv2ide.eventbus.events.file.FileDeletionEvent
 import com.tom.rv2ide.eventbus.events.file.FileRenameEvent
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 
 /*
@@ -27,6 +29,7 @@ import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 
 class KotlinDocumentEventBridge(
     private val documentManager: KotlinDocumentSync,
+    private val connection: KotlinBackendConnection,
     private val supportsDocument: (java.nio.file.Path) -> Boolean,
     private val clearDiagnostics: (java.nio.file.Path) -> Unit = {},
 ) {
@@ -109,22 +112,31 @@ class KotlinDocumentEventBridge(
     clearDiagnostics(file)
   }
 
+@org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
+  fun onFileCreated(event: FileCreationEvent) {
+    val path = event.file.toPath().normalize()
+    if (supportsDocument(path)) connection.notifyFileCreated(path)
+  }
+
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileDeleted(event: FileDeletionEvent) {
     val root = event.file.toPath().normalize()
     documentManager.closeDocumentsUnder(root)
     lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
+    connection.notifyFileRemoved(root)
     clearDiagnostics(root)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileRenamed(event: FileRenameEvent) {
     val root = event.file.toPath().normalize()
+    val target = event.newFile.toPath().normalize()
     documentManager.closeDocumentsUnder(root)
     lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
+    connection.notifyFileMoved(root, target)
     clearDiagnostics(root)
     com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
-        .filter { it.startsWith(event.newFile.toPath().normalize()) && supportsDocument(it) }
+        .filter { it.startsWith(target) && supportsDocument(it) }
         .forEach(documentManager::syncActiveDocument)
   }
 

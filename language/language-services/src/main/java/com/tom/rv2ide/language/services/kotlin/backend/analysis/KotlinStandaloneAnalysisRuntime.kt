@@ -1,24 +1,11 @@
-/*
- *  This file is part of AndroidCodeStudio.
- *
- *  AndroidCodeStudio is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  AndroidCodeStudio is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
- */
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
-import com.tom.rv2ide.javac.config.JavacConfigProvider
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForElement
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisPriority
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionResult
@@ -28,53 +15,29 @@ import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.MarkupKind
 import com.tom.rv2ide.lsp.models.ParameterInformation
 import com.tom.rv2ide.lsp.models.ReferenceResult
+import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.lsp.models.SignatureInformation
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
-import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
-import com.tom.rv2ide.utils.Environment
-import java.io.File
-import java.nio.file.Path
-import java.nio.file.Paths
-import java.util.concurrent.atomic.AtomicBoolean
-import org.jetbrains.kotlin.K1Deprecation
+import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaContextParameterApi
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
-import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
 import org.jetbrains.kotlin.analysis.api.KaSession
-import org.jetbrains.kotlin.analysis.api.analyze as kaAnalyze
 import org.jetbrains.kotlin.analysis.api.components.render
 import org.jetbrains.kotlin.analysis.api.components.resolveToCall
 import org.jetbrains.kotlin.analysis.api.components.resolveToSymbol
-import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
-import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
-import org.jetbrains.kotlin.analysis.api.projectStructure.contextModule
-import org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource
-import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
+import org.jetbrains.kotlin.analysis.api.components.resolveToSymbols
 import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
 import org.jetbrains.kotlin.analysis.api.resolution.calls
 import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
-import org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISession
-import org.jetbrains.kotlin.analysis.api.standalone.buildStandaloneAnalysisAPISession
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
-import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtLibraryModule
-import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtSourceModule
-import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
-import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
-import org.jetbrains.kotlin.com.intellij.openapi.project.Project
-import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
-import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
-import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
+import org.jetbrains.kotlin.analysis.api.symbols.pointers.KaSymbolPointer
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
-import org.jetbrains.kotlin.com.intellij.psi.PsiManager
-import org.jetbrains.kotlin.config.CompilerConfiguration
-import org.jetbrains.kotlin.config.JVMConfigurationKeys
 import org.jetbrains.kotlin.idea.references.KtReference
-import org.jetbrains.kotlin.platform.jvm.JvmPlatforms
 import org.jetbrains.kotlin.psi.KtCallElement
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtConstructor
@@ -82,222 +45,208 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedDeclaration
 import org.jetbrains.kotlin.psi.KtReferenceExpression
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
-import org.jetbrains.kotlin.psi.KtValueArgument
-import org.jetbrains.kotlin.psi.KtPsiFactory
 import org.jetbrains.kotlin.types.Variance
+import java.nio.file.Path
+import java.nio.file.Paths
+import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Builds and owns the standalone Kotlin Analysis API session used by [KotlinAnalysisBackendConnection].
- *
- * Analysis calls are executed under the standalone application's read action by the backend connection.
- */
-@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class)
+@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class)
 internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
 ) : KotlinAnalysisRuntime {
-
-  private val disposable = Disposer.newDisposable("acs-kotlin-analysis")
   private val closed = AtomicBoolean(false)
-  private var session: StandaloneAnalysisAPISession? = null
-  private var sourceModulesByProjectPath: Map<String, KaSourceModule> = emptyMap()
-  private var projectContext: KotlinAnalysisProjectContext? = null
+  private var environment: LiveAnalysisEnvironment? = null
 
-  @OptIn(KaExperimentalApi::class, KaImplementationDetail::class, K1Deprecation::class)
   override fun start(): Boolean {
-    val context = KotlinAnalysisProjectContext.create(
-        classpathProvider.workspace ?: return false,
-        classpathProvider,
-    )
-    projectContext = context
-    val sourceRoots = context.modules.flatMap { it.sourceRoots }
-    if (sourceRoots.isEmpty()) {
-      KlsLogs.warn("No Kotlin source roots found for the Kotlin Analysis API engine")
-      disposeQuietly()
+    if (closed.get()) return false
+    val created = LiveAnalysisEnvironment(classpathProvider, intellijPluginRoot)
+    if (!created.start()) {
+      created.close()
       return false
     }
-    Environment.JAVA_HOME?.let { jdkHome ->
-      System.setProperty(JavacConfigProvider.PROP_ANDROIDIDE_JAVA_HOME, jdkHome.absolutePath)
-    }
+    environment = created
+    return true
+  }
 
-    val platform = JvmPlatforms.defaultJvmPlatform
-    val configuration =
-        CompilerConfiguration().apply {
-          put(CLIConfigurationKeys.INTELLIJ_PLUGIN_ROOT, intellijPluginRoot)
-          Environment.JAVA_HOME?.let { jdkHome ->
-            put(JVMConfigurationKeys.JDK_HOME, jdkHome)
-            put(JVMConfigurationKeys.JDK_RELEASE, resolveJdkRelease(jdkHome))
-          }
-        }
+  override fun onFileOpened(path: Path) {
+    environment?.liveIndex?.refreshCurrentKtFile(path)
+  }
 
-    return try {
-      session = buildStandaloneAnalysisAPISession(disposable, true, configuration) {
-        buildKtModuleProvider {
-          this.platform = platform
-          val contextsByPath = context.modules.associateBy { it.modulePath }
-          val libraryModules = linkedMapOf<String, KaLibraryModule>()
+  override fun onFileContentChanged(path: Path) {
+    environment?.liveIndex?.refreshCurrentKtFile(path)
+  }
 
-          fun buildLibraryModule(moduleContext: KotlinAnalysisModuleContext): KaLibraryModule {
-            libraryModules[moduleContext.modulePath]?.let { return it }
-            val libraryModule = addModule(buildKtLibraryModule {
-              libraryName = "acs-classpath-${moduleContext.modulePath}"
-              this.platform = platform
-              addBinaryRoots(
-                  (moduleContext.binaryRoots + moduleContext.bootClasspaths).distinct()
-              )
-            })
-            libraryModules[moduleContext.modulePath] = libraryModule
-            return libraryModule
-          }
+  override fun onFileClosed(path: Path) {
+    environment?.liveIndex?.closeCurrent(path)
+  }
 
-          val builtModules = linkedMapOf<String, KaSourceModule>()
-          val building = mutableSetOf<String>()
+  override fun onFileCreated(path: Path) {
+    environment?.liveIndex?.refreshCurrentKtFileAsync(path)
+  }
 
-          fun buildSourceModule(moduleContext: KotlinAnalysisModuleContext): KaSourceModule {
-            builtModules[moduleContext.modulePath]?.let { return it }
-            if (!building.add(moduleContext.modulePath)) {
-              KlsLogs.warn("Skipping cyclic Kotlin module dependency at ${moduleContext.modulePath}")
-              return builtModules[moduleContext.modulePath]
-                  ?: error("Kotlin module is being built before registration: ${moduleContext.modulePath}")
-            }
-            val dependencies = moduleContext.compileModulePaths
-                .filter { it != moduleContext.modulePath && it !in building }
-                .mapNotNull(contextsByPath::get)
-                .map(::buildSourceModule)
-            val sourceModule = addModule(buildKtSourceModule {
-              moduleName = moduleContext.modulePath
-              this.platform = platform
-              addSourceRoots(moduleContext.sourceRoots)
-              addRegularDependency(buildLibraryModule(moduleContext))
-              dependencies.forEach(::addRegularDependency)
-            })
-            building.remove(moduleContext.modulePath)
-            builtModules[moduleContext.modulePath] = sourceModule
-            return sourceModule
-          }
+  override fun onFileRemoved(path: Path) {
+    environment?.liveIndex?.removeFromSourceIndexUnder(path)
+  }
 
-          context.modules.forEach(::buildLibraryModule)
-          context.modules.forEach(::buildSourceModule)
-          sourceModulesByProjectPath = builtModules.toMap()
-        }
+  override fun onFileMoved(fromPath: Path, toPath: Path) {
+    environment?.liveIndex?.moveSourceIndex(fromPath, toPath)
+  }
+
+  override fun analyze(path: Path, snapshot: com.tom.rv2ide.projects.models.ActiveDocumentSnapshot?): DiagnosticResult? {
+    val env = environment ?: return null
+    val normalized = path.normalize()
+    return env.liveIndex.withLiveKtFile(normalized, action = { live ->
+      val checker = ICancelChecker.NOOP
+      if (live.isStale) return@withLiveKtFile null
+      val diagnostics = live.analyzing(AnalysisPriority.DIAGNOSTICS, checker) { file ->
+        KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
       }
-      KlsLogs.info(
-          "Kotlin Analysis API engine ready (modules={}, sourceRoots={})",
-          context.modules.size,
-          sourceRoots.size,
+      DiagnosticResult(
+          normalized,
+          diagnostics,
+          DiagnosticResult.CHANNEL_KOTLIN,
+          snapshot?.version ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION,
+          snapshot?.revision ?: DiagnosticResult.UNKNOWN_DOCUMENT_REVISION,
       )
-      true
-    } catch (t: Throwable) {
-      KlsLogs.error("Failed to create the Kotlin Analysis API session", t)
-      disposeQuietly()
-      false
-    }
+    })
   }
 
-  override fun analyze(path: Path, snapshot: ActiveDocumentSnapshot?): DiagnosticResult? {
-    val currentSession = session ?: return null
-
-    return try {
-      if (snapshot == null) {
-        val virtualFile = VirtualFileManager.getInstance().findFileByNioPath(path) ?: return null
-        virtualFile.refresh(false, false)
-        ApplicationManager.getApplication().runReadAction(
-            Computable {
-              val psiManager = PsiManager.getInstance(currentSession.project)
-              val psiFile = psiManager.findFile(virtualFile)
-              val ktFile = psiFile as? KtFile ?: return@Computable null
-              val diagnostics = KotlinAnalysisDiagnostics.collectDiagnosticsFor(ktFile)
-              DiagnosticResult(path, diagnostics, DiagnosticResult.CHANNEL_KOTLIN)
-            },
-        )
-      } else {
-        analyzeInMemoryText(currentSession.project, path, snapshot)
+  override fun complete(request: KotlinSemanticRequest): CompletionResult? =
+      withSemanticLiveFile(request) { file ->
+        val offset = requestOffset(request)
+        val element = elementAt(file, offset) as? org.jetbrains.kotlin.psi.KtElement
+            ?: file.findElementAt(offset)?.parent as? org.jetbrains.kotlin.psi.KtElement
+            ?: return@withSemanticLiveFile CompletionResult.EMPTY
+        val prefix = request.prefix ?: extractCompletionPrefix(file.text, offset)
+        CompletionResult(completionItemsFor(prefix, element))
       }
-    } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis API analysis failed for: $path", t)
-      null
-    }
-  }
-
-  private fun analyzeInMemoryText(
-      project: Project,
-      path: Path,
-      snapshot: ActiveDocumentSnapshot,
-  ): DiagnosticResult? = withSnapshotFile(project, path, snapshot) { file ->
-    DiagnosticResult(
-        path,
-        KotlinAnalysisDiagnostics.collectDiagnosticsFor(file),
-        DiagnosticResult.CHANNEL_KOTLIN,
-        snapshot.version,
-        snapshot.revision,
-    )
-  }
-
-  override fun complete(request: KotlinSemanticRequest): CompletionResult? = null
 
   override fun hover(request: KotlinSemanticRequest): MarkupContent? =
-      withSemanticSnapshot(request) { file ->
-        val symbol =
-            symbolAt(file, requestOffset(request)) as? KaDeclarationSymbol
-                ?: return@withSemanticSnapshot null
-        val declaration = symbol.render(KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
-        if (declaration.isEmpty()) {
-          null
-        } else {
-          MarkupContent("```kotlin\n$declaration\n```", MarkupKind.MARKDOWN)
-        }
+      withSemanticLiveFile(request) { file ->
+        val symbol = symbolAt(file, requestOffset(request)) as? KaDeclarationSymbol ?: return@withSemanticLiveFile null
+        val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
+        if (declaration.isEmpty()) null else MarkupContent("```kotlin\n$declaration\n```", MarkupKind.MARKDOWN)
       }
 
   override fun findDefinition(request: KotlinSemanticRequest): DefinitionResult? =
-      withSemanticSnapshot(request) { file ->
-        val symbol = symbolAt(file, requestOffset(request)) ?: return@withSemanticSnapshot DefinitionResult(emptyList())
+      withSemanticLiveFile(request) { file ->
+        val symbol = symbolAt(file, requestOffset(request)) ?: return@withSemanticLiveFile DefinitionResult(emptyList())
         val psi = runCatching { symbol.psi?.navigationElement }.getOrNull()
-            ?: return@withSemanticSnapshot DefinitionResult(emptyList())
-        val locationPsi = definitionTargetPsi(psi)
-        val location = locationForPsi(request, file, locationPsi)
+            ?: return@withSemanticLiveFile DefinitionResult(emptyList())
+        val target = definitionTargetPsi(psi)
+        val location = locationForPsi(request, file, target)
         DefinitionResult(if (location == null) emptyList() else listOf(location))
       }
 
-  override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? = null
+  override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? {
+    val env = environment ?: return null
+    val target = withSemanticLiveFile(request) { file ->
+      val element = elementAt(file, requestOffset(request)) ?: return@withSemanticLiveFile null
+      val reference = nearestReference(element) ?: return@withSemanticLiveFile null
+      val symbols = runCatching { reference.resolveToSymbols() }.getOrDefault(emptyList())
+      val symbol = symbols.firstOrNull() ?: return@withSemanticLiveFile null
+      if (symbol.origin != org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin.SOURCE) return@withSemanticLiveFile null
+      SearchTarget(symbol.createPointer(), request.file)
+    } ?: return ReferenceResult(emptyList())
+
+    val locations = mutableListOf<Location>()
+    val roles = mutableListOf<ReferenceRole>()
+    env.liveIndex.currentPaths().forEach { path ->
+      request.cancelChecker.abortIfCancelled()
+      env.liveIndex.withLiveKtFile(path, request.cancelChecker) { live ->
+        if (live.isStale) return@withLiveKtFile Unit
+        live.analyzing(AnalysisPriority.SEMANTIC, request.cancelChecker) { file ->
+          val visitor = object : org.jetbrains.kotlin.psi.KtTreeVisitorVoid() {
+            override fun visitSimpleNameExpression(expression: org.jetbrains.kotlin.psi.KtSimpleNameExpression) {
+              request.cancelChecker.abortIfCancelled()
+              val reference = expression.reference as? KtReference
+              if (reference != null && runCatching { reference.resolveToSymbols() }.getOrDefault(emptyList())
+                      .any { it.createPointer().pointsToTheSameSymbolAs(target.pointer) }) {
+                val location = locationForElement(path, file, expression)
+                if (location != null && (request.includeDeclaration || path != target.path || expression.parent !is org.jetbrains.kotlin.psi.KtNamedDeclaration)) {
+                  locations += location
+                  roles += if (path == target.path && expression.parent is org.jetbrains.kotlin.psi.KtNamedDeclaration) ReferenceRole.DEFINITION else ReferenceRole.USAGE
+                }
+              }
+              super.visitSimpleNameExpression(expression)
+            }
+          }
+          file.accept(visitor)
+        }
+      }
+    }
+    val distinctResults = locations.zip(roles).distinctBy { it.first }
+    return ReferenceResult(distinctResults.map { it.first }, distinctResults.map { it.second })
+  }
 
   override fun signatureHelp(request: KotlinSemanticRequest): SignatureHelp? =
-      withSemanticSnapshot(request) { file ->
+      withSemanticLiveFile(request) { file ->
         val offset = requestOffset(request)
-        val callElement = callElementAt(file, offset)
-            ?: return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
+        val callElement = callElementAt(file, offset) ?: return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
         val callInfo = runCatching { callElement.resolveToCall() }.getOrNull()
-            ?: return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
-        val functionCalls = callInfo.calls.filterIsInstance<KaFunctionCall<*>>()
+            ?: return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
         val functionName = callElement.calleeExpression?.text?.takeIf { it.isNotBlank() } ?: "invoke"
-        val signatureEntries = functionCalls.mapNotNull { call ->
+        val entries = callInfo.calls.filterIsInstance<KaFunctionCall<*>>().mapNotNull { call ->
           val signature = call.signature as? KaFunctionSignature<*> ?: return@mapNotNull null
           val parameters = signature.valueParameters.map { parameter ->
             val name = parameter.name.asString()
-            val type = parameter.returnType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)
-            ParameterInformation(
-                label = if (name.isEmpty()) type else "$name: $type",
-                documentation = MarkupContent(),
+            val type = parameter.returnType.render(
+                org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource.WITH_SHORT_NAMES,
+                Variance.INVARIANT,
             )
+            ParameterInformation(if (name.isEmpty()) type else "$name: $type", MarkupContent())
           }
           if (parameters.isEmpty()) return@mapNotNull null
-          val information = SignatureInformation(
+          SignatureInformation(
               label = "$functionName(${parameters.joinToString(", ") { it.label }})",
               documentation = MarkupContent(),
               parameters = parameters,
-          )
-          information to activeParameter(call, callElement, offset, signature)
-              .coerceIn(0, parameters.lastIndex)
+          ) to 0
         }
-        if (signatureEntries.isEmpty()) {
-          return@withSemanticSnapshot SignatureHelp(emptyList(), 0, 0)
-        }
-        val signatures = signatureEntries.map { it.first }
-        val activeParameter = signatureEntries.firstOrNull()?.second ?: 0
-        SignatureHelp(signatures, 0, activeParameter)
+        if (entries.isEmpty()) SignatureHelp(emptyList(), 0, 0)
+        else SignatureHelp(entries.map { it.first }, 0, entries.first().second)
       }
+
+  private data class SearchTarget(
+      val pointer: KaSymbolPointer<KaSymbol>,
+      val path: Path,
+  )
+
+  private fun <T> withSemanticLiveFile(
+      request: KotlinSemanticRequest,
+      action: KaSession.(KtFile) -> T?,
+  ): T? {
+    request.cancelChecker.abortIfCancelled()
+    val env = environment ?: return null
+    return env.liveIndex.withLiveKtFile(request.file, request.cancelChecker) { live ->
+      if (live.isStale) return@withLiveKtFile null
+      live.analyzing(AnalysisPriority.SEMANTIC, request.cancelChecker) {
+        request.cancelChecker.abortIfCancelled()
+        action(this, it)
+      }
+    }
+  }
 
   private fun requestOffset(request: KotlinSemanticRequest): Int =
       LineIndex.from(request.snapshot.content).lineColumnToIndex(request.line, request.column)
+
+  private fun extractCompletionPrefix(text: String, offset: Int): String {
+    val end = offset.coerceIn(0, text.length)
+    var start = end
+    while (start > 0 && (text[start - 1].isLetterOrDigit() || text[start - 1] == '_')) start--
+    return text.substring(start, end)
+  }
+
+  private fun nearestReference(element: PsiElement): KtReference? {
+    var current: PsiElement? = element
+    while (current != null && current !is PsiFile) {
+      val reference = (current as? KtSimpleNameExpression)?.reference as? KtReference
+      if (reference != null) return reference
+      current = current.parent
+    }
+    return null
+  }
 
   private fun KaSession.symbolAt(file: KtFile, offset: Int): KaSymbol? {
     var element: PsiElement? = elementAt(file, offset)
@@ -307,9 +256,7 @@ internal class KotlinStandaloneAnalysisRuntime(
         is KtReferenceExpression -> element.reference as? KtReference
         else -> null
       }
-      if (reference != null) {
-        runCatching { reference.resolveToSymbol() }.getOrNull()?.let { return it }
-      }
+      if (reference != null) runCatching { reference.resolveToSymbol() }.getOrNull()?.let { return it }
       element = element.parent
     }
     return null
@@ -318,23 +265,15 @@ internal class KotlinStandaloneAnalysisRuntime(
   private fun definitionTargetPsi(psi: PsiElement): PsiElement {
     if (psi is KtConstructor<*>) {
       var parent: PsiElement? = psi.parent
-      while (parent != null && parent !is KtClassOrObject) {
-        parent = parent.parent
-      }
-      if (parent is KtClassOrObject) {
-        return parent.getNameIdentifier() ?: psi
-      }
+      while (parent != null && parent !is KtClassOrObject) parent = parent.parent
+      if (parent is KtClassOrObject) return parent.getNameIdentifier() ?: psi
     }
-    if (psi is KtNamedDeclaration) {
-      return psi.getNameIdentifier() ?: psi
-    }
-    return psi
+    return if (psi is KtNamedDeclaration) psi.getNameIdentifier() ?: psi else psi
   }
 
   private fun elementAt(file: KtFile, offset: Int): PsiElement? {
-    val safeOffset = offset.coerceIn(0, file.textLength)
-    return file.findElementAt(safeOffset)
-        ?: if (safeOffset > 0) file.findElementAt(safeOffset - 1) else null
+    val safe = offset.coerceIn(0, file.textLength)
+    return file.findElementAt(safe) ?: if (safe > 0) file.findElementAt(safe - 1) else null
   }
 
   private fun callElementAt(file: KtFile, offset: Int): KtCallElement? {
@@ -346,121 +285,23 @@ internal class KotlinStandaloneAnalysisRuntime(
     return null
   }
 
-  private fun activeParameter(
-      call: KaFunctionCall<*>,
-      callElement: KtCallElement,
-      offset: Int,
-      signature: KaFunctionSignature<*>,
-  ): Int {
-    val parameters = signature.valueParameters
-    val arguments = callElement.valueArguments.mapNotNull { it as? KtValueArgument }
-    val argument = arguments.firstOrNull { valueArgument ->
-      val range = valueArgument.textRange
-      range.containsOffset(offset) ||
-          (offset == range.endOffset &&
-              valueArgument.getArgumentExpression()?.textRange?.containsOffset(offset) == true)
-    }
-    val mapped = argument?.getArgumentExpression()?.let { call.argumentMapping[it] }
-    if (mapped != null) {
-      val mappedIndex = parameters.indexOfFirst { it.name == mapped.name }
-      if (mappedIndex >= 0) return mappedIndex
-    }
-    val precedingArguments = arguments.count { it.textRange.startOffset < offset }
-    return precedingArguments.coerceIn(0, parameters.lastIndex)
-  }
-
   private fun locationForPsi(request: KotlinSemanticRequest, sourceFile: KtFile, psi: PsiElement): Location? {
     val containingFile = runCatching { psi.containingFile }.getOrNull() ?: return null
-    val targetPath = when {
-      containingFile == sourceFile -> request.file
-      else -> containingFile.virtualFile?.path?.let(Paths::get) ?: return null
-    }
+    val targetPath = if (containingFile == sourceFile) request.file
+    else (containingFile as? KtFile)?.liveBackingPath
+        ?: containingFile.virtualFile?.path?.let(Paths::get)
+        ?: return null
     val range = runCatching { psi.textRange }.getOrNull() ?: return null
     val text = runCatching { containingFile.text }.getOrNull() ?: return null
-    val lineIndex = LineIndex.from(text)
-    val startOffset = range.startOffset.coerceIn(0, text.length)
-    val endOffset = range.endOffset.coerceIn(startOffset, text.length)
-    return Location(
-        file = targetPath,
-        range = Range(lineIndex.indexToPosition(startOffset), lineIndex.indexToPosition(endOffset)),
-    )
-  }
-
-  private fun <T> withSemanticSnapshot(
-      request: KotlinSemanticRequest,
-      action: KaSession.(KtFile) -> T?,
-  ): T? {
-    request.cancelChecker.abortIfCancelled()
-    val currentSession = session ?: return null
-    return withSnapshotFile(currentSession.project, request.file, request.snapshot) { file ->
-      request.cancelChecker.abortIfCancelled()
-      kaAnalyze(file) {
-        request.cancelChecker.abortIfCancelled()
-        val result = action(file)
-        request.cancelChecker.abortIfCancelled()
-        result
-      }
-    }
-  }
-
-  @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
-  private fun <T> withSnapshotFile(
-      project: Project,
-      path: Path,
-      snapshot: ActiveDocumentSnapshot,
-      action: (KtFile) -> T?,
-  ): T? = ApplicationManager.getApplication().runReadAction(
-      Computable { action(createAnalysisFile(project, path, snapshot)) }
-  )
-
-  @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
-  private fun createAnalysisFile(
-      project: Project,
-      path: Path,
-      snapshot: ActiveDocumentSnapshot,
-  ): KtFile {
-    val physicalFile = findPhysicalKtFile(project, path)
-    val factory = if (physicalFile != null) {
-      KtPsiFactory.contextual(physicalFile, markGenerated = true, eventSystemEnabled = false)
-    } else {
-      KtPsiFactory(project, markGenerated = true, eventSystemEnabled = false)
-    }
-    return factory.createFile(path.fileName.toString(), snapshot.content).apply {
-      sourceModuleFor(path)?.let { contextModule = it }
-    }
-  }
-
-  private fun findPhysicalKtFile(project: Project, path: Path): KtFile? {
-    val virtualFile = VirtualFileManager.getInstance().findFileByNioPath(path) ?: return null
-    return PsiManager.getInstance(project).findFile(virtualFile) as? KtFile
-  }
-
-  private fun sourceModuleFor(path: Path): KaSourceModule? {
-    val context = projectContext ?: return sourceModulesByProjectPath.values.singleOrNull()
-    val workspace = classpathProvider.workspace ?: return null
-    val moduleContext = context.moduleFor(path, workspace)
-        ?: return sourceModulesByProjectPath.values.singleOrNull()
-    return sourceModulesByProjectPath[moduleContext.modulePath]
+    val index = LineIndex.from(text)
+    val start = range.startOffset.coerceIn(0, text.length)
+    val end = range.endOffset.coerceIn(start, text.length)
+    return Location(targetPath, Range(index.indexToPosition(start), index.indexToPosition(end)))
   }
 
   override fun close() {
-    disposeQuietly()
+    if (!closed.compareAndSet(false, true)) return
+    environment?.close()
+    environment = null
   }
-
-  private fun disposeQuietly() {
-    if (!closed.compareAndSet(false, true)) {
-      return
-    }
-    session = null
-    sourceModulesByProjectPath = emptyMap()
-    projectContext = null
-    try {
-      Disposer.dispose(disposable)
-    } catch (t: Throwable) {
-      KlsLogs.warn("Failed to dispose the Kotlin Analysis API session", t)
-    }
-  }
-  private fun resolveJdkRelease(jdkHome: File): Int =
-      Regex("java-(\\d+)").find(jdkHome.name)?.groupValues?.get(1)?.toIntOrNull() ?: 17
-
 }

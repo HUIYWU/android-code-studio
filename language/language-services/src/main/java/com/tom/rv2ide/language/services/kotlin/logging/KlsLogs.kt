@@ -18,6 +18,7 @@ package com.tom.rv2ide.language.services.kotlin.logging
 import com.tom.rv2ide.common.logging.IdeLogConfig
 import java.util.concurrent.ConcurrentHashMap
 import org.slf4j.LoggerFactory
+import org.slf4j.helpers.MessageFormatter
 
 /**
  * Centralized KLS logging control.
@@ -39,7 +40,7 @@ object KlsLogs {
 
   fun error(message: String, throwable: Throwable) {
     if (IdeLogConfig.shouldLogError()) {
-      log.error(message, throwable)
+      logWithThrowable(LogLevel.ERROR, message, throwable)
     }
   }
 
@@ -51,7 +52,7 @@ object KlsLogs {
 
   fun warn(message: String, throwable: Throwable) {
     if (IdeLogConfig.shouldLogWarn()) {
-      log.warn(message, throwable)
+      logWithThrowable(LogLevel.WARN, message, throwable)
     }
   }
 
@@ -76,36 +77,31 @@ object KlsLogs {
   // Simple formatted message methods that handle null values
   fun error(format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogError()) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.error(format, *safeArgs)
+      logFormatted(LogLevel.ERROR, format, args)
     }
   }
 
   fun warn(format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogWarn()) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.warn(format, *safeArgs)
+      logFormatted(LogLevel.WARN, format, args)
     }
   }
 
   fun info(format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogInfo()) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.info(format, *safeArgs)
+      logFormatted(LogLevel.INFO, format, args)
     }
   }
 
   fun debug(format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogDebug()) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.debug(format, *safeArgs)
+      logFormatted(LogLevel.DEBUG, format, args)
     }
   }
 
   fun trace(format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogTrace()) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.trace(format, *safeArgs)
+      logFormatted(LogLevel.TRACE, format, args)
     }
   }
 
@@ -117,8 +113,7 @@ object KlsLogs {
 
   fun infoThrottled(key: String, intervalMs: Long, format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogInfo() && shouldLogNow(key, intervalMs)) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.info(format, *safeArgs)
+      logFormatted(LogLevel.INFO, format, args)
     }
   }
 
@@ -130,8 +125,44 @@ object KlsLogs {
 
   fun debugThrottled(key: String, intervalMs: Long, format: String, vararg args: Any?) {
     if (IdeLogConfig.shouldLogDebug() && shouldLogNow(key, intervalMs)) {
-      val safeArgs = args.map { it ?: "null" }.toTypedArray()
-      log.debug(format, *safeArgs)
+      logFormatted(LogLevel.DEBUG, format, args)
+    }
+  }
+
+  private enum class LogLevel {
+    ERROR,
+    WARN,
+    INFO,
+    DEBUG,
+    TRACE,
+  }
+
+  private fun logFormatted(level: LogLevel, format: String, args: Array<out Any?>) {
+    val throwable = args.lastOrNull() as? Throwable
+    val messageArgs = if (throwable == null) args else args.copyOf(args.size - 1)
+    val safeArgs = messageArgs.map { it ?: "null" }.toTypedArray()
+    val message = MessageFormatter.arrayFormat(format, safeArgs).message
+    if (throwable == null) {
+      logMessage(level, message)
+    } else {
+      logWithThrowable(level, message, throwable)
+    }
+  }
+
+  private fun logWithThrowable(level: LogLevel, message: String, throwable: Throwable) {
+    logMessage(level, message)
+    throwable.stackTraceToString().lineSequence().forEach { line ->
+      logMessage(level, line)
+    }
+  }
+
+  private fun logMessage(level: LogLevel, message: String) {
+    when (level) {
+      LogLevel.ERROR -> log.error(message)
+      LogLevel.WARN -> log.warn(message)
+      LogLevel.INFO -> log.info(message)
+      LogLevel.DEBUG -> log.debug(message)
+      LogLevel.TRACE -> log.trace(message)
     }
   }
 

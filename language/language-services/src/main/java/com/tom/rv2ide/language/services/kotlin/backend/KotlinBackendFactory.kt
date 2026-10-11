@@ -29,6 +29,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.fwcd.FwcdKotlinSemanticBa
 import com.tom.rv2ide.language.services.kotlin.completion.KotlinJavaCompilerBridge
 import com.tom.rv2ide.language.services.kotlin.request.KotlinRequestHandler
 import com.tom.rv2ide.language.services.kotlin.semantic.EmptyKotlinSemanticBackend
+import java.io.File
 
 /**
  * Minimal factory for creating the active Kotlin LSP backend connection.
@@ -66,6 +67,8 @@ object KotlinBackendFactory {
         createSemanticBackend = { _, _, _ -> EmptyKotlinSemanticBackend },
     )
     KotlinBackendId.ANALYSIS -> {
+      // Set existing app-private directories first to prevent PathManager home detection from failing during PluginEnabler initialization.
+      initializeAnalysisPaths(context)
       val connection = KotlinAnalysisBackendConnection(context.applicationInfo.sourceDir)
       KotlinBackendSpec(
           connection = connection,
@@ -73,5 +76,20 @@ object KotlinBackendFactory {
           createSemanticBackend = { _, _, validator -> AnalysisKotlinSemanticBackend(connection, validator) },
       )
     }
+  }
+
+  @Synchronized
+  private fun initializeAnalysisPaths(context: Context) {
+    val home = File(context.filesDir, "kotlin-analysis")
+    val config = File(home, "config")
+    val system = File(home, "system")
+    listOf(home, config, system).forEach { directory ->
+      check(directory.isDirectory || directory.mkdirs()) {
+        "Cannot create Kotlin Analysis directory: ${directory.absolutePath}"
+      }
+    }
+    System.setProperty("idea.home.path", home.absolutePath)
+    System.setProperty("idea.config.path", config.absolutePath)
+    System.setProperty("idea.system.path", system.absolutePath)
   }
 }

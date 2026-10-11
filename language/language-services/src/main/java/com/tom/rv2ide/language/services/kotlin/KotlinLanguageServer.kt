@@ -62,7 +62,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private val documentSync = KotlinDocumentSync(connection) { backendReady && connection.isReady }
   @Volatile private var semanticService: KotlinSemanticService? = null
   private val documentEventBridge =
-      KotlinDocumentEventBridge(documentSync, connection::supportsDocument) { file ->
+      KotlinDocumentEventBridge(documentSync, connection, connection::supportsDocument) { file ->
         _client?.clearDiagnostics(file, connection.diagnosticChannel)
       }
 

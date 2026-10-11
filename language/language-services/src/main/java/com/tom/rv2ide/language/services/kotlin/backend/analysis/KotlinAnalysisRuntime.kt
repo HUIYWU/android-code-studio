@@ -13,6 +13,12 @@ import java.nio.file.Path
 
 internal interface KotlinAnalysisRuntime {
   fun start(): Boolean
+  fun onFileOpened(path: Path) = Unit
+  fun onFileContentChanged(path: Path) = Unit
+  fun onFileClosed(path: Path) = Unit
+  fun onFileCreated(path: Path) = Unit
+  fun onFileRemoved(path: Path) = Unit
+  fun onFileMoved(fromPath: Path, toPath: Path) = Unit
   fun analyze(path: Path, snapshot: ActiveDocumentSnapshot?): DiagnosticResult?
   fun complete(request: KotlinSemanticRequest): CompletionResult?
   fun hover(request: KotlinSemanticRequest): MarkupContent?

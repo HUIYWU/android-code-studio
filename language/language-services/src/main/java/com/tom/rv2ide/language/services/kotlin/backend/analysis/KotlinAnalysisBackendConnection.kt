@@ -93,6 +93,18 @@ class KotlinAnalysisBackendConnection internal constructor(
   override fun supportsDocument(path: Path): Boolean =
       path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
 
+  override fun notifyFileCreated(path: Path) {
+    executeOnAnalysisQueue { runtime?.onFileCreated(path.normalize()) }
+  }
+
+  override fun notifyFileRemoved(path: Path) {
+    executeOnAnalysisQueue { runtime?.onFileRemoved(path.normalize()) }
+  }
+
+  override fun notifyFileMoved(fromPath: Path, toPath: Path) {
+    executeOnAnalysisQueue { runtime?.onFileMoved(fromPath.normalize(), toPath.normalize()) }
+  }
+
   override fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit) {
     executeOnAnalysisQueue { diagnosticsCallback = callback }
     KlsLogs.info("Analysis API Kotlin backend installed diagnostics callback")
@@ -207,14 +219,30 @@ class KotlinAnalysisBackendConnection internal constructor(
   private fun handleNotification(method: String, params: JsonObject) {
     try {
       when (method) {
-        "textDocument/didOpen",
-        "textDocument/didChange",
+        "textDocument/didOpen" -> {
+          val path = extractFilePath(params)?.normalize() ?: return
+          if (supportsDocument(path)) {
+            runtime?.onFileOpened(path)
+            scheduleDiagnostics(path)
+          }
+        }
+        "textDocument/didChange" -> {
+          val path = extractFilePath(params)?.normalize() ?: return
+          if (supportsDocument(path)) {
+            runtime?.onFileContentChanged(path)
+            scheduleDiagnostics(path)
+          }
+        }
         "textDocument/didSave" -> {
           val path = extractFilePath(params)?.normalize() ?: return
-          if (supportsDocument(path)) scheduleDiagnostics(path)
+          if (supportsDocument(path)) {
+            runtime?.onFileContentChanged(path)
+            scheduleDiagnostics(path)
+          }
         }
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
+          runtime?.onFileClosed(path)
           scheduledJobs.remove(path)?.cancel(false)
           diagnosticsCallback?.invoke(
               DiagnosticResult(
