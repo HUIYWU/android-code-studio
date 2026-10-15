@@ -208,11 +208,19 @@ override fun getLibraryMap(): CompletableFuture<Map<String, DefaultLibrary>> {
   }
 
   private fun getClassesJar(): File {
-    // TODO(itsaky): this should handle product flavors as well
-    return File(
+    val variantDirectory = configuredVariant
+    val taskVariant = configuredVariant.capitalizeString()
+    val outputDirectory = File(
         gradleProject.buildDirectory,
-        "${IAndroidProject.FD_INTERMEDIATES}/compile_library_classes_jar/$configuredVariant/classes.jar",
+        "${IAndroidProject.FD_INTERMEDIATES}/compile_library_classes_jar/$variantDirectory",
     )
+    val taskOutput = File(outputDirectory, "bundleLibCompileToJar$taskVariant/classes.jar")
+    val legacyOutput = File(outputDirectory, "classes.jar")
+    return when {
+      taskOutput.isFile -> taskOutput
+      legacyOutput.isFile -> legacyOutput
+      else -> taskOutput
+    }
   }
 
   override fun getClasspaths(): CompletableFuture<List<File>> {

@@ -97,6 +97,7 @@ dependencies {
   implementation(projects.core.actions)
   implementation(projects.core.common)
   implementation(projects.core.lspApi)
+  implementation(projects.core.projects)
   implementation(projects.core.resources)
   implementation(projects.editor.api)
   implementation(projects.utilities.shared)

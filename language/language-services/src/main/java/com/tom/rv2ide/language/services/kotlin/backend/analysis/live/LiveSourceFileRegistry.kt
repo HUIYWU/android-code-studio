@@ -46,9 +46,15 @@ internal class LiveSourceFileRegistry {
 
   fun moduleForPath(path: Path): KaModule? {
     val normalized = path.normalize()
-    return moduleRoots.entries.firstOrNull { (_, roots) ->
-      roots.any { normalized == it || normalized.startsWith(it) }
-    }?.key
+    return moduleRoots.entries
+        .asSequence()
+        .flatMap { (module, roots) ->
+          roots.asSequence()
+              .filter { root -> normalized == root || normalized.startsWith(root) }
+              .map { root -> module to root }
+        }
+        .maxByOrNull { (_, root) -> root.toString().length }
+        ?.first
   }
 
   fun contains(virtualFile: VirtualFile): Boolean = virtualFileToModule.containsKey(virtualFile)

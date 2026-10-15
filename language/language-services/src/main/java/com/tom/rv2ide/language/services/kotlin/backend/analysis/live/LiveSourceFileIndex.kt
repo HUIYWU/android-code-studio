@@ -24,16 +24,34 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+internal enum class LiveFileSourceKind {
+  ACTIVE_DOCUMENT,
+  DISK_FILE,
+  MISSING,
+}
+
+internal data class LiveFileIdentity(
+    val kind: LiveFileSourceKind,
+    val version: Int = -1,
+    val revision: Long = -1L,
+    val size: Long = -1L,
+    val lastModifiedMillis: Long = -1L,
+)
+
+private data class LiveFileSourceSnapshot(
+    val identity: LiveFileIdentity,
+    val content: String?,
+)
+
 internal class LiveSourceFileIndex(
     val project: Project,
     private val sourceRegistry: LiveSourceFileRegistry,
     val metadataIndex: KotlinSourceMetadataIndex,
 ) : AutoCloseable {
-  private data class VersionedFile(val version: Int, val file: KtFile)
-  private class Pin(val file: KtFile, val version: Int) {
+  private data class VersionedFile(val identity: LiveFileIdentity, val file: KtFile)
+  private class Pin(val file: KtFile, val identity: LiveFileIdentity) {
     var count: Int = 0
-    @Volatile var refreshOwed: Boolean = false
-    @Volatile var removalOwed: Boolean = false
+    var pending: PendingState? = null
   }
 
   private val currentFiles = ConcurrentHashMap<Path, VersionedFile>()
@@ -45,19 +63,51 @@ internal class LiveSourceFileIndex(
 
   lateinit var parser: KtPsiFactory
 
-  fun activeVersion(path: Path): Int? = FileManager.getActiveDocumentSnapshot(path.normalize())?.version
-
   fun refreshCurrentKtFile(path: Path): KtFile? {
     val normalized = path.normalize()
     if (!sourceRegistry.isKotlinSource(normalized)) return null
-    val version = activeVersion(normalized) ?: DISK_VERSION
-    synchronized(refreshLock) {
+    val source = sourceSnapshot(normalized) ?: return null
+    val identity = source.identity
+    var removed: RemovedSource? = null
+    var shouldRefresh = false
+    val existing = synchronized(refreshLock) {
       pins[normalized]?.let { pin ->
-        if (version != DISK_VERSION && version != pin.version) pin.refreshOwed = true
-        return pin.file
+        updatePending(normalized, pin, identity)
+        return@synchronized pin.file
       }
-      currentFiles[normalized]?.takeIf { it.version == version }?.let { return it.file }
-      return refreshLocked(normalized, version)
+      currentFiles[normalized]?.takeIf { it.identity == identity }?.let { return@synchronized it.file }
+      if (identity.kind == LiveFileSourceKind.MISSING) {
+        removed = detachCurrent(normalized)
+        return@synchronized null
+      }
+      shouldRefresh = true
+      null
+    }
+    removed?.let(::notifyRemoved)
+    if (existing != null || !shouldRefresh) return existing
+    return refreshLocked(normalized, source)
+  }
+
+  private fun detachCurrent(path: Path): RemovedSource? {
+    val module = sourceRegistry.moduleForPath(path)
+    val current = currentFiles.remove(path)
+    sourceRegistry.unregister(path)
+    metadataIndex.remove(path)
+    return current?.let { RemovedSource(it.file, module) }
+  }
+
+  private fun updatePending(path: Path, pin: Pin, identity: LiveFileIdentity) {
+    val previousRemoval = when (val pending = pin.pending) {
+      is PendingState.Removed -> pending.source
+      is PendingState.Refresh -> pending.removed
+      null -> null
+    }
+    if (identity.kind == LiveFileSourceKind.MISSING) {
+      val source = previousRemoval ?: detachCurrent(path)
+          ?: RemovedSource(pin.file, sourceRegistry.moduleForPath(path))
+      pin.pending = PendingState.Removed(source)
+    } else if (identity != pin.identity || previousRemoval != null) {
+      pin.pending = PendingState.Refresh(previousRemoval)
     }
   }
 
@@ -73,8 +123,10 @@ internal class LiveSourceFileIndex(
     cancelChecker.abortIfCancelled()
     val normalized = path.normalize()
     val pin = acquirePin(normalized) ?: return null
-    try {
-      return action(PinnedLiveKtFile(normalized, this, pin.file, pin.version))
+    return try {
+      val live = PinnedLiveKtFile(normalized, this, pin.file, pin.identity)
+      val result = action(live)
+      if (live.isStale) null else result
     } finally {
       releasePin(normalized)
     }
@@ -82,8 +134,14 @@ internal class LiveSourceFileIndex(
 
   fun getCurrentKtFile(path: Path): KtFile? {
     val normalized = path.normalize()
-    pins[normalized]?.let { return it.file }
-    return currentFiles[normalized]?.file
+    val current = currentFiles[normalized] ?: return null
+    return current.file.takeIf { isCurrent(normalized, current.identity, it) }
+  }
+
+  fun isCurrent(path: Path, identity: LiveFileIdentity, file: KtFile): Boolean {
+    val normalized = path.normalize()
+    val current = currentFiles[normalized] ?: return false
+    return current.file === file && current.identity == identity && sourceIdentity(normalized) == identity
   }
 
   fun getKtFile(virtualFile: VirtualFile): KtFile? {
@@ -91,34 +149,24 @@ internal class LiveSourceFileIndex(
     return getCurrentKtFile(path)
   }
 
-  fun currentPsiFilesFor(module: KaSourceModule): List<PsiFile> =
-      synchronized(refreshLock) {
-        currentFiles.entries
-            .filter { (path, _) -> sourceRegistry.moduleForPath(path) === module }
-            .map { it.value.file }
-      }
+  fun currentPsiFilesFor(module: KaSourceModule): List<PsiFile> = synchronized(refreshLock) {
+    currentFiles.keys
+        .filter { path -> sourceRegistry.moduleForPath(path) === module }
+        .mapNotNull(::getCurrentKtFile)
+  }
 
   fun currentKtFiles(): List<KtFile> = synchronized(refreshLock) {
-    buildList {
-      addAll(currentFiles.values.map { it.file })
-      addAll(pins.values.map { it.file })
-    }.distinct()
+    currentFiles.keys.mapNotNull(::getCurrentKtFile)
   }
 
   fun currentPaths(): List<Path> = synchronized(refreshLock) {
-    (currentFiles.keys + pins.keys).distinct()
+    currentFiles.keys.filter { getCurrentKtFile(it) != null }
   }
 
   fun registerDiskFile(path: Path): KtFile? = refreshCurrentKtFile(path)
 
   fun closeCurrent(path: Path) {
     val normalized = path.normalize()
-    synchronized(refreshLock) {
-      pins[normalized]?.let {
-        it.refreshOwed = true
-        return
-      }
-    }
     refreshCurrentKtFile(normalized)
   }
 
@@ -127,8 +175,11 @@ internal class LiveSourceFileIndex(
     val removed = synchronized(refreshLock) {
       val pin = pins[normalized]
       if (pin != null) {
-        pin.refreshOwed = false
-        pin.removalOwed = true
+        val module = sourceRegistry.moduleForPath(normalized)
+        val file = currentFiles.remove(normalized)?.file ?: pin.file
+        sourceRegistry.unregister(normalized)
+        metadataIndex.remove(normalized)
+        pin.pending = PendingState.Removed(RemovedSource(file, module))
         return@synchronized null
       }
       val module = sourceRegistry.moduleForPath(normalized)
@@ -179,7 +230,7 @@ internal class LiveSourceFileIndex(
     synchronized(refreshLock) {
       pins[path]?.let { it.count++; return it }
       val current = currentFiles[path] ?: return null
-      return Pin(current.file, current.version).also {
+      return Pin(current.file, current.identity).also {
         it.count = 1
         pins[path] = it
       }
@@ -192,28 +243,25 @@ internal class LiveSourceFileIndex(
       pin.count--
       if (pin.count > 0) return@synchronized PinRelease.None
       pins.remove(path)
-      when {
-        pin.removalOwed -> {
-          val module = sourceRegistry.moduleForPath(path)
-          val file = currentFiles.remove(path)?.file
-          sourceRegistry.unregister(path)
-          metadataIndex.remove(path)
-          PinRelease.Remove(RemovedSource(file, module))
-        }
-        pin.refreshOwed -> PinRelease.Refresh
-        else -> PinRelease.None
+      when (val pending = pin.pending) {
+        is PendingState.Removed -> PinRelease.Remove(pending.source)
+        is PendingState.Refresh -> PinRelease.Refresh(pending.removed)
+        null -> PinRelease.None
       }
     }
     when (action) {
       is PinRelease.Remove -> notifyRemoved(action.source)
-      PinRelease.Refresh -> if (FileManager.isActive(path) || Files.exists(path)) refreshCurrentKtFileAsync(path)
+      is PinRelease.Refresh -> {
+        action.removed?.let(::notifyRemoved)
+        if (FileManager.isActive(path) || Files.exists(path)) refreshCurrentKtFileAsync(path)
+      }
       PinRelease.None -> Unit
     }
   }
 
   private fun notifyRemoved(source: RemovedSource) {
-    project.analysisWrite {
-      ApplicationManager.getApplication().runWriteAction {
+    ApplicationManager.getApplication().runWriteAction {
+      project.analysisWrite {
         val file = source.file
         val module = source.module
         if (file != null) {
@@ -227,22 +275,74 @@ internal class LiveSourceFileIndex(
     }
   }
 
-  private fun refreshLocked(path: Path, version: Int): KtFile? {
-    val content = runCatching { FileManager.getDocumentContents(path) }.getOrNull() ?: return null
-    val old = currentFiles[path]?.file
+  private fun refreshLocked(path: Path, source: LiveFileSourceSnapshot): KtFile? {
+    val identity = source.identity
+    val content = source.content ?: return null
     val newFile = project.analysisRead { parser.createFile(path.fileName.toString(), content) }
     newFile.liveBackingPath = path
-    project.analysisWrite {
-      sourceRegistry.register(path, newFile.viewProvider.virtualFile)
-      metadataIndex.replace(path, newFile)
-      currentFiles[path] = VersionedFile(version, newFile)
-      ApplicationManager.getApplication().runWriteAction {
-        KaSourceModificationService.getInstance(project)
-            .handleElementModification(old ?: newFile, KaElementModificationType.Unknown)
-        AnalysisResolutionScopeProvider.getInstance(project).invalidateAll()
+    var committed = false
+    ApplicationManager.getApplication().runWriteAction {
+      project.analysisWrite {
+        synchronized(refreshLock) {
+          // TODO(ACS-ANALYSIS-EXPERIMENT): Revalidate the source identity under the canonical lock order before publishing.
+          if (sourceIdentity(path) != identity) return@synchronized
+          val old = currentFiles[path]?.file
+          sourceRegistry.register(path, newFile.viewProvider.virtualFile)
+          project.analysisRead {
+            metadataIndex.replace(path, newFile)
+          }
+          currentFiles[path] = VersionedFile(identity, newFile)
+          KaSourceModificationService.getInstance(project)
+              .handleElementModification(old ?: newFile, KaElementModificationType.Unknown)
+          AnalysisResolutionScopeProvider.getInstance(project).invalidateAll()
+          committed = true
+        }
       }
     }
-    return newFile
+    return newFile.takeIf { committed }
+  }
+
+  private fun sourceIdentity(path: Path): LiveFileIdentity {
+    FileManager.getActiveDocumentSnapshot(path)?.let { snapshot ->
+      return LiveFileIdentity(
+          kind = LiveFileSourceKind.ACTIVE_DOCUMENT,
+          version = snapshot.version,
+          revision = snapshot.revision,
+      )
+    }
+    return diskIdentity(path)
+  }
+
+  private fun diskIdentity(path: Path): LiveFileIdentity {
+    val attributes = try {
+      Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java)
+    } catch (_: java.nio.file.NoSuchFileException) {
+      return LiveFileIdentity(LiveFileSourceKind.MISSING)
+    }
+    if (!attributes.isRegularFile) return LiveFileIdentity(LiveFileSourceKind.MISSING)
+    return LiveFileIdentity(
+        kind = LiveFileSourceKind.DISK_FILE,
+        size = attributes.size(),
+        lastModifiedMillis = attributes.lastModifiedTime().toMillis(),
+    )
+  }
+
+  private fun sourceSnapshot(path: Path): LiveFileSourceSnapshot? {
+    FileManager.getActiveDocumentSnapshot(path)?.let { snapshot ->
+      return LiveFileSourceSnapshot(
+          identity = LiveFileIdentity(
+              kind = LiveFileSourceKind.ACTIVE_DOCUMENT,
+              version = snapshot.version,
+              revision = snapshot.revision,
+          ),
+          content = snapshot.content,
+      )
+    }
+    val identity = diskIdentity(path)
+    if (identity.kind == LiveFileSourceKind.MISSING) return LiveFileSourceSnapshot(identity, null)
+    val content = Files.newBufferedReader(path, java.nio.charset.Charset.defaultCharset()).use { it.readText() }
+    if (sourceIdentity(path) != identity) return null
+    return LiveFileSourceSnapshot(identity, content)
   }
 
   override fun close() {
@@ -258,13 +358,14 @@ internal class LiveSourceFileIndex(
       val module: KaModule?,
   )
 
-  private sealed interface PinRelease {
-    object None : PinRelease
-    object Refresh : PinRelease
-    data class Remove(val source: RemovedSource) : PinRelease
+  private sealed interface PendingState {
+    data class Refresh(val removed: RemovedSource?) : PendingState
+    data class Removed(val source: RemovedSource) : PendingState
   }
 
-  companion object {
-    private const val DISK_VERSION = -1
+  private sealed interface PinRelease {
+    object None : PinRelease
+    data class Refresh(val removed: RemovedSource?) : PinRelease
+    data class Remove(val source: RemovedSource) : PinRelease
   }
 }

@@ -20,7 +20,7 @@ package com.tom.rv2ide.language.services.java.models
 import java.nio.file.Path
 
 /**
- * Immutable snapshot used by the method-level reparse MVP.
+ * Immutable snapshot used by the method-level reparse
  *
  * The contents are the exact text that will be analyzed by javac, after CompletionProvider's
  * temporary syntax fixes have been applied. The compiler derives the single edit range by comparing

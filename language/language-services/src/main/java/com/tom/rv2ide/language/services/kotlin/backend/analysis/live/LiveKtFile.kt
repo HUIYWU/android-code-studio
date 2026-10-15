@@ -40,10 +40,10 @@ internal class PinnedLiveKtFile(
     override val path: Path,
     private val index: LiveSourceFileIndex,
     private val pinnedFile: KtFile,
-    private val pinnedVersion: Int,
+    private val pinnedIdentity: LiveFileIdentity,
 ) : LiveKtFile {
   override val isStale: Boolean
-    get() = index.activeVersion(path)?.let { it != pinnedVersion } ?: false
+    get() = !index.isCurrent(path, pinnedIdentity, pinnedFile)
 
   override fun <T> read(action: (KtFile) -> T): T =
       ApplicationManager.getApplication().runReadAction(Computable {

@@ -11,7 +11,11 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendState
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFileChange
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputDiff
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputSnapshotState
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
+import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
@@ -64,6 +68,8 @@ class KotlinAnalysisBackendConnection internal constructor(
   private var runtime: KotlinAnalysisRuntime? = null
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
   @Volatile private var initialized = false
+  private var projectInputState: KotlinProjectInputSnapshotState? = null
+  private var projectInputClasspathProvider: KotlinProjectClasspathProvider? = null
 
   override val state: KotlinBackendState
     get() = stateRef.get()
@@ -105,6 +111,34 @@ class KotlinAnalysisBackendConnection internal constructor(
     executeOnAnalysisQueue { runtime?.onFileMoved(fromPath.normalize(), toPath.normalize()) }
   }
 
+  override fun notifyFileChanges(changes: List<KotlinBackendFileChange>): Boolean =
+      executeOnAnalysisQueue {
+        val provider = projectInputClasspathProvider
+        if (changes.isEmpty() || provider == null || !isReady || runtime == null) {
+          return@executeOnAnalysisQueue false
+        }
+        if (changes.any {
+              it.kind != KotlinBackendFileChange.Kind.MODIFIED ||
+                  it.path.fileName?.toString()?.endsWith(".kt") != true
+            }) {
+          return@executeOnAnalysisQueue false
+        }
+        val workspace = provider.workspace ?: return@executeOnAnalysisQueue false
+        val currentState = runCatching {
+          KotlinProjectInputSnapshotState.from(ProjectInputSnapshotFactory.capture(workspace))
+        }.getOrNull() ?: return@executeOnAnalysisQueue false
+        val previousState = projectInputState ?: return@executeOnAnalysisQueue false
+        val change = KotlinProjectInputDiff.compare(previousState, currentState)
+        if (change.kind != com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectChangeKind.NONE) {
+          return@executeOnAnalysisQueue false
+        }
+        changes.map { it.path.normalize() }.distinct().forEach { path ->
+          runtime?.onFileContentChanged(path)
+        }
+        projectInputState = currentState
+        true
+      } ?: false
+
   override fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit) {
     executeOnAnalysisQueue { diagnosticsCallback = callback }
     KlsLogs.info("Analysis API Kotlin backend installed diagnostics callback")
@@ -129,7 +163,9 @@ class KotlinAnalysisBackendConnection internal constructor(
 
         runtime = startedRuntime
         initialized = false
+        projectInputClasspathProvider = classpathProvider
         generationCounter.incrementAndGet()
+        recordProjectInput(classpathProvider)
         stateRef.set(KotlinBackendState.READY)
         KlsLogs.info("Kotlin Analysis API backend started, generation={}", generation)
         true
@@ -161,7 +197,9 @@ class KotlinAnalysisBackendConnection internal constructor(
 
         runtime = newRuntime
         initialized = wasInitialized
+        projectInputClasspathProvider = classpathProvider
         generationCounter.incrementAndGet()
+        recordProjectInput(classpathProvider)
         stateRef.set(KotlinBackendState.READY)
         closeRuntime(oldRuntime)
         if (initialized) {
@@ -410,6 +448,17 @@ class KotlinAnalysisBackendConnection internal constructor(
       closeRuntime(candidate)
       KlsLogs.error("Failed to start Kotlin Analysis runtime", t)
       null
+    }
+  }
+
+  private fun recordProjectInput(classpathProvider: KotlinProjectClasspathProvider) {
+    val workspace = classpathProvider.workspace ?: return
+    try {
+      val snapshot = ProjectInputSnapshotFactory.capture(workspace)
+      val currentState = KotlinProjectInputSnapshotState.from(snapshot)
+      projectInputState = currentState
+    } catch (t: Throwable) {
+      KlsLogs.warn("Kotlin Analysis project input snapshot failed", t)
     }
   }
 

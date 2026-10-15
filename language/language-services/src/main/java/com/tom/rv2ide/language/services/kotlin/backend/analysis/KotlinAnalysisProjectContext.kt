@@ -8,19 +8,36 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
-import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
-import com.tom.rv2ide.projects.android.AndroidModule
+import com.tom.rv2ide.projects.models.ProjectBinaryOrigin
+import com.tom.rv2ide.projects.models.ProjectBinaryRole
+import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
+import com.tom.rv2ide.projects.models.ProjectModuleInputSnapshot
 import java.io.File
 import java.nio.file.Path
+
+internal data class KotlinAnalysisBinaryRootContext(
+    val path: Path,
+    val role: ProjectBinaryRole,
+    val origin: ProjectBinaryOrigin,
+    val ownerModulePath: String?,
+    val variantName: String?,
+    val exists: Boolean,
+)
 
 internal data class KotlinAnalysisModuleContext(
     val modulePath: String,
     val sourceRoots: List<Path>,
+    val javaSourceRoots: List<Path>,
+    val generatedSourceRoots: List<Path>,
+    val moduleOutputRoots: List<Path>,
     val compileModulePaths: List<String>,
     val binaryRoots: List<Path>,
     val bootClasspaths: List<Path>,
+    val binaryRootContexts: List<KotlinAnalysisBinaryRootContext>,
+    val javaSourceVersion: String,
+    val javaBytecodeVersion: String,
 )
 
 internal data class KotlinAnalysisProjectContext(
@@ -38,30 +55,57 @@ internal data class KotlinAnalysisProjectContext(
   companion object {
     fun create(
         workspace: IWorkspace,
-        classpathProvider: KotlinProjectClasspathProvider,
     ): KotlinAnalysisProjectContext {
       val modules = collectModules(workspace)
-      val contexts = modules.map { module ->
-        KotlinAnalysisModuleContext(
-            modulePath = module.path,
-            sourceRoots = existingPaths(module.getSourceDirectories()),
-            compileModulePaths = module.getCompileModuleProjects()
-                .map { it.path }
-                .distinct()
-                .sorted(),
-            binaryRoots = classpathProvider.getModuleClasspath(module, modules)
-                .map { it.toPath().normalize() }
-                .distinct(),
-            bootClasspaths = if (module is AndroidModule) {
-              module.bootClassPaths.map { it.absoluteFile.toPath().normalize() }
-                  .filter { it.toFile().exists() }
-                  .distinct()
-            } else {
-              emptyList()
-            },
-        )
+      val snapshot = ProjectInputSnapshotFactory.capture(workspace)
+      val snapshotsByPath = snapshot.modules.associateBy { it.identity.modulePath }
+      val contexts = modules.mapNotNull { module ->
+        snapshotsByPath[module.path]?.let(::createContext)
       }
       return KotlinAnalysisProjectContext(modules = contexts)
+    }
+
+    private fun createContext(
+        snapshot: ProjectModuleInputSnapshot,
+    ): KotlinAnalysisModuleContext {
+      val sourceRoots = (snapshot.ordinarySourceRoots + snapshot.generatedSourceRoots + snapshot.javaSourceRoots)
+          .map { it.path }
+          .filter { it.toFile().isDirectory }
+          .distinct()
+          .sortedBy(Path::toString)
+      return KotlinAnalysisModuleContext(
+          modulePath = snapshot.identity.modulePath,
+          sourceRoots = sourceRoots,
+          javaSourceRoots = existingPaths(snapshot.javaSourceRoots.map { it.path.toFile() }),
+          generatedSourceRoots = existingPaths(snapshot.generatedSourceRoots.map { it.path.toFile() }),
+          moduleOutputRoots = snapshot.moduleOutputs.map { it.path }.filter { it.toFile().exists() }.distinct().sortedBy(Path::toString),
+          compileModulePaths = snapshot.compileModulePaths,
+          binaryRoots = (snapshot.moduleOutputs + snapshot.externalBinaries)
+              .filter { it.role != ProjectBinaryRole.BOOT_BINARY }
+              .map { it.path }
+              .filter { it.toFile().exists() }
+              .distinct()
+              .sortedBy(Path::toString),
+bootClasspaths = snapshot.bootBinaries.map { it.path }
+              .filter { it.toFile().exists() }
+              .distinct()
+              .sortedBy(Path::toString),
+          binaryRootContexts = (snapshot.moduleOutputs + snapshot.externalBinaries + snapshot.bootBinaries)
+              .map { binary ->
+                KotlinAnalysisBinaryRootContext(
+                    path = binary.path.toAbsolutePath().normalize(),
+                    role = binary.role,
+                    origin = binary.origin,
+                    ownerModulePath = binary.ownerModulePath,
+                    variantName = binary.variantName,
+                    exists = binary.exists && binary.path.toFile().exists(),
+                )
+              }
+              .distinctBy { it.path to it.role to it.origin to it.ownerModulePath to it.variantName }
+              .sortedWith(compareBy({ it.path.toString() }, { it.role.name }, { it.origin.name })),
+          javaSourceVersion = snapshot.compilerSettings.javaSourceVersion,
+          javaBytecodeVersion = snapshot.compilerSettings.javaBytecodeVersion,
+      )
     }
 
     private fun collectModules(workspace: IWorkspace): List<ModuleProject> {

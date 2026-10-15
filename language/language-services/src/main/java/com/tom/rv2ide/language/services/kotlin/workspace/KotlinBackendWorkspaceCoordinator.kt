@@ -22,12 +22,14 @@ import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
+import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFileChange
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.projectdata.logs.LogStream
 import java.io.File
 import java.nio.file.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 
@@ -47,7 +49,12 @@ class KotlinBackendWorkspaceCoordinator(
 
   private var buildWatcher: WatchService? = null
   private var watcherJob: Job? = null
+  private val watchedRoots = ConcurrentHashMap<WatchKey, Path>()
   private val watchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+  private data class BuildWatchEvent(
+      val kind: WatchEvent.Kind<*>,
+      val path: Path,
+  )
   private val resolvedWorkspaceRootDir: File by lazy { backendConfigurator.resolveWorkspaceRoot() }
 
   fun setup(connection: KotlinBackendConnection, onInitialized: (Boolean) -> Unit = {}) {
@@ -157,6 +164,7 @@ class KotlinBackendWorkspaceCoordinator(
                     StandardWatchEventKinds.ENTRY_MODIFY,
                     StandardWatchEventKinds.ENTRY_DELETE,
                 )
+                .also { key -> watchedRoots[key] = generatedDir.toPath().toAbsolutePath().normalize() }
           KlsLogs.infoThrottled(
               "kls:watch-build-changes",
               3000L,
@@ -172,47 +180,52 @@ class KotlinBackendWorkspaceCoordinator(
       // Start watcher coroutine
       watcherJob =
           watchScope.launch {
-            var lastReloadTime = 250L
-            val reloadDebounceMs = 5000L // Wait 5 seconds after last change
+            val reloadDebounceMs = 5000L
 
             while (isActive) {
               try {
-                val key = buildWatcher?.poll(1, TimeUnit.SECONDS) ?: continue
+                val firstKey = buildWatcher?.poll(1, TimeUnit.SECONDS) ?: continue
+                val firstEvents = collectWatchEvents(firstKey)
+                if (firstEvents.isEmpty()) continue
 
-                val events = key.pollEvents()
-                if (events.isNotEmpty()) {
-                  val now = System.currentTimeMillis()
-
-                  // Log the changes
-                  events.forEach { event ->
-                    val kind = event.kind()
-                    val filename = event.context()
-                    KlsLogs.debug("Build change detected: {} - {}", kind.name(), filename)
-                  }
-
-                  // Debounce: only reload after changes stop for 5 seconds
-                  if (now - lastReloadTime > reloadDebounceMs) {
-                    delay(reloadDebounceMs)
-
-                    // Double check no new changes came in during delay
-                    val checkKey = buildWatcher?.poll(100, TimeUnit.MILLISECONDS)
-                    if (checkKey == null) {
-              // No new changes, safe to reload
-              KlsLogs.infoThrottled(
-                  "kls:build-reload",
-                  2000L,
-                  "Build changes detected, refreshing Kotlin backend environment...",
-              )
-              refreshBackendEnvironment(connection)
-              lastReloadTime = System.currentTimeMillis()
-                    } else {
-                      // New changes came in, reset timer
-                      checkKey.reset()
-                    }
-                  }
+                firstEvents.forEach { event ->
+                  KlsLogs.debug("Build change detected: {} - {}", event.kind.name(), event.path)
                 }
 
-                key.reset()
+                delay(reloadDebounceMs)
+                val batch = firstEvents.toMutableList()
+                while (true) {
+                  val pendingKey = buildWatcher?.poll() ?: break
+                  batch += collectWatchEvents(pendingKey)
+                }
+                if (batch.isEmpty()) continue
+
+                val fileChanges = batch.map { event ->
+                  KotlinBackendFileChange(
+                      path = event.path,
+                      kind = when (event.kind) {
+                        StandardWatchEventKinds.ENTRY_CREATE -> KotlinBackendFileChange.Kind.CREATED
+                        StandardWatchEventKinds.ENTRY_DELETE -> KotlinBackendFileChange.Kind.REMOVED
+                        else -> KotlinBackendFileChange.Kind.MODIFIED
+                      },
+                  )
+                }
+                KlsLogs.info(
+                    "Build changes detected: events={}, paths={}, attempting incremental Kotlin update",
+                    batch.size,
+                    batch.map(BuildWatchEvent::path).distinct().sorted().joinToString(","),
+                )
+                val incrementallyHandled = connection.notifyFileChanges(fileChanges)
+                if (incrementallyHandled) {
+                  resyncDocuments()
+                  KlsLogs.infoThrottled(
+                      "kls:build-incremental-update",
+                      2000L,
+                      "Build changes handled by incremental Kotlin source update",
+                  )
+                } else {
+                  refreshBackendEnvironment(connection)
+                }
               } catch (e: Exception) {
                 if (e is CancellationException || e is ClosedWatchServiceException) break
                 KlsLogs.warn("Error in build watcher", e)
@@ -225,6 +238,24 @@ class KotlinBackendWorkspaceCoordinator(
       KlsLogs.error("Failed to start build watcher", e)
     }
   }
+
+  private fun collectWatchEvents(key: WatchKey?): List<BuildWatchEvent> {
+    if (key == null) return emptyList()
+    val root = watchedRoots[key]
+    if (root == null) {
+      key.reset()
+      return emptyList()
+    }
+    return try {
+      key.pollEvents().mapNotNull { event ->
+        val context = event.context() as? Path ?: return@mapNotNull null
+        BuildWatchEvent(event.kind(), root.resolve(context).normalize())
+      }
+    } finally {
+      key.reset()
+    }
+  }
+
   private suspend fun refreshBackendEnvironment(connection: KotlinBackendConnection) {
     withContext(Dispatchers.IO) {
       try {
@@ -257,6 +288,7 @@ class KotlinBackendWorkspaceCoordinator(
       // Stop build watcher
       watcherJob?.cancel()
       buildWatcher?.close()
+      watchedRoots.clear()
       watchScope.cancel()
 
     } catch (e: Exception) {

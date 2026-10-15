@@ -13,10 +13,7 @@ import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiFileSystemItem
 import org.jetbrains.kotlin.com.intellij.psi.PsiManager
 import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
-import org.jetbrains.kotlin.config.ApiVersion
-import org.jetbrains.kotlin.config.LanguageVersion
 import org.jetbrains.kotlin.config.LanguageVersionSettings
-import org.jetbrains.kotlin.config.LanguageVersionSettingsImpl
 import org.jetbrains.kotlin.platform.TargetPlatform
 import java.nio.file.Files
 import java.nio.file.Path
@@ -31,11 +28,10 @@ internal class LiveSourceModule(
     private val registry: LiveSourceFileRegistry,
     override val directRegularDependencies: List<KaModule>,
     override val targetPlatform: TargetPlatform,
+    override val languageVersionSettings: LanguageVersionSettings,
 ) : KaModuleBase(), KaSourceModule {
   override val directDependsOnDependencies: List<KaModule> = emptyList()
   override val directFriendDependencies: List<KaModule> = emptyList()
-  override val languageVersionSettings: LanguageVersionSettings =
-      LanguageVersionSettingsImpl(LanguageVersion.LATEST_STABLE, ApiVersion.LATEST)
 
   override val baseContentScope: GlobalSearchScope = object : GlobalSearchScope(project) {
     override fun contains(file: VirtualFile): Boolean {
