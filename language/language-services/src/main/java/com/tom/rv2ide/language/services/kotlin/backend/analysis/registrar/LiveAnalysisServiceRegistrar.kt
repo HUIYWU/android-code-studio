@@ -12,6 +12,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LiveMod
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LivePackageProviderFactory
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LivePackageProviderMerger
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LiveProjectStructureProvider
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.platform.KotlinPlatformSettings
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinAnnotationsResolverFactory
@@ -36,13 +37,24 @@ import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KaResolutionS
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.AnalysisApiSimpleServiceRegistrar
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.PluginStructureProvider
 import org.jetbrains.kotlin.asJava.finder.JavaElementFinder
+import org.jetbrains.kotlin.com.intellij.core.CoreApplicationEnvironment
 import org.jetbrains.kotlin.com.intellij.mock.MockApplication
+import org.jetbrains.kotlin.com.intellij.openapi.editor.Document
+import org.jetbrains.kotlin.com.intellij.openapi.editor.impl.DocumentWriteAccessGuard
 import org.jetbrains.kotlin.com.intellij.mock.MockProject
 import org.jetbrains.kotlin.com.intellij.openapi.Disposable
 import org.jetbrains.kotlin.com.intellij.psi.PsiElementFinder
+import org.jetbrains.kotlin.com.intellij.psi.PsiTreeChangeEvent
+import org.jetbrains.kotlin.com.intellij.psi.PsiTreeChangeListener
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiElementFinderImpl
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
+import org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager
+import org.jetbrains.kotlin.com.intellij.psi.impl.BlockSupportImpl
+import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
+import org.jetbrains.kotlin.com.intellij.pom.PomModel
+import org.jetbrains.kotlin.com.intellij.pom.core.impl.PomModelImpl
+import org.jetbrains.kotlin.com.intellij.pom.tree.TreeAspect
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaElementSourceFactory
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaFixedElementSourceFactory
 
@@ -64,8 +76,41 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerApplicationServices(application: MockApplication) {
     PluginStructureProvider.registerApplicationServices(application, PLUGIN_PATH)
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        DocumentWriteAccessGuard.EP_NAME,
+        AnalysisDocumentWriteAccessGuard::class.java,
+    )
     application.registerService(KotlinAnalysisPermissionOptions::class.java, AnalysisPermissionOptions::class.java)
     application.registerService(AsyncExecutionService::class.java, NoOpAsyncExecutionService::class.java)
+  }
+
+  @Suppress("UnstableApiUsage")
+  private class AnalysisDocumentWriteAccessGuard : DocumentWriteAccessGuard() {
+    override fun isWritable(document: Document): Result = success()
+  }
+
+  override fun registerProjectExtensionPoints(project: MockProject) {
+    CoreApplicationEnvironment.registerExtensionPoint(
+        project.extensionArea,
+        PsiTreeChangeListener.EP.name,
+        AnalysisPsiTreeChangeListener::class.java,
+    )
+  }
+
+  private class AnalysisPsiTreeChangeListener : PsiTreeChangeListener {
+    override fun beforeChildAddition(event: PsiTreeChangeEvent) {}
+    override fun beforeChildRemoval(event: PsiTreeChangeEvent) {}
+    override fun beforeChildReplacement(event: PsiTreeChangeEvent) {}
+    override fun beforeChildMovement(event: PsiTreeChangeEvent) {}
+    override fun beforeChildrenChange(event: PsiTreeChangeEvent) {}
+    override fun beforePropertyChange(event: PsiTreeChangeEvent) {}
+    override fun childAdded(event: PsiTreeChangeEvent) {}
+    override fun childRemoved(event: PsiTreeChangeEvent) {}
+    override fun childReplaced(event: PsiTreeChangeEvent) {}
+    override fun childrenChanged(event: PsiTreeChangeEvent) {}
+    override fun childMoved(event: PsiTreeChangeEvent) {}
+    override fun propertyChanged(event: PsiTreeChangeEvent) {}
   }
 
   override fun registerProjectServices(project: MockProject) {
@@ -88,6 +133,35 @@ internal class LiveAnalysisServiceRegistrar(
     project.registerService(KotlinPackageProviderMerger::class.java, packageProviderMerger)
     project.registerService(KotlinPackagePartProviderFactory::class.java, packagePartProviderFactory)
     project.registerService(JavaElementSourceFactory::class.java, JavaFixedElementSourceFactory::class.java)
+    // TODO(ACS-ANALYSIS-EXPERIMENT): Replace with the production standalone PSI service set after B-path validation.
+    project.registerService(TreeAspect::class.java)
+    project.registerService(PomModel::class.java, PomModelImpl::class.java)
+    project.registerService(BlockSupport::class.java, BlockSupportImpl::class.java)
+    project.registerService(CodeStyleManager::class.java, AnalysisPsiReparseCodeStyleManager(project))
+    logPsiReparseServices(project)
+  }
+
+  private fun logPsiReparseServices(project: MockProject) {
+    val blockSupport = runCatching {
+      project.getService(org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport::class.java)
+    }.getOrNull()
+    val pomModel = runCatching {
+      project.getService(org.jetbrains.kotlin.com.intellij.pom.PomModel::class.java)
+    }.getOrNull()
+    val treeAspect = runCatching {
+      org.jetbrains.kotlin.com.intellij.pom.tree.TreeAspect.getInstance(project)
+    }.getOrNull()
+    val codeStyleManager = runCatching {
+      org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager.getInstance(project)
+    }.getOrNull()
+    KlsLogs.info(
+        "Kotlin Analysis PSI reparse services: project={}, blockSupport={}, pomModel={}, treeAspect={}, codeStyleManager={}",
+        System.identityHashCode(project),
+        blockSupport?.javaClass?.name ?: "missing",
+        pomModel?.javaClass?.name ?: "missing",
+        treeAspect?.javaClass?.name ?: "missing",
+        codeStyleManager?.javaClass?.name ?: "missing",
+    )
   }
 
   override fun registerProjectModelServices(project: MockProject, disposable: Disposable) {

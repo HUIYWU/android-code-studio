@@ -2,19 +2,31 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisWrite
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisResolutionScopeProvider
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.projects.models.OneHopDocumentEdit
 import org.jetbrains.kotlin.analysis.api.platform.modification.KaElementModificationType
 import org.jetbrains.kotlin.analysis.api.platform.modification.KaSourceModificationService
 import org.jetbrains.kotlin.analysis.api.platform.modification.KotlinModuleOutOfBlockModificationEvent
 import org.jetbrains.kotlin.analysis.api.platform.modification.publishModificationEvent
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
+import org.jetbrains.kotlin.com.intellij.lang.FileASTNode
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
+import org.jetbrains.kotlin.com.intellij.openapi.command.CommandProcessor
+import org.jetbrains.kotlin.com.intellij.openapi.fileEditor.FileDocumentManager
+import org.jetbrains.kotlin.com.intellij.openapi.progress.EmptyProgressIndicator
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
+import org.jetbrains.kotlin.com.intellij.openapi.util.TextRange
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiModificationTracker
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
+import org.jetbrains.kotlin.psi.KtElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtPsiFactory
 import java.nio.file.Files
@@ -62,6 +74,60 @@ internal class LiveSourceFileIndex(
   }
 
   lateinit var parser: KtPsiFactory
+  private fun logLive(
+      action: String,
+      path: Path,
+      file: KtFile? = null,
+      identity: LiveFileIdentity? = null,
+      detail: String = "",
+  ) {
+    KlsLogs.info(
+        "Kotlin Analysis live PSI: runtime={}, action={}, path={}, psi={}, identity={}, detail={}",
+        System.identityHashCode(this), action, path, file?.let { System.identityHashCode(it) }, identity, detail,
+    )
+  }
+
+  private fun trackerState(): String {
+    val psi = runCatching {
+      PsiModificationTracker.getInstance(project).modificationCount
+    }.getOrNull()?.toString() ?: "unavailable"
+    val fir = runCatching {
+      val trackerClass = Class.forName("org.jetbrains.kotlin.analysis.low.level.api.fir.file.structure.LLFirInBlockModificationTracker")
+      val tracker = project.getService(trackerClass)
+      trackerClass.getMethod("getModificationCount").invoke(tracker)
+    }.getOrNull()?.toString() ?: "unavailable"
+    return "psiModificationCount=$psi; firInBlockModificationCount=$fir"
+  }
+
+  private fun modificationShape(element: PsiElement, inBlockAncestor: PsiElement?): String {
+    val parents = generateSequence(element.parent) { it.parent }
+        .take(6)
+        .joinToString(">") { it.javaClass.simpleName }
+    val range = element.textRange?.let { "${it.startOffset}..${it.endOffset}" } ?: "none"
+    return "element=${element.javaClass.simpleName}; language=${element.language.id}; range=$range; isWhitespace=${element is PsiWhiteSpace}; isKtElement=${element is KtElement}; parents=$parents; inBlockAncestor=${inBlockAncestor?.javaClass?.simpleName ?: "none"}"
+  }
+
+  private fun modificationAnchor(file: KtFile, edit: OneHopDocumentEdit, start: Int): PsiElement {
+    // A non-empty deletion anchors before the deleted range; otherwise the offset may resolve to trailing whitespace.
+    val lookupOffset = if (edit.kind == OneHopDocumentEdit.Kind.DELETE && edit.baseEndIndex > edit.baseStartIndex) {
+      (start - 1).coerceAtLeast(0)
+    } else {
+      start
+    }
+    val candidate = file.findElementAt(lookupOffset) ?: file
+    return if (candidate is PsiWhiteSpace) {
+      PsiTreeUtil.prevLeaf(candidate) ?: candidate
+    } else {
+      candidate
+    }
+  }
+
+  private fun flushFirModifications(): String {
+    val serviceClass = Class.forName("org.jetbrains.kotlin.analysis.low.level.api.fir.file.structure.LLFirDeclarationModificationService")
+    val service = project.getService(serviceClass) ?: error("FIR declaration modification service unavailable")
+    serviceClass.getMethod("flushModifications").invoke(service)
+    return serviceClass.name
+  }
 
   fun refreshCurrentKtFile(path: Path): KtFile? {
     val normalized = path.normalize()
@@ -75,7 +141,9 @@ internal class LiveSourceFileIndex(
         updatePending(normalized, pin, identity)
         return@synchronized pin.file
       }
-      currentFiles[normalized]?.takeIf { it.identity == identity }?.let { return@synchronized it.file }
+      currentFiles[normalized]?.takeIf { it.identity == identity }?.let {
+        return@synchronized it.file
+      }
       if (identity.kind == LiveFileSourceKind.MISSING) {
         removed = detachCurrent(normalized)
         return@synchronized null
@@ -115,6 +183,149 @@ internal class LiveSourceFileIndex(
     refreshExecutor.submit { refreshCurrentKtFile(path) }
   }
 
+  fun applyDocumentEdit(path: Path, edit: OneHopDocumentEdit?) {
+    val normalized = path.normalize()
+    if (edit == null) {
+      logLive("edit-fallback", normalized, detail = "reason=no-one-hop-edit")
+      refreshCurrentKtFile(normalized)
+      return
+    }
+    logLive(
+        "edit-received",
+        normalized,
+        identity = edit.targetIdentity(),
+        detail = "base=${edit.baseIdentity()}; target=${edit.targetIdentity()}; range=${edit.baseStartIndex}..${edit.baseEndIndex}; kind=${edit.kind}",
+    )
+    if (!applyDocumentEditLocked(normalized, edit)) {
+      logLive("edit-fallback", normalized, identity = edit.targetIdentity(), detail = "reason=incremental-apply-rejected; full-refresh-disabled")
+      // Temporarily disable the full-file refresh fallback so PSI reparse failures remain observable.
+      // refreshCurrentKtFile(normalized)
+    }
+  }
+
+  private fun applyDocumentEditLocked(
+      path: Path,
+      edit: OneHopDocumentEdit,
+  ): Boolean {
+    val current = synchronized(refreshLock) { currentFiles[path] } ?: run {
+      logLive("edit-fallback", path, identity = edit.targetIdentity(), detail = "reason=no-canonical-psi")
+      return false
+    }
+    val sourceIdentity = sourceIdentity(path)
+    if (current.identity != edit.baseIdentity()) {
+      logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=base-identity-mismatch; current=${current.identity}; base=${edit.baseIdentity()}")
+      return false
+    }
+    if (sourceIdentity != edit.targetIdentity()) {
+      logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=target-identity-mismatch; source=$sourceIdentity; target=${edit.targetIdentity()}")
+      return false
+    }
+    val virtualFile = current.file.virtualFile ?: run {
+      logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=no-virtual-file")
+      return false
+    }
+    val document = FileDocumentManager.getInstance().getDocument(virtualFile) ?: run {
+      logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=no-document")
+      return false
+    }
+    if (document.text != current.file.text) {
+      logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=document-psi-text-mismatch")
+      return false
+    }
+    var applied = false
+    var stage = "write-action"
+    try {
+      CommandProcessor.getInstance().runUndoTransparentAction {
+        ApplicationManager.getApplication().runWriteAction {
+          project.analysisWrite {
+            synchronized(refreshLock) {
+            val currentStillMatches =
+                currentFiles[path]?.file === current.file && sourceIdentity(path) == edit.targetIdentity()
+            val start = edit.baseStartIndex
+            val end = edit.baseEndIndex
+            if (!currentStillMatches) {
+              logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=commit-identity-mismatch")
+            } else if (start < 0 || end < start || end > document.textLength) {
+              logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=range-invalid; range=${start}..${end}; documentLength=${document.textLength}")
+            } else {
+              logLive("edit-apply", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}; kind=${edit.kind}")
+              stage = "replace"
+              logLive("edit-replace-start", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}")
+              val oldText = current.file.text
+              document.replaceString(start, end, edit.replacementText)
+              val targetText = document.text
+              val changedRange = TextRange(start, start + edit.replacementText.length)
+              stage = "reparse"
+              logLive(
+                  "edit-reparse-start",
+                  path,
+                  current.file,
+                  edit.targetIdentity(),
+                  "oldLength=${oldText.length}; targetLength=${targetText.length}; range=${changedRange.startOffset}..${changedRange.endOffset}",
+              )
+              val oldNode = current.file.node as? FileASTNode
+                  ?: error("Canonical PSI file node is not a FileASTNode")
+              // Apply the AST diff to the existing canonical KtFile; commitDocument() alone leaves it stale in Standalone.
+              val diffLog = BlockSupport.getInstance(project).reparseRange(
+                  current.file,
+                  oldNode,
+                  TextRange(start, end),
+                  targetText,
+                  EmptyProgressIndicator(),
+                  oldText,
+              )
+              stage = "psi-change"
+              diffLog.doActualPsiChange(current.file)
+              logLive(
+                  "edit-reparse-success",
+                  path,
+                  current.file,
+                  edit.targetIdentity(),
+                  "documentLength=${document.textLength}; psiLength=${current.file.textLength}",
+              )
+              if (document.text != targetText || current.file.text != targetText) {
+                logLive(
+                    "edit-fallback",
+                    path,
+                    current.file,
+                    edit.targetIdentity(),
+                    "reason=reparse-text-mismatch; documentLength=${document.textLength}; psiLength=${current.file.textLength}; targetLength=${targetText.length}",
+                )
+              } else {
+                val changed = modificationAnchor(current.file, edit, start)
+                val modificationService = KaSourceModificationService.getInstance(project)
+                val inBlockAncestor = runCatching {
+                  modificationService.ancestorAffectedByInBlockModification(changed)
+                }.getOrNull()
+                stage = "modification-service"
+                val shape = modificationShape(changed, inBlockAncestor)
+                logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "event=Unknown; $shape; ${trackerState()}")
+                modificationService.handleElementModification(changed, KaElementModificationType.Unknown)
+                logLive("edit-modification-success", path, current.file, edit.targetIdentity(), "event=Unknown; $shape; ${trackerState()}")
+                // TODO(ACS-ANALYSIS-EXPERIMENT): Standalone MockApplication does not dispatch writeActionFinished, so flush deferred FIR invalidation explicitly.
+                stage = "fir-flush"
+                logLive("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
+                val flushService = flushFirModifications()
+                logLive("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
+                currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
+                logLive("incremental", path, current.file, edit.targetIdentity(), "event=Unknown")
+                applied = true
+              }
+            }
+          }
+        }
+      }
+    }
+    } catch (t: Throwable) {
+      val safeMessage = t.message?.replace('\n', ' ')?.take(160).orEmpty()
+      logLive("edit-exception", path, current.file, edit.targetIdentity(), "stage=$stage; exception=${t.javaClass.simpleName}; message=$safeMessage")
+    }
+    if (!applied) {
+      logLive("edit-failed", path, current.file, edit.targetIdentity(), "reason=write-action-no-commit")
+    }
+    return applied
+  }
+
   fun <T> withLiveKtFile(
       path: Path,
       cancelChecker: ICancelChecker = ICancelChecker.NOOP,
@@ -126,7 +337,11 @@ internal class LiveSourceFileIndex(
     return try {
       val live = PinnedLiveKtFile(normalized, this, pin.file, pin.identity)
       val result = action(live)
-      if (live.isStale) null else result
+      if (live.isStale) {
+        null
+      } else {
+        result
+      }
     } finally {
       releasePin(normalized)
     }
@@ -224,11 +439,17 @@ internal class LiveSourceFileIndex(
 
   private fun acquirePin(path: Path): Pin? {
     synchronized(refreshLock) {
-      pins[path]?.let { it.count++; return it }
+      pins[path]?.let {
+        it.count++
+        return it
+      }
     }
     refreshCurrentKtFile(path) ?: return null
     synchronized(refreshLock) {
-      pins[path]?.let { it.count++; return it }
+      pins[path]?.let {
+        it.count++
+        return it
+      }
       val current = currentFiles[path] ?: return null
       return Pin(current.file, current.identity).also {
         it.count = 1
@@ -270,7 +491,6 @@ internal class LiveSourceFileIndex(
         } else if (module != null) {
           project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
         }
-        AnalysisResolutionScopeProvider.getInstance(project).invalidateAll()
       }
     }
   }
@@ -280,27 +500,58 @@ internal class LiveSourceFileIndex(
     val content = source.content ?: return null
     val newFile = project.analysisRead { parser.createFile(path.fileName.toString(), content) }
     newFile.liveBackingPath = path
-    var committed = false
+    var result: KtFile? = null
+    var removed: RemovedSource? = null
     ApplicationManager.getApplication().runWriteAction {
       project.analysisWrite {
         synchronized(refreshLock) {
-          // TODO(ACS-ANALYSIS-EXPERIMENT): Revalidate the source identity under the canonical lock order before publishing.
-          if (sourceIdentity(path) != identity) return@synchronized
+          // TODO(ACS-ANALYSIS-EXPERIMENT): Verify canonical commit and module invalidation with concurrent refresh and pin lifecycle.
+          val latestIdentity = sourceIdentity(path)
+          pins[path]?.let { pin ->
+            updatePending(path, pin, latestIdentity)
+            result = pin.file
+            return@synchronized
+          }
+          if (latestIdentity.kind == LiveFileSourceKind.MISSING) {
+            removed = detachCurrent(path)
+            return@synchronized
+          }
+          if (latestIdentity != identity) {
+            return@synchronized
+          }
+          currentFiles[path]?.takeIf { it.identity == identity }?.let { current ->
+            result = current.file
+            return@synchronized
+          }
           val old = currentFiles[path]?.file
+          val module = sourceRegistry.moduleForPath(path)
           sourceRegistry.register(path, newFile.viewProvider.virtualFile)
           project.analysisRead {
             metadataIndex.replace(path, newFile)
           }
           currentFiles[path] = VersionedFile(identity, newFile)
-          KaSourceModificationService.getInstance(project)
-              .handleElementModification(old ?: newFile, KaElementModificationType.Unknown)
-          AnalysisResolutionScopeProvider.getInstance(project).invalidateAll()
-          committed = true
+           if (old == null) {
+             KaSourceModificationService.getInstance(project)
+                 .handleElementModification(newFile, KaElementModificationType.Unknown)
+           } else if (module != null) {
+             project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
+           } else {
+             KaSourceModificationService.getInstance(project)
+                 .handleElementModification(old, KaElementModificationType.Unknown)
+           }
+          result = newFile
         }
       }
     }
-    return newFile.takeIf { committed }
+    removed?.let(::notifyRemoved)
+    return result
   }
+
+  private fun OneHopDocumentEdit.baseIdentity(): LiveFileIdentity =
+    LiveFileIdentity(LiveFileSourceKind.ACTIVE_DOCUMENT, version = base.version, revision = base.revision)
+
+  private fun OneHopDocumentEdit.targetIdentity(): LiveFileIdentity =
+    LiveFileIdentity(LiveFileSourceKind.ACTIVE_DOCUMENT, version = target.version, revision = target.revision)
 
   private fun sourceIdentity(path: Path): LiveFileIdentity {
     FileManager.getActiveDocumentSnapshot(path)?.let { snapshot ->
@@ -340,8 +591,16 @@ internal class LiveSourceFileIndex(
     }
     val identity = diskIdentity(path)
     if (identity.kind == LiveFileSourceKind.MISSING) return LiveFileSourceSnapshot(identity, null)
-    val content = Files.newBufferedReader(path, java.nio.charset.Charset.defaultCharset()).use { it.readText() }
-    if (sourceIdentity(path) != identity) return null
+    val content = try {
+      Files.newBufferedReader(path, java.nio.charset.Charset.defaultCharset()).use { it.readText() }
+    } catch (_: java.nio.file.NoSuchFileException) {
+      return LiveFileSourceSnapshot(LiveFileIdentity(LiveFileSourceKind.MISSING), null)
+    } catch (_: java.nio.file.FileSystemException) {
+      return null
+    }
+    if (sourceIdentity(path) != identity) {
+      return null
+    }
     return LiveFileSourceSnapshot(identity, content)
   }
 

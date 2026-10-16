@@ -167,10 +167,22 @@ public class IDELanguageClientImpl implements ILanguageClient {
               || (result.getDocumentRevision() != DiagnosticResult.UNKNOWN_DOCUMENT_REVISION
                   && (activeSnapshot == null
                       || activeSnapshot.getRevision() != result.getDocumentRevision()))) {
+            LOG.info(
+                "Kotlin Analysis live PSI: action=diagnostics-ui-drop file={} resultVersion={} resultRevision={} currentVersion={} currentRevision={} diagnosticCount={}",
+                result.getFile(),
+                result.getDocumentVersion(),
+                result.getDocumentRevision(),
+                activeSnapshot == null ? null : activeSnapshot.getVersion(),
+                activeSnapshot == null ? null : activeSnapshot.getRevision(),
+                incoming.size());
             return;
           }
 
           if ((!file.exists() || !file.isFile()) && !incoming.isEmpty()) {
+            LOG.info(
+                "Kotlin Analysis live PSI: action=diagnostics-ui-drop file={} reason=file-missing diagnosticCount={}",
+                result.getFile(),
+                incoming.size());
             return;
           }
 

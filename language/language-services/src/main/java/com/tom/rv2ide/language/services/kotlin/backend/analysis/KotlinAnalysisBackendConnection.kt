@@ -98,7 +98,6 @@ class KotlinAnalysisBackendConnection internal constructor(
 
   override fun supportsDocument(path: Path): Boolean =
       path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
-
   override fun notifyFileCreated(path: Path) {
     executeOnAnalysisQueue { runtime?.onFileCreated(path.normalize()) }
   }
@@ -267,7 +266,10 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didChange" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           if (supportsDocument(path)) {
-            runtime?.onFileContentChanged(path)
+            runtime?.onFileContentChanged(
+                path,
+                FileManager.getLatestOneHopDocumentEdit(path),
+            )
             scheduleDiagnostics(path)
           }
         }
@@ -318,18 +320,19 @@ class KotlinAnalysisBackendConnection internal constructor(
 
   private fun scheduleDiagnostics(path: Path) {
     if (!isReady || !initialized) return
-    scheduledJobs.remove(path)?.cancel(false)
+    val normalizedPath = path.normalize()
+    scheduledJobs.remove(normalizedPath)?.cancel(false)
     try {
       val job =
           analysisQueue.schedule(
               {
-                scheduledJobs.remove(path)
-                publishDiagnostics(path)
+                scheduledJobs.remove(normalizedPath)
+                publishDiagnostics(normalizedPath)
               },
               DIAGNOSTICS_DEBOUNCE_MS,
               TimeUnit.MILLISECONDS,
           )
-      scheduledJobs[path] = job
+      scheduledJobs[normalizedPath] = job
     } catch (e: RejectedExecutionException) {
       KlsLogs.debug("Analysis task rejected during shutdown: {}", e.message)
     }
@@ -342,23 +345,58 @@ class KotlinAnalysisBackendConnection internal constructor(
     val normalizedPath = path.normalize()
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
+    KlsLogs.info(
+        "Kotlin Analysis live PSI: action=diagnostics-start, path={}, generation={}, version={}, revision={}",
+        normalizedPath,
+        requestGeneration,
+        snapshot.version,
+        snapshot.revision,
+    )
     try {
       val result = activeRuntime.analyze(normalizedPath, snapshot) ?: run {
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
         return
       }
-      if (requestGeneration != generation || state != KotlinBackendState.READY) return
-      val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
-      if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
-          snapshot.revision != currentSnapshot.revision) return
-      callback.invoke(
-          result.copy(
-              channel = DiagnosticResult.CHANNEL_KOTLIN,
-              documentVersion = snapshot.version,
-              documentRevision = snapshot.revision,
-              backendGeneration = requestGeneration,
-          )
-      )
+if (requestGeneration != generation || state != KotlinBackendState.READY) {
+         KlsLogs.info(
+             "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=backend-generation-or-state",
+             normalizedPath,
+             requestGeneration,
+         )
+         return
+       }
+       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
+       if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
+           snapshot.revision != currentSnapshot.revision) {
+         KlsLogs.info(
+             "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=document-identity, requestedVersion={}, requestedRevision={}, currentVersion={}, currentRevision={}",
+             normalizedPath,
+             requestGeneration,
+             snapshot.version,
+             snapshot.revision,
+             currentSnapshot?.version,
+             currentSnapshot?.revision,
+         )
+         return
+       }
+       val published = result.copy(
+           channel = DiagnosticResult.CHANNEL_KOTLIN,
+           documentVersion = snapshot.version,
+           documentRevision = snapshot.revision,
+           backendGeneration = requestGeneration,
+       )
+       KlsLogs.info(
+           "Kotlin Analysis live PSI: action=diagnostics-ready, path={}, generation={}, version={}, revision={}, diagnosticCount={}, ranges={}",
+           normalizedPath,
+           requestGeneration,
+           published.documentVersion,
+           published.documentRevision,
+           published.diagnostics.size,
+           published.diagnostics.take(12).joinToString("|") { diagnostic ->
+             "${diagnostic.code}:${diagnostic.range.start.line}:${diagnostic.range.start.column}-${diagnostic.range.end.line}:${diagnostic.range.end.column}"
+           },
+       )
+       callback.invoke(published)
     } catch (t: Throwable) {
       KlsLogs.error("Kotlin Analysis API diagnostics failed for: $normalizedPath", t)
     }
@@ -412,6 +450,11 @@ class KotlinAnalysisBackendConnection internal constructor(
     fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
         generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
     if (!canExecute()) {
+      KlsLogs.info(
+          "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=before-execution-current-check",
+          request.file,
+          request.backendGeneration,
+      )
       continuation.resume(null)
       return@suspendCancellableCoroutine
     }
@@ -419,8 +462,16 @@ class KotlinAnalysisBackendConnection internal constructor(
       val task = analysisQueue.submit {
         try {
           val currentRuntime = runtime
-          val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-          if (continuation.isActive) continuation.resume(if (canExecute()) result else null)
+val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+           val currentAfterExecution = canExecute()
+           if (!currentAfterExecution) {
+             KlsLogs.info(
+                 "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
+                 request.file,
+                 request.backendGeneration,
+             )
+           }
+           if (continuation.isActive) continuation.resume(if (currentAfterExecution) result else null)
         } catch (e: java.util.concurrent.CancellationException) {
           if (continuation.isActive) continuation.resumeWithException(e)
         } catch (e: Throwable) {

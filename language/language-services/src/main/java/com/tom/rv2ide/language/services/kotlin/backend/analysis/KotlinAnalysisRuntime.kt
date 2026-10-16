@@ -9,12 +9,13 @@ import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.ReferenceResult
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.projects.models.ActiveDocumentSnapshot
+import com.tom.rv2ide.projects.models.OneHopDocumentEdit
 import java.nio.file.Path
 
 internal interface KotlinAnalysisRuntime {
   fun start(): Boolean
   fun onFileOpened(path: Path) = Unit
-  fun onFileContentChanged(path: Path) = Unit
+  fun onFileContentChanged(path: Path, edit: OneHopDocumentEdit? = null) = Unit
   fun onFileClosed(path: Path) = Unit
   fun onFileCreated(path: Path) = Unit
   fun onFileRemoved(path: Path) = Unit

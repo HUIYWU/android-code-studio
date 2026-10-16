@@ -13,10 +13,11 @@ import org.jetbrains.kotlin.psi.KtElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtPsiFactory
 import java.nio.file.Path
-
 internal sealed interface LiveKtFile {
   val path: Path
+  val identity: LiveFileIdentity
   val isStale: Boolean
+
 
   fun <T> read(action: (KtFile) -> T): T
 
@@ -42,6 +43,9 @@ internal class PinnedLiveKtFile(
     private val pinnedFile: KtFile,
     private val pinnedIdentity: LiveFileIdentity,
 ) : LiveKtFile {
+  override val identity: LiveFileIdentity
+    get() = pinnedIdentity
+
   override val isStale: Boolean
     get() = !index.isCurrent(path, pinnedIdentity, pinnedFile)
 

@@ -68,11 +68,11 @@ interface KotlinBackendConnection {
   fun sendNotification(method: String, params: JsonObject)
 
   fun sendNotificationOrThrow(method: String, params: JsonObject)
-
   fun notifyFileCreated(path: java.nio.file.Path) = Unit
   fun notifyFileRemoved(path: java.nio.file.Path) = Unit
   fun notifyFileMoved(fromPath: java.nio.file.Path, toPath: java.nio.file.Path) = Unit
   fun notifyFileChanges(changes: List<KotlinBackendFileChange>): Boolean = false
+
 
   fun close()
 
