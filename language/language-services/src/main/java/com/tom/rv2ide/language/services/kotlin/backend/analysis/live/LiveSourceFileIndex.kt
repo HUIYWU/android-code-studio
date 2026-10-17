@@ -20,6 +20,7 @@ import org.jetbrains.kotlin.com.intellij.openapi.progress.EmptyProgressIndicator
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.openapi.util.TextRange
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiComment
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
@@ -28,6 +29,7 @@ import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
 import org.jetbrains.kotlin.psi.KtElement
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtPsiFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -61,6 +63,11 @@ internal class LiveSourceFileIndex(
     val metadataIndex: KotlinSourceMetadataIndex,
 ) : AutoCloseable {
   private data class VersionedFile(val identity: LiveFileIdentity, val file: KtFile)
+  // PSI object identity may change when a declaration is rebuilt by the AST diff; associate the declaration by stable source position and name instead.
+  private data class FunctionAnchor(
+      val startOffset: Int,
+      val name: String?,
+  )
   private class Pin(val file: KtFile, val identity: LiveFileIdentity) {
     var count: Int = 0
     var pending: PendingState? = null
@@ -108,6 +115,7 @@ internal class LiveSourceFileIndex(
   }
 
   private fun modificationAnchor(file: KtFile, edit: OneHopDocumentEdit, start: Int): PsiElement {
+    // Ordinary body edits use a semantic leaf; body structure transitions use explicit ElementAdded/ElementRemoved below.
     // A non-empty deletion anchors before the deleted range; otherwise the offset may resolve to trailing whitespace.
     val lookupOffset = if (edit.kind == OneHopDocumentEdit.Kind.DELETE && edit.baseEndIndex > edit.baseStartIndex) {
       (start - 1).coerceAtLeast(0)
@@ -120,6 +128,35 @@ internal class LiveSourceFileIndex(
     } else {
       candidate
     }
+  }
+
+  private fun functionAt(file: KtFile, offset: Int): KtNamedFunction? {
+    // Function association skips arbitrary trivia; fixed offset windows are invalid when whitespace length is unbounded.
+    if (file.textLength == 0) return null
+    var leaf = file.findElementAt(offset.coerceIn(0, file.textLength - 1))
+    while (leaf != null && (leaf is PsiWhiteSpace || leaf is PsiComment)) {
+      leaf = PsiTreeUtil.prevLeaf(leaf) ?: PsiTreeUtil.nextLeaf(leaf)
+    }
+    return leaf?.let { PsiTreeUtil.getParentOfType(it, KtNamedFunction::class.java, false) }
+  }
+
+  private fun functionAnchor(function: KtNamedFunction?): FunctionAnchor? {
+    val range = function?.textRange ?: return null
+    return FunctionAnchor(range.startOffset, function.name)
+  }
+
+  // Reparsed declarations are valid event targets even when the old PSI object has been invalidated.
+  private fun matchesFunctionAnchor(function: KtNamedFunction?, anchor: FunctionAnchor?): Boolean {
+    if (function == null || anchor == null) return false
+    val range = function.textRange ?: return false
+    return range.startOffset == anchor.startOffset && function.name == anchor.name
+  }
+
+  private fun bodyState(function: KtNamedFunction?): String {
+    val body = function?.bodyBlockExpression
+    val functionRange = function?.textRange?.let { "${it.startOffset}..${it.endOffset}" } ?: "none"
+    val bodyRange = body?.textRange?.let { "${it.startOffset}..${it.endOffset}" } ?: "none"
+    return "functionFound=${function != null}; functionValid=${function?.isValid == true}; functionPsi=${function?.let { System.identityHashCode(it) } ?: "none"}; functionRange=$functionRange; bodyFound=${body != null}; bodyPsi=${body?.let { System.identityHashCode(it) } ?: "none"}; bodyRange=$bodyRange"
   }
 
   private fun flushFirModifications(): String {
@@ -252,6 +289,10 @@ internal class LiveSourceFileIndex(
               stage = "replace"
               logLive("edit-replace-start", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}")
               val oldText = current.file.text
+              val functionBefore = functionAt(current.file, start)
+              val declarationAnchor = functionAnchor(functionBefore)
+              val bodyBefore = functionBefore?.bodyBlockExpression
+              logLive("edit-body-before", path, current.file, edit.targetIdentity(), "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}")
               document.replaceString(start, end, edit.replacementText)
               val targetText = document.text
               val changedRange = TextRange(start, start + edit.replacementText.length)
@@ -290,25 +331,67 @@ internal class LiveSourceFileIndex(
                     current.file,
                     edit.targetIdentity(),
                     "reason=reparse-text-mismatch; documentLength=${document.textLength}; psiLength=${current.file.textLength}; targetLength=${targetText.length}",
-                )
+                 )
               } else {
-                val changed = modificationAnchor(current.file, edit, start)
+                val structurallyLocatedFunction = functionAt(current.file, start)
+                val functionAfter = if (functionBefore?.isValid == true) functionBefore else structurallyLocatedFunction
+                val reusedBefore = functionBefore?.isValid == true && functionAfter === functionBefore
+                val reparsedSameDeclaration = !reusedBefore && matchesFunctionAnchor(functionAfter, declarationAnchor)
+                val functionAssociation = when {
+                  reusedBefore -> "REUSED_BEFORE"
+                  reparsedSameDeclaration -> "REPARSED_SAME_DECLARATION"
+                  functionAfter != null -> "STRUCTURAL_LOOKUP_UNMATCHED"
+                  else -> "STRUCTURAL_LOOKUP_MISSING"
+                }
+                val sameDeclaration = reusedBefore || reparsedSameDeclaration
+                val bodyAfter = functionAfter?.bodyBlockExpression
+                val transition = when {
+                  !sameDeclaration -> "FUNCTION_ASSOCIATION_UNRESOLVED"
+                  bodyBefore == null && bodyAfter != null -> "ADDED"
+                  bodyBefore != null && bodyAfter == null -> "REMOVED"
+                  else -> "NONE"
+                }
+                logLive("edit-body-after", path, current.file, edit.targetIdentity(), "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}")
                 val modificationService = KaSourceModificationService.getInstance(project)
-                val inBlockAncestor = runCatching {
-                  modificationService.ancestorAffectedByInBlockModification(changed)
-                }.getOrNull()
                 stage = "modification-service"
-                val shape = modificationShape(changed, inBlockAncestor)
-                logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "event=Unknown; $shape; ${trackerState()}")
-                modificationService.handleElementModification(changed, KaElementModificationType.Unknown)
-                logLive("edit-modification-success", path, current.file, edit.targetIdentity(), "event=Unknown; $shape; ${trackerState()}")
-                // TODO(ACS-ANALYSIS-EXPERIMENT): Standalone MockApplication does not dispatch writeActionFinished, so flush deferred FIR invalidation explicitly.
-                stage = "fir-flush"
-                logLive("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
-                val flushService = flushFirModifications()
+                // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
+                // When the declaration PSI was replaced, the file event target forces FIR to classify removal as out-of-block and invalidate the source module.
+                // TODO(ACS-ANALYSIS-EXPERIMENT): Verify additional declaration-with-body transitions.
+                val modificationEvent = when {
+                    sameDeclaration && bodyBefore == null && bodyAfter != null -> {
+                      val detail = "event=ElementAdded; element=${bodyAfter.javaClass.simpleName}; eventElement=${bodyAfter.javaClass.simpleName}"
+                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      modificationService.handleElementModification(bodyAfter, KaElementModificationType.ElementAdded)
+                      detail
+                    }
+                    sameDeclaration && functionAfter != null && bodyBefore != null && bodyAfter == null -> {
+                      // A body-less reparsed function has no FIR body marker; use the valid file target to avoid the deferred in-block queue dropping this change.
+                      val removalEventElement = if (reparsedSameDeclaration) current.file else functionAfter
+                      val detail = "event=ElementRemoved; element=${bodyBefore.javaClass.simpleName}; eventElement=${removalEventElement.javaClass.simpleName}; moduleInvalidation=${reparsedSameDeclaration}"
+                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      modificationService.handleElementModification(removalEventElement, KaElementModificationType.ElementRemoved(bodyBefore))
+                      detail
+                    }
+                    else -> {
+                      val changed = modificationAnchor(current.file, edit, start)
+                      val inBlockAncestor = runCatching {
+                        modificationService.ancestorAffectedByInBlockModification(changed)
+                      }.getOrNull()
+                      val shape = modificationShape(changed, inBlockAncestor)
+                      val detail = "event=Unknown; $shape"
+                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      modificationService.handleElementModification(changed, KaElementModificationType.Unknown)
+                      detail
+                    }
+                 }
+                 logLive("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
+                 // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
+                 stage = "fir-flush"
+                 logLive("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
+                 val flushService = flushFirModifications()
                 logLive("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
                 currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
-                logLive("incremental", path, current.file, edit.targetIdentity(), "event=Unknown")
+                logLive("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
                 applied = true
               }
             }
