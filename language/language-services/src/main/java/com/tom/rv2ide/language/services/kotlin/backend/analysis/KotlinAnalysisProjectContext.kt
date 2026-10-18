@@ -14,6 +14,7 @@ import com.tom.rv2ide.projects.models.ProjectBinaryOrigin
 import com.tom.rv2ide.projects.models.ProjectBinaryRole
 import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import com.tom.rv2ide.projects.models.ProjectModuleInputSnapshot
+import com.tom.rv2ide.projects.models.ProjectRootDescriptor
 import java.io.File
 import java.nio.file.Path
 
@@ -28,6 +29,7 @@ internal data class KotlinAnalysisBinaryRootContext(
 
 internal data class KotlinAnalysisModuleContext(
     val modulePath: String,
+    val sourceRootDescriptors: List<ProjectRootDescriptor>,
     val sourceRoots: List<Path>,
     val javaSourceRoots: List<Path>,
     val generatedSourceRoots: List<Path>,
@@ -68,13 +70,14 @@ internal data class KotlinAnalysisProjectContext(
     private fun createContext(
         snapshot: ProjectModuleInputSnapshot,
     ): KotlinAnalysisModuleContext {
-      val sourceRoots = (snapshot.ordinarySourceRoots + snapshot.generatedSourceRoots + snapshot.javaSourceRoots)
-          .map { it.path }
-          .filter { it.toFile().isDirectory }
-          .distinct()
-          .sortedBy(Path::toString)
+      val sourceRootDescriptors = (snapshot.ordinarySourceRoots + snapshot.generatedSourceRoots + snapshot.javaSourceRoots)
+          .filter { it.path.toFile().isDirectory }
+          .distinctBy { it.path.normalize() to it.role to it.origin to it.variantName }
+          .sortedWith(compareBy({ it.path.toString() }, { it.role.name }, { it.origin.name }, { it.variantName.orEmpty() }))
+      val sourceRoots = sourceRootDescriptors.map { it.path }.distinct().sortedBy(Path::toString)
       return KotlinAnalysisModuleContext(
           modulePath = snapshot.identity.modulePath,
+          sourceRootDescriptors = sourceRootDescriptors,
           sourceRoots = sourceRoots,
           javaSourceRoots = existingPaths(snapshot.javaSourceRoots.map { it.path.toFile() }),
           generatedSourceRoots = existingPaths(snapshot.generatedSourceRoots.map { it.path.toFile() }),

@@ -40,8 +40,12 @@ internal class LiveProjectStructureProvider : KotlinProjectStructureProviderBase
     this.modules = modules
     this.registry = registry
     modules.filterIsInstance<KaSourceModule>().forEach { sourceModule ->
-      val roots = (sourceModule as? LiveSourceModule)?.sourceRoots ?: sourceModule.contentRoots()
-      registry.bindModule(sourceModule, roots)
+      val liveSourceModule = sourceModule as? LiveSourceModule
+      if (liveSourceModule != null) {
+        registry.bindModule(sourceModule, liveSourceModule.sourceRootDescriptors)
+      } else {
+        registry.bindModule(sourceModule, sourceModule.contentRoots())
+      }
     }
   }
 

@@ -6,7 +6,9 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.environment
 import com.tom.rv2ide.javac.config.JavacConfigProvider
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisModuleContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceRootDescriptor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar.LiveAnalysisServiceRegistrar
@@ -180,6 +182,19 @@ internal class LiveAnalysisEnvironment(
         val module = LiveSourceModule(
             project = project,
             name = context.modulePath,
+            sourceRootDescriptors = context.sourceRootDescriptors.map { root ->
+              KotlinSourceRootDescriptor(
+                  path = root.path.normalize(),
+                  ownerModulePath = root.ownerModulePath,
+                  sourceKind = when (root.role) {
+                    com.tom.rv2ide.projects.models.ProjectRootRole.ORDINARY_SOURCE -> KotlinSourceKind.ORDINARY
+                    com.tom.rv2ide.projects.models.ProjectRootRole.GENERATED_SOURCE -> KotlinSourceKind.GENERATED
+                    else -> KotlinSourceKind.UNKNOWN
+                  },
+                  origin = root.origin.name,
+                  variantName = root.variantName,
+              )
+            },
             sourceRoots = context.sourceRoots.toSet(),
             registry = sourceRegistry,
             directRegularDependencies = (dependencies + libraryDependencies)
@@ -213,7 +228,7 @@ internal class LiveAnalysisEnvironment(
       liveIndex = LiveSourceFileIndex(project, sourceRegistry, metadataIndex)
       val projectStructure = project.getService(KotlinProjectStructureProvider::class.java) as LiveProjectStructureProvider
       projectStructure.setup(project, allModules, sourceRegistry)
-      directInheritorsProvider.setup(project, liveIndex)
+      directInheritorsProvider.setup(project, liveIndex, metadataIndex)
       annotationsResolverFactory.setup(project, liveIndex, metadataIndex)
       declarationFactory.setup(project, liveIndex, sourceRegistry, metadataIndex)
       packageFactory.setup(project, metadataIndex)

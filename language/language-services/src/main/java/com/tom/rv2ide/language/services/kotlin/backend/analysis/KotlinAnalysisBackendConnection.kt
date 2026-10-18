@@ -345,13 +345,6 @@ class KotlinAnalysisBackendConnection internal constructor(
     val normalizedPath = path.normalize()
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
-    KlsLogs.info(
-        "Kotlin Analysis live PSI: action=diagnostics-start, path={}, generation={}, version={}, revision={}",
-        normalizedPath,
-        requestGeneration,
-        snapshot.version,
-        snapshot.revision,
-    )
     try {
       val result = activeRuntime.analyze(normalizedPath, snapshot) ?: run {
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
@@ -385,18 +378,7 @@ if (requestGeneration != generation || state != KotlinBackendState.READY) {
            documentRevision = snapshot.revision,
            backendGeneration = requestGeneration,
        )
-       KlsLogs.info(
-           "Kotlin Analysis live PSI: action=diagnostics-ready, path={}, generation={}, version={}, revision={}, diagnosticCount={}, ranges={}",
-           normalizedPath,
-           requestGeneration,
-           published.documentVersion,
-           published.documentRevision,
-           published.diagnostics.size,
-           published.diagnostics.take(12).joinToString("|") { diagnostic ->
-             "${diagnostic.code}:${diagnostic.range.start.line}:${diagnostic.range.start.column}-${diagnostic.range.end.line}:${diagnostic.range.end.column}"
-           },
-       )
-       callback.invoke(published)
+        callback.invoke(published)
     } catch (t: Throwable) {
       KlsLogs.error("Kotlin Analysis API diagnostics failed for: $normalizedPath", t)
     }

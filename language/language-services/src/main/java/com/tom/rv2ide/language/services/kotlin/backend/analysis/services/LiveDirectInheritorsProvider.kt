@@ -1,7 +1,12 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationKey
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationKind
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationRecord
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileIndex
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.fir.utils.isSubclassOf
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDirectInheritorsProvider
@@ -20,26 +25,17 @@ import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.KtClass
 import org.jetbrains.kotlin.psi.KtClassOrObject
-import org.jetbrains.kotlin.psi.KtNullableType
-import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
-import org.jetbrains.kotlin.psi.KtTypeAlias
-import org.jetbrains.kotlin.psi.KtTypeElement
-import org.jetbrains.kotlin.psi.KtUserType
-import org.jetbrains.kotlin.psi.psiUtil.contains
-import org.jetbrains.kotlin.psi.psiUtil.getImportedSimpleNameByImportAlias
-import org.jetbrains.kotlin.psi.psiUtil.getSuperNames
 
 @OptIn(KaImplementationDetail::class)
 internal class LiveDirectInheritorsProvider : KotlinDirectInheritorsProvider {
   private lateinit var project: Project
   private lateinit var liveIndex: LiveSourceFileIndex
+  private lateinit var metadataIndex: KotlinSourceMetadataIndex
 
-  private val classesBySupertypeName = mutableMapOf<Name, MutableSet<KtClassOrObject>>()
-  private val inheritableTypeAliasesByAliasedName = mutableMapOf<Name, MutableSet<KtTypeAlias>>()
-
-  fun setup(project: MockProject, liveIndex: LiveSourceFileIndex) {
+  fun setup(project: MockProject, liveIndex: LiveSourceFileIndex, metadataIndex: KotlinSourceMetadataIndex) {
     this.project = project
     this.liveIndex = liveIndex
+    this.metadataIndex = metadataIndex
   }
 
   @OptIn(SymbolInternals::class)
@@ -48,47 +44,61 @@ internal class LiveDirectInheritorsProvider : KotlinDirectInheritorsProvider {
       scope: GlobalSearchScope,
       includeLocalInheritors: Boolean,
   ): Iterable<KtClassOrObject> {
-    computeIndex()
     val classId = ktClass.getClassId() ?: return emptyList()
     val baseModule = KotlinProjectStructureProvider.getModule(project, ktClass, useSiteModule = null)
     val baseFirClass = classId.toFirSymbol(baseModule)?.fir as? FirClass ?: return emptyList()
     val baseClassNames = mutableSetOf(classId.shortClassName)
     calculateAliases(classId.shortClassName, baseClassNames)
-    return baseClassNames
-        .flatMap { classesBySupertypeName[it].orEmpty() }
-        .filter { isValidInheritor(it, baseFirClass, scope, includeLocalInheritors) }
-  }
-
-  private fun computeIndex() {
-    classesBySupertypeName.clear()
-    inheritableTypeAliasesByAliasedName.clear()
-    val visitor = object : KtTreeVisitorVoid() {
-      override fun visitClassOrObject(classOrObject: KtClassOrObject) {
-        classOrObject.getSuperNames().forEach { superName ->
-          classesBySupertypeName.computeIfAbsent(Name.identifier(superName)) { mutableSetOf() }.add(classOrObject)
-        }
-        super.visitClassOrObject(classOrObject)
-      }
-
-      override fun visitTypeAlias(typeAlias: KtTypeAlias) {
-        val typeElement = typeAlias.getTypeReference()?.typeElement ?: return
-        findInheritableSimpleNames(typeElement).forEach { expandedName ->
-          inheritableTypeAliasesByAliasedName
-              .computeIfAbsent(Name.identifier(expandedName)) { mutableSetOf() }
-              .add(typeAlias)
-        }
-        super.visitTypeAlias(typeAlias)
-      }
-    }
-    liveIndex.currentKtFiles().forEach { file ->
-      project.analysisRead { file.accept(visitor) }
-    }
+    val candidates = baseClassNames
+        .flatMap { name -> metadataIndex.classesBySupertypeName(name.asString()) }
+        .filter { it.kind == KotlinSourceDeclarationKind.CLASS_LIKE }
+    val materialized = candidates.mapNotNull(::materializeClass)
+    val result = materialized.filter { isValidInheritor(it, baseFirClass, scope, includeLocalInheritors) }
+    KlsLogs.infoThrottled(
+        "kotlin-analysis-direct-inheritors-query:$classId:$includeLocalInheritors",
+        500L,
+        "Kotlin Analysis direct inheritors: action=query, baseClassId={}, aliasNameCount={}, candidateCount={}, materializedCount={}, resultCount={}, includeLocalInheritors={}",
+        classId,
+        baseClassNames.size,
+        candidates.size,
+        materialized.size,
+        result.size,
+        includeLocalInheritors,
+    )
+    return result
   }
 
   private fun calculateAliases(aliasedName: Name, aliases: MutableSet<Name>) {
-    inheritableTypeAliasesByAliasedName[aliasedName].orEmpty().forEach { alias ->
-      val aliasName = alias.nameAsSafeName
-      if (aliases.add(aliasName)) calculateAliases(aliasName, aliases)
+    metadataIndex.typeAliasesByAliasedName(aliasedName.asString())
+        .filter { it.kind == KotlinSourceDeclarationKind.TYPE_ALIAS }
+        .forEach { alias ->
+          val aliasName = Name.identifier(alias.name)
+          if (aliases.add(aliasName)) calculateAliases(aliasName, aliases)
+        }
+  }
+
+  private fun materializeClass(record: KotlinSourceDeclarationRecord): KtClassOrObject? {
+    val file = liveIndex.getCurrentKtFile(record.path) ?: run {
+      KlsLogs.info("Kotlin Analysis direct inheritors: action=candidate-drop, path={}, reason=current-file-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    val currentIdentity = metadataIndex.metadata(record.path)?.identity ?: run {
+      KlsLogs.info("Kotlin Analysis direct inheritors: action=candidate-drop, path={}, reason=metadata-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    if (currentIdentity != record.identity || !liveIndex.isCurrent(record.path, record.identity, file)) {
+      KlsLogs.info("Kotlin Analysis direct inheritors: action=candidate-drop, path={}, reason=stale-identity, candidateIdentity={}, currentIdentity={}", record.path, record.identity, currentIdentity)
+      return null
+    }
+    return project.analysisRead {
+      val element = file.findElementAt(record.startOffset) ?: return@analysisRead null
+      val declaration = org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil.getParentOfType(
+          element,
+          KtClassOrObject::class.java,
+          false,
+      ) ?: return@analysisRead null
+      val expectedClassId = (record.key as? KotlinSourceDeclarationKey.ClassLike)?.classId ?: return@analysisRead null
+      declaration.takeIf { it.getClassId() == expectedClassId }
     }
   }
 
@@ -100,7 +110,8 @@ internal class LiveDirectInheritorsProvider : KotlinDirectInheritorsProvider {
       includeLocalInheritors: Boolean,
   ): Boolean {
     if (!includeLocalInheritors && candidate.isLocal) return false
-    if (!scope.contains(candidate)) return false
+    val candidateVirtualFile = candidate.containingKtFile.virtualFile ?: return false
+    if (!scope.contains(candidateVirtualFile)) return false
     val candidateClassId = candidate.getClassId() ?: return false
     val candidateModule = KotlinProjectStructureProvider.getModule(project, candidate, useSiteModule = null)
     val candidateFirSymbol = candidateClassId.toFirSymbol(candidateModule) ?: return false
@@ -118,23 +129,4 @@ internal class LiveDirectInheritorsProvider : KotlinDirectInheritorsProvider {
     val session = LLFirSessionCache.getInstance(project).getSession(module, preferBinary = true)
     return session.symbolProvider.getClassLikeSymbolByClassId(this)
   }
-}
-
-private fun findInheritableSimpleNames(typeElement: KtTypeElement): List<String> = when (typeElement) {
-  is KtUserType -> {
-    val referenceName = typeElement.referencedName
-    if (referenceName == null) {
-      emptyList()
-    } else {
-      buildList {
-        add(referenceName)
-        val ktFile = typeElement.containingKtFile
-        if (!ktFile.isCompiled) {
-          getImportedSimpleNameByImportAlias(ktFile, referenceName)?.let(::add)
-        }
-      }
-    }
-  }
-  is KtNullableType -> typeElement.innerType?.let(::findInheritableSimpleNames).orEmpty()
-  else -> emptyList()
 }

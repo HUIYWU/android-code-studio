@@ -101,46 +101,10 @@ internal class KotlinStandaloneAnalysisRuntime(
     return env.liveIndex.withLiveKtFile(normalized, action = { live ->
       val checker = ICancelChecker.NOOP
       if (live.isStale) return@withLiveKtFile null
-val trackerStateBefore = runCatching {
-          val psi = org.jetbrains.kotlin.com.intellij.psi.util.PsiModificationTracker.getInstance(env.project).modificationCount
-          val trackerClass = Class.forName("org.jetbrains.kotlin.analysis.low.level.api.fir.file.structure.LLFirInBlockModificationTracker")
-          val tracker = env.project.getService(trackerClass)
-          val fir = trackerClass.getMethod("getModificationCount").invoke(tracker)
-          "psiModificationCount=$psi; firInBlockModificationCount=$fir"
-        }.getOrElse { "trackerState=unavailable" }
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=diagnostics-analysis-start, path={}, psi={}, identity={}, psiLength={}, trackerState={}",
-            normalized,
-            System.identityHashCode(live.read { it }),
-            live.identity,
-            live.read { it.textLength },
-            trackerStateBefore,
-        )
         val diagnostics = live.analyzing(AnalysisPriority.DIAGNOSTICS, checker) { file ->
           KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
         }
-        val trackerStateAfter = runCatching {
-          val psi = org.jetbrains.kotlin.com.intellij.psi.util.PsiModificationTracker.getInstance(env.project).modificationCount
-          val trackerClass = Class.forName("org.jetbrains.kotlin.analysis.low.level.api.fir.file.structure.LLFirInBlockModificationTracker")
-          val tracker = env.project.getService(trackerClass)
-          val fir = trackerClass.getMethod("getModificationCount").invoke(tracker)
-          "psiModificationCount=$psi; firInBlockModificationCount=$fir"
-        }.getOrElse { "trackerState=unavailable" }
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=diagnostics-result, path={}, psi={}, identity={}, psiLength={}, stale={}, trackerBefore={}, trackerAfter={}, diagnosticCount={}, ranges={}",
-            normalized,
-            System.identityHashCode(live.read { it }),
-            live.identity,
-            live.read { it.textLength },
-            live.isStale,
-            trackerStateBefore,
-            trackerStateAfter,
-            diagnostics.size,
-           diagnostics.take(12).joinToString("|") { diagnostic ->
-             "${diagnostic.code}:${diagnostic.range.start.line}:${diagnostic.range.start.column}-${diagnostic.range.end.line}:${diagnostic.range.end.column}"
-           },
-       )
-       DiagnosticResult(
+        DiagnosticResult(
            normalized,
            diagnostics,
           DiagnosticResult.CHANNEL_KOTLIN,

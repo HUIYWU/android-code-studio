@@ -92,19 +92,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         val resultGeneration = diagnostics.backendGeneration
         val receivedSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
         val receivedRevision = receivedSnapshot?.revision
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=diagnostics-received, path={}, generation={}, version={}, revision={}, currentVersion={}, currentRevision={}, diagnosticCount={}, ranges={}",
-            diagnostics.file,
-            resultGeneration,
-            diagnostics.documentVersion,
-            diagnostics.documentRevision,
-            receivedSnapshot?.version,
-            receivedSnapshot?.revision,
-            diagnostics.diagnostics.size,
-            diagnostics.diagnostics.take(12).joinToString("|") { diagnostic ->
-              "${diagnostic.code}:${diagnostic.range.start.line}:${diagnostic.range.start.column}-${diagnostic.range.end.line}:${diagnostic.range.end.column}"
-            },
-        )
         _client?.publishDiagnostics(diagnostics) {
           val currentSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
           val current = epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
@@ -113,17 +100,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
               receivedRevision != null &&
               currentSnapshot?.revision == receivedRevision &&
               connection.supportsDocument(diagnostics.file)
-          KlsLogs.info(
-              "Kotlin Analysis live PSI: action=diagnostics-dispatch-check, path={}, generation={}, resultVersion={}, resultRevision={}, currentVersion={}, currentRevision={}, accepted={}, reason={}",
-              diagnostics.file,
-              resultGeneration,
-              diagnostics.documentVersion,
-              diagnostics.documentRevision,
-              currentSnapshot?.version,
-              currentSnapshot?.revision,
-              current,
-              if (current) "current" else "stale-or-unready",
-          )
           current
         }
 

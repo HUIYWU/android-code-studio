@@ -57,6 +57,8 @@ private data class LiveFileSourceSnapshot(
     val content: String?,
 )
 
+private const val ENABLE_INCREMENTAL_EDIT_TRACE = false
+
 internal class LiveSourceFileIndex(
     val project: Project,
     private val sourceRegistry: LiveSourceFileRegistry,
@@ -92,6 +94,17 @@ internal class LiveSourceFileIndex(
         "Kotlin Analysis live PSI: runtime={}, action={}, path={}, psi={}, identity={}, detail={}",
         System.identityHashCode(this), action, path, file?.let { System.identityHashCode(it) }, identity, detail,
     )
+  }
+
+  private fun logIncrementalTrace(
+      action: String,
+      path: Path,
+      file: KtFile? = null,
+      identity: LiveFileIdentity? = null,
+      detail: String = "",
+  ) {
+    if (!ENABLE_INCREMENTAL_EDIT_TRACE) return
+    logLive(action, path, file, identity, detail)
   }
 
   private fun trackerState(): String {
@@ -227,7 +240,7 @@ internal class LiveSourceFileIndex(
       refreshCurrentKtFile(normalized)
       return
     }
-    logLive(
+    logIncrementalTrace(
         "edit-received",
         normalized,
         identity = edit.targetIdentity(),
@@ -285,19 +298,19 @@ internal class LiveSourceFileIndex(
             } else if (start < 0 || end < start || end > document.textLength) {
               logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=range-invalid; range=${start}..${end}; documentLength=${document.textLength}")
             } else {
-              logLive("edit-apply", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}; kind=${edit.kind}")
+              logIncrementalTrace("edit-apply", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}; kind=${edit.kind}")
               stage = "replace"
-              logLive("edit-replace-start", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}")
+              logIncrementalTrace("edit-replace-start", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}")
               val oldText = current.file.text
               val functionBefore = functionAt(current.file, start)
               val declarationAnchor = functionAnchor(functionBefore)
               val bodyBefore = functionBefore?.bodyBlockExpression
-              logLive("edit-body-before", path, current.file, edit.targetIdentity(), "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}")
+              logIncrementalTrace("edit-body-before", path, current.file, edit.targetIdentity(), "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}")
               document.replaceString(start, end, edit.replacementText)
               val targetText = document.text
               val changedRange = TextRange(start, start + edit.replacementText.length)
               stage = "reparse"
-              logLive(
+              logIncrementalTrace(
                   "edit-reparse-start",
                   path,
                   current.file,
@@ -317,7 +330,7 @@ internal class LiveSourceFileIndex(
               )
               stage = "psi-change"
               diffLog.doActualPsiChange(current.file)
-              logLive(
+              logIncrementalTrace(
                   "edit-reparse-success",
                   path,
                   current.file,
@@ -351,7 +364,7 @@ internal class LiveSourceFileIndex(
                   bodyBefore != null && bodyAfter == null -> "REMOVED"
                   else -> "NONE"
                 }
-                logLive("edit-body-after", path, current.file, edit.targetIdentity(), "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}")
+                logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity(), "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}")
                 val modificationService = KaSourceModificationService.getInstance(project)
                 stage = "modification-service"
                 // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
@@ -360,7 +373,7 @@ internal class LiveSourceFileIndex(
                 val modificationEvent = when {
                     sameDeclaration && bodyBefore == null && bodyAfter != null -> {
                       val detail = "event=ElementAdded; element=${bodyAfter.javaClass.simpleName}; eventElement=${bodyAfter.javaClass.simpleName}"
-                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
                       modificationService.handleElementModification(bodyAfter, KaElementModificationType.ElementAdded)
                       detail
                     }
@@ -368,7 +381,7 @@ internal class LiveSourceFileIndex(
                       // A body-less reparsed function has no FIR body marker; use the valid file target to avoid the deferred in-block queue dropping this change.
                       val removalEventElement = if (reparsedSameDeclaration) current.file else functionAfter
                       val detail = "event=ElementRemoved; element=${bodyBefore.javaClass.simpleName}; eventElement=${removalEventElement.javaClass.simpleName}; moduleInvalidation=${reparsedSameDeclaration}"
-                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
                       modificationService.handleElementModification(removalEventElement, KaElementModificationType.ElementRemoved(bodyBefore))
                       detail
                     }
@@ -379,26 +392,34 @@ internal class LiveSourceFileIndex(
                       }.getOrNull()
                       val shape = modificationShape(changed, inBlockAncestor)
                       val detail = "event=Unknown; $shape"
-                      logLive("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
                       modificationService.handleElementModification(changed, KaElementModificationType.Unknown)
                       detail
                     }
                  }
-                 logLive("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
-                 // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
-                 stage = "fir-flush"
-                 logLive("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
-                 val flushService = flushFirModifications()
-                logLive("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
-                currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
-                logLive("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
-                applied = true
+                 logIncrementalTrace("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
+                  // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
+                  stage = "fir-flush"
+                  logIncrementalTrace("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
+                  val flushService = flushFirModifications()
+                  logIncrementalTrace("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
+                  project.analysisRead {
+                    metadataIndex.replace(
+                        path = path,
+                        file = current.file,
+                        identity = edit.targetIdentity(),
+                        sourceRoot = sourceRegistry.sourceRootForPath(path),
+                    )
+                  }
+                  currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
+                  logIncrementalTrace("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
+                  applied = true
+                }
               }
             }
           }
         }
       }
-    }
     } catch (t: Throwable) {
       val safeMessage = t.message?.replace('\n', ' ')?.take(160).orEmpty()
       logLive("edit-exception", path, current.file, edit.targetIdentity(), "stage=$stage; exception=${t.javaClass.simpleName}; message=$safeMessage")
@@ -610,7 +631,12 @@ internal class LiveSourceFileIndex(
           val module = sourceRegistry.moduleForPath(path)
           sourceRegistry.register(path, newFile.viewProvider.virtualFile)
           project.analysisRead {
-            metadataIndex.replace(path, newFile)
+            metadataIndex.replace(
+                path = path,
+                file = newFile,
+                identity = identity,
+                sourceRoot = sourceRegistry.sourceRootForPath(path),
+            )
           }
           currentFiles[path] = VersionedFile(identity, newFile)
            if (old == null) {

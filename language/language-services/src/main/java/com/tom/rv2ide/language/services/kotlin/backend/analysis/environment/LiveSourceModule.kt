@@ -1,5 +1,6 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.environment
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceRootDescriptor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
@@ -24,6 +25,7 @@ import kotlin.streams.asSequence
 internal class LiveSourceModule(
     override val project: Project,
     override val name: String,
+    val sourceRootDescriptors: List<KotlinSourceRootDescriptor>,
     val sourceRoots: Set<Path>,
     private val registry: LiveSourceFileRegistry,
     override val directRegularDependencies: List<KaModule>,

@@ -1,9 +1,12 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationKind
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationRecord
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinCompositeDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProviderFactory
@@ -29,7 +32,6 @@ import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtProperty
 import org.jetbrains.kotlin.psi.KtScript
 import org.jetbrains.kotlin.psi.KtTypeAlias
-import org.jetbrains.kotlin.psi.psiUtil.isTopLevelKtOrJavaMember
 import java.nio.file.Path
 
 internal class LiveDeclarationProviderFactory : KotlinDeclarationProviderFactory {
@@ -68,6 +70,10 @@ internal class LiveDeclarationProviderMerger(private val project: Project) : Kot
 
 internal abstract class AbstractLiveDeclarationProvider(
     protected val project: Project,
+    val scope: GlobalSearchScope,
+    protected val liveIndex: LiveSourceFileIndex,
+    protected val registry: LiveSourceFileRegistry,
+    protected val metadataIndex: KotlinSourceMetadataIndex,
 ) : KotlinDeclarationProvider {
   protected abstract fun filesForPackage(fqName: FqName): Sequence<KtFile>
 
@@ -83,19 +89,21 @@ internal abstract class AbstractLiveDeclarationProvider(
   override fun findFilesForScript(scriptFqName: FqName): Collection<KtScript> =
       filesForPackage(scriptFqName).mapNotNull { it.script }.toList()
 
-  override fun getAllClassesByClassId(classId: ClassId): Collection<KtClassOrObject> =
-      filesForPackage(classId.packageFqName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtClassOrObject::class.java).filter { it.getClassId() == classId }
-        }
-      }.toList()
+  override fun getAllClassesByClassId(classId: ClassId): Collection<KtClassOrObject> {
+    val candidates = metadataIndex.classLikeDeclarations(classId)
+        .filter { it.kind == KotlinSourceDeclarationKind.CLASS_LIKE }
+    val result = candidates.mapNotNull { record -> materialize(record, classId) as? KtClassOrObject }
+    logDeclarationQuery("class-like", classId, candidates.size, result.size)
+    return result
+  }
 
-  override fun getAllTypeAliasesByClassId(classId: ClassId): Collection<KtTypeAlias> =
-      filesForPackage(classId.packageFqName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtTypeAlias::class.java).filter { it.getClassId() == classId }
-        }
-      }.toList()
+  override fun getAllTypeAliasesByClassId(classId: ClassId): Collection<KtTypeAlias> {
+    val candidates = metadataIndex.typeAliasDeclarations(classId)
+        .filter { it.kind == KotlinSourceDeclarationKind.TYPE_ALIAS }
+    val result = candidates.mapNotNull { record -> materialize(record, classId) as? KtTypeAlias }
+    logDeclarationQuery("type-alias", classId, candidates.size, result.size)
+    return result
+  }
 
   override fun getClassLikeDeclarationByClassId(classId: ClassId): KtClassLikeDeclaration? =
       getAllClassesByClassId(classId).firstOrNull() ?: getAllTypeAliasesByClassId(classId).firstOrNull()
@@ -105,48 +113,106 @@ internal abstract class AbstractLiveDeclarationProvider(
     getTopLevelFunctions(callableId).mapTo(this) { it.containingKtFile }
   }
 
-  override fun getTopLevelFunctions(callableId: CallableId): Collection<KtNamedFunction> =
-      filesForPackage(callableId.packageName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtNamedFunction::class.java)
-              .filter { it.isTopLevel && it.nameAsName == callableId.callableName }
-        }
-      }.toList()
+  override fun getTopLevelFunctions(callableId: CallableId): Collection<KtNamedFunction> {
+    val candidates = metadataIndex.topLevelCallableDeclarations(callableId)
+        .filter { it.kind == KotlinSourceDeclarationKind.TOP_LEVEL_FUNCTION }
+    val result = candidates.mapNotNull { record -> materialize(record, callableId) as? KtNamedFunction }
+    logDeclarationQuery("top-level-function", callableId, candidates.size, result.size)
+    return result
+  }
 
-  override fun getTopLevelKotlinClassLikeDeclarationNamesInPackage(packageFqName: FqName): Set<Name> =
-      filesForPackage(packageFqName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtClassLikeDeclaration::class.java)
-              .filter { it.isTopLevelKtOrJavaMember() }
-              .mapNotNull { it.nameAsName }
-        }
-      }.toSet()
+  override fun getTopLevelKotlinClassLikeDeclarationNamesInPackage(packageFqName: FqName): Set<Name> {
+    val paths = metadataIndex.filesForPackage(packageFqName.asString())
+        .filter(::isInScope)
+    val result = paths.asSequence()
+        .flatMap { path -> metadataIndex.metadata(path)?.topLevelClassifierNames.orEmpty().asSequence() }
+        .map { Name.identifier(it) }
+        .toSet()
+    logDeclarationQuery("package-classifier-names", packageFqName, paths.size, result.size)
+    return result
+  }
 
-  override fun getTopLevelCallableNamesInPackage(packageFqName: FqName): Set<Name> =
-      filesForPackage(packageFqName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtCallableDeclaration::class.java)
-              .filter { it.isTopLevelKtOrJavaMember() }
-              .mapNotNull { it.nameAsName }
-        }
-      }.toSet()
+  override fun getTopLevelCallableNamesInPackage(packageFqName: FqName): Set<Name> {
+    val paths = metadataIndex.filesForPackage(packageFqName.asString())
+        .filter(::isInScope)
+    val result = paths.asSequence()
+        .flatMap { path -> metadataIndex.metadata(path)?.topLevelCallableNames.orEmpty().asSequence() }
+        .map { Name.identifier(it) }
+        .toSet()
+    logDeclarationQuery("package-callable-names", packageFqName, paths.size, result.size)
+    return result
+  }
 
-  override fun getTopLevelProperties(callableId: CallableId): Collection<KtProperty> =
-      filesForPackage(callableId.packageName).flatMap { file ->
-        project.analysisRead {
-          PsiTreeUtil.collectElementsOfType(file, KtProperty::class.java)
-              .filter { it.isTopLevel && it.nameAsName == callableId.callableName }
+  override fun getTopLevelProperties(callableId: CallableId): Collection<KtProperty> {
+    val candidates = metadataIndex.topLevelCallableDeclarations(callableId)
+        .filter { it.kind == KotlinSourceDeclarationKind.TOP_LEVEL_PROPERTY }
+    val result = candidates.mapNotNull { record -> materialize(record, callableId) as? KtProperty }
+    logDeclarationQuery("top-level-property", callableId, candidates.size, result.size)
+    return result
+  }
+
+  private fun logDeclarationQuery(kind: String, key: Any, candidateCount: Int, resultCount: Int) {
+    KlsLogs.infoThrottled(
+        "kotlin-analysis-declaration-query:$kind:$key",
+        500L,
+        "Kotlin Analysis declaration provider: action=query, queryKind={}, queryKey={}, candidateCount={}, resultCount={}",
+        kind,
+        key,
+        candidateCount,
+        resultCount,
+    )
+  }
+
+  private fun isInScope(path: Path): Boolean {
+    val virtualFile = registry.virtualFile(path)
+        ?: VirtualFileManager.getInstance().findFileByNioPath(path)
+        ?: return false
+    return virtualFile in scope
+  }
+
+  private fun materialize(record: KotlinSourceDeclarationRecord, key: Any): org.jetbrains.kotlin.psi.KtDeclaration? {
+    val virtualFile = registry.virtualFile(record.path)
+        ?: VirtualFileManager.getInstance().findFileByNioPath(record.path)
+        ?: run {
+          KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=virtual-file-missing", record.path)
+          return null
         }
-      }.toList()
+    if (virtualFile !in scope) {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=scope, identity={}", record.path, record.identity)
+      return null
+    }
+    val file = liveIndex.getCurrentKtFile(record.path) ?: run {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=current-file-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    val currentIdentity = metadataIndex.metadata(record.path)?.identity ?: run {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=metadata-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    if (currentIdentity != record.identity || !liveIndex.isCurrent(record.path, record.identity, file)) {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=stale-identity, candidateIdentity={}, currentIdentity={}", record.path, record.identity, currentIdentity)
+      return null
+    }
+    return project.analysisRead {
+      val element = file.findElementAt(record.startOffset) ?: return@analysisRead null
+      val declaration = PsiTreeUtil.getParentOfType(element, org.jetbrains.kotlin.psi.KtDeclaration::class.java, false)
+          ?: return@analysisRead null
+      when (key) {
+        is ClassId -> if (declaration is KtClassLikeDeclaration && declaration.getClassId() == key) declaration else null
+        is CallableId -> if (declaration is KtCallableDeclaration && declaration.nameAsName == key.callableName && declaration.containingKtFile.packageFqName == key.packageName) declaration else null
+        else -> null
+      }
+    }
+  }
 }
 
 internal class LiveDeclarationProvider(
-    val scope: GlobalSearchScope,
+    scope: GlobalSearchScope,
     project: Project,
-    private val liveIndex: LiveSourceFileIndex,
-    private val registry: LiveSourceFileRegistry,
-    private val metadataIndex: KotlinSourceMetadataIndex,
-) : AbstractLiveDeclarationProvider(project) {
+    liveIndex: LiveSourceFileIndex,
+    registry: LiveSourceFileRegistry,
+    metadataIndex: KotlinSourceMetadataIndex,
+) : AbstractLiveDeclarationProvider(project, scope, liveIndex, registry, metadataIndex) {
   override val hasSpecificCallablePackageNamesComputation: Boolean = false
   override val hasSpecificClassifierPackageNamesComputation: Boolean = false
 
