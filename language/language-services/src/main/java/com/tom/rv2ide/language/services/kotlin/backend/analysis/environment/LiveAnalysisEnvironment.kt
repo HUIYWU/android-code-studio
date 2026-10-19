@@ -187,7 +187,8 @@ internal class LiveAnalysisEnvironment(
                   path = root.path.normalize(),
                   ownerModulePath = root.ownerModulePath,
                   sourceKind = when (root.role) {
-                    com.tom.rv2ide.projects.models.ProjectRootRole.ORDINARY_SOURCE -> KotlinSourceKind.ORDINARY
+                    com.tom.rv2ide.projects.models.ProjectRootRole.ORDINARY_SOURCE,
+                    com.tom.rv2ide.projects.models.ProjectRootRole.JAVA_SOURCE -> KotlinSourceKind.ORDINARY
                     com.tom.rv2ide.projects.models.ProjectRootRole.GENERATED_SOURCE -> KotlinSourceKind.GENERATED
                     else -> KotlinSourceKind.UNKNOWN
                   },

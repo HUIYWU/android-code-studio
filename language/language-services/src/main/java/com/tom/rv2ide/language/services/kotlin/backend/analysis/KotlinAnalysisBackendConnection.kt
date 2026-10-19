@@ -276,7 +276,6 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didSave" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           if (supportsDocument(path)) {
-            runtime?.onFileContentChanged(path)
             scheduleDiagnostics(path)
           }
         }

@@ -32,9 +32,6 @@ class KotlinDocumentSync(
     private val isServerReady: () -> Boolean = { true },
 ) {
 
-  companion object {
-    private const val INITIAL_DID_SAVE_DELAY_MS = 1000L
-  }
   private val openedDocuments = ConcurrentHashMap.newKeySet<String>()
   private val documentVersions = ConcurrentHashMap<String, Int>()
   private val documentRevisions = ConcurrentHashMap<String, Long>()
@@ -85,17 +82,6 @@ class KotlinDocumentSync(
       documentVersions[uri] = version
       openedDocuments.add(uri)
 
-      // Keep the initial open path responsive. The follow-up didSave is only a bootstrap lint
-      // trigger for servers that need an explicit save after open, so it can be delayed until
-      // after the editor has rendered its first frames.
-      android.os
-          .Handler(android.os.Looper.getMainLooper())
-          .postDelayed(
-              {
-                notifyDocumentSave(file)
-              },
-              INITIAL_DID_SAVE_DELAY_MS,
-          )
       true
     } catch (e: Exception) {
       KlsLogs.warn("didOpen failed, document remains unopened: {}", uri, e)

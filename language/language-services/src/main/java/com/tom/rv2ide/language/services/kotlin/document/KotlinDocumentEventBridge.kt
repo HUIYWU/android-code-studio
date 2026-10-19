@@ -34,36 +34,13 @@ class KotlinDocumentEventBridge(
     private val clearDiagnostics: (java.nio.file.Path) -> Unit = {},
 ) {
 
-  private val lastSaveTime = java.util.concurrent.ConcurrentHashMap<String, Long>()
-  private val saveDebounceMs = 350L
-
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onContentChange(event: com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent) {
     val file = event.changedFile
     if (!supportsDocument(file)) return
 
-    val uri = file.toUri().toString()
-
     try {
-       val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
-        val content = snapshot.content
-        val currentTime = System.currentTimeMillis()
-        val currentVersion = documentManager.getDocumentVersion(uri)
- 
-       if (snapshot.version >= 0 &&
-          (!documentManager.isDocumentOpen(uri) || snapshot.version > currentVersion)) {
-        documentManager.syncActiveDocument(file)
-        // KLS diagnostics are commonly refreshed on didSave. Send it after didChange instead of
-        // relying on stale disk content or a no-op save hook.
-        val lastSaved = lastSaveTime[uri] ?: 0L
-        val deltaSinceLastSave = currentTime - lastSaved
-        if (deltaSinceLastSave >= saveDebounceMs) {
-          documentManager.notifyDocumentSave(file, content)
-          lastSaveTime[uri] = currentTime
-        }
-      } else {
-        KlsLogs.debug("Skip Kotlin document change without a newer in-memory snapshot: {}", uri)
-      }
+      documentManager.syncActiveDocument(file)
     } catch (e: Exception) {
       KlsLogs.error("Failed to handle document change", e)
     }
@@ -90,7 +67,6 @@ class KotlinDocumentEventBridge(
     KlsLogs.debug("Document selected event for: {}", file)
     val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
     documentManager.ensureDocumentOpen(file, snapshot.content, snapshot.version)
-    documentManager.notifyDocumentSave(file, snapshot.content)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
@@ -107,7 +83,6 @@ class KotlinDocumentEventBridge(
     if (!supportsDocument(file) || com.tom.rv2ide.projects.FileManager.isActive(file)) return
 
     KlsLogs.debug("Document close event for: {}", file)
-    lastSaveTime.remove(file.toUri().toString())
     documentManager.closeDocument(file)
     clearDiagnostics(file)
   }
@@ -122,7 +97,6 @@ class KotlinDocumentEventBridge(
   fun onFileDeleted(event: FileDeletionEvent) {
     val root = event.file.toPath().normalize()
     documentManager.closeDocumentsUnder(root)
-    lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
     connection.notifyFileRemoved(root)
     clearDiagnostics(root)
   }
@@ -132,7 +106,6 @@ class KotlinDocumentEventBridge(
     val root = event.file.toPath().normalize()
     val target = event.newFile.toPath().normalize()
     documentManager.closeDocumentsUnder(root)
-    lastSaveTime.keys.removeAll { java.nio.file.Paths.get(java.net.URI(it)).startsWith(root) }
     connection.notifyFileMoved(root, target)
     clearDiagnostics(root)
     com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
