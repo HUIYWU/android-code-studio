@@ -40,7 +40,7 @@ class KotlinDocumentEventBridge(
     if (!supportsDocument(file)) return
 
     try {
-      documentManager.syncActiveDocument(file, event)
+      documentManager.syncActiveDocument(file)
     } catch (e: Exception) {
       KlsLogs.error("Failed to handle document change", e)
     }

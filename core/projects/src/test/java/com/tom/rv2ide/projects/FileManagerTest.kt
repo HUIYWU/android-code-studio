@@ -8,6 +8,7 @@ import com.tom.rv2ide.eventbus.events.editor.ChangeType
 import com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent
 import com.tom.rv2ide.eventbus.events.editor.DocumentCloseEvent
 import com.tom.rv2ide.eventbus.events.editor.DocumentOpenEvent
+import com.tom.rv2ide.models.Position
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.projects.models.ActiveDocument
 import java.nio.file.Files
@@ -188,6 +189,94 @@ class FileManagerTest {
   }
 
   @Test
+  fun rangedNewlineInsertionUsesEventPayloadOrder() {
+    val file = Files.createTempFile("file-manager-ranged-insert", ".kt")
+    try {
+      val initial = "fun f() {\n    \n}\n"
+      val target = "fun f() {\n    \n    \n}\n"
+      FileManager.onDocumentOpen(DocumentOpenEvent(file, initial, 0))
+      val start = initial.indexOf("    \n") + 4
+      val end = start + 5
+      FileManager.onDocumentContentChange(
+          change(
+              file,
+              target,
+              "\n    ",
+              1,
+              ChangeType.INSERT,
+              Range(Position(1, 4, start), Position(2, 4, end)),
+          )
+      )
+
+      val edit = checkNotNull(FileManager.getLatestOneHopDocumentEdit(file))
+      assertThat(edit.kind).isEqualTo(com.tom.rv2ide.projects.models.OneHopDocumentEdit.Kind.INSERT)
+      assertThat(edit.baseStartIndex).isEqualTo(start)
+      assertThat(edit.baseEndIndex).isEqualTo(start)
+      assertThat(edit.removedText).isEmpty()
+      assertThat(edit.replacementText).isEqualTo("\n    ")
+    } finally {
+      FileManager.onDocumentClose(DocumentCloseEvent(file))
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
+  fun rangedEmptyLineDeletionUsesEventPayloadOrder() {
+    val file = Files.createTempFile("file-manager-ranged-delete", ".kt")
+    try {
+      val initial = "fun f() {\n    \n    \n}\n"
+      val target = "fun f() {\n    \n}\n"
+      FileManager.onDocumentOpen(DocumentOpenEvent(file, initial, 0))
+      val start = initial.indexOf("    \n") + 4
+      val end = start + 5
+      FileManager.onDocumentContentChange(
+          change(
+              file,
+              target,
+              "\n    ",
+              1,
+              ChangeType.DELETE,
+              Range(Position(1, 4, start), Position(2, 4, end)),
+          )
+      )
+
+      val edit = checkNotNull(FileManager.getLatestOneHopDocumentEdit(file))
+      assertThat(edit.kind).isEqualTo(com.tom.rv2ide.projects.models.OneHopDocumentEdit.Kind.DELETE)
+      assertThat(edit.baseStartIndex).isEqualTo(start)
+      assertThat(edit.baseEndIndex).isEqualTo(end)
+      assertThat(edit.removedText).isEqualTo("\n    ")
+      assertThat(edit.replacementText).isEmpty()
+    } finally {
+      FileManager.onDocumentClose(DocumentCloseEvent(file))
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
+  fun rangedPayloadMismatchClearsOneHopEdit() {
+    val file = Files.createTempFile("file-manager-ranged-mismatch", ".kt")
+    try {
+      val initial = "abc"
+      val target = "aXbc"
+      FileManager.onDocumentOpen(DocumentOpenEvent(file, initial, 0))
+      FileManager.onDocumentContentChange(
+          change(
+              file,
+              target,
+              "Y",
+              1,
+              ChangeType.INSERT,
+              Range(Position(0, 1, 1), Position(0, 2, 2)),
+          )
+      )
+      assertThat(FileManager.getLatestOneHopDocumentEdit(file)).isNull()
+    } finally {
+      FileManager.onDocumentClose(DocumentCloseEvent(file))
+      Files.deleteIfExists(file)
+    }
+  }
+
+  @Test
   fun opaqueOrLifecycleBreakingChangesClearOneHopEdit() {
     val file = Files.createTempFile("file-manager-one-hop-clear", ".java")
     try {
@@ -221,6 +310,17 @@ class FileManagerTest {
       version: Int,
       type: ChangeType,
   ): DocumentChangeEvent {
+    return change(file, targetText, changedText, version, type, Range.NONE)
+  }
+
+  private fun change(
+      file: java.nio.file.Path,
+      targetText: String,
+      changedText: String,
+      version: Int,
+      type: ChangeType,
+      range: Range,
+  ): DocumentChangeEvent {
     return DocumentChangeEvent(
         file,
         changedText,
@@ -228,7 +328,7 @@ class FileManagerTest {
         version,
         type,
         0,
-        Range.NONE,
+        range,
     )
   }
 

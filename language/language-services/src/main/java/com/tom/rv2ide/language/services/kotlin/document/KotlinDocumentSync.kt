@@ -18,7 +18,6 @@
 package com.tom.rv2ide.language.services.kotlin.document
 
 import com.google.gson.JsonObject
-import com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.FileManager
@@ -92,13 +91,7 @@ class KotlinDocumentSync(
   }
 
   @Synchronized
-  private fun notifyDocumentChange(
-      file: Path,
-      newText: String,
-      version: Int,
-      revision: Long,
-      sourceEvent: DocumentChangeEvent? = null,
-  ) {
+  private fun notifyDocumentChange(file: Path, newText: String, version: Int, revision: Long) {
     if (!connection.supportsDocument(file) || !isServerReady()) return
     val uri = file.toUri().toString()
 
@@ -108,37 +101,7 @@ class KotlinDocumentSync(
       return
     }
 
-    val serverVersion = getDocumentVersion(uri)
-    if (version <= serverVersion) {
-      KlsLogs.info(
-          "Kotlin document sync trace: action=didChange-skip, path={}, eventVersion={}, snapshotVersion={}, eventRevision={}, snapshotRevision={}, serverVersion={}, reason=version-not-newer",
-          file,
-          sourceEvent?.version,
-          version,
-          sourceEvent?.revision,
-          revision,
-          serverVersion,
-      )
-      return
-    }
-
-    val latestEdit = FileManager.getLatestOneHopDocumentEdit(file)
-    KlsLogs.info(
-        "Kotlin document sync trace: action=didChange-send, path={}, eventVersion={}, snapshotVersion={}, eventRevision={}, snapshotRevision={}, serverVersion={}, textLength={}, eventChangeType={}, eventChangedTextLength={}, latestEditBaseVersion={}, latestEditTargetVersion={}, latestEditBaseRevision={}, latestEditTargetRevision={}",
-        file,
-        sourceEvent?.version,
-        version,
-        sourceEvent?.revision,
-        revision,
-        serverVersion,
-        newText.length,
-        sourceEvent?.changeType,
-        sourceEvent?.changedText?.length,
-        latestEdit?.base?.version,
-        latestEdit?.target?.version,
-        latestEdit?.base?.revision,
-        latestEdit?.target?.revision,
-    )
+    if (version <= getDocumentVersion(uri)) return
 
     val params =
         JsonObject().apply {
@@ -210,22 +173,12 @@ class KotlinDocumentSync(
   }
 
   @Synchronized
-  fun syncActiveDocument(file: Path, sourceEvent: DocumentChangeEvent? = null) {
+  fun syncActiveDocument(file: Path) {
     val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return
     val uri = file.toUri().toString()
     ensureDocumentOpen(file, snapshot.content, snapshot.version)
     if (snapshot.version > getDocumentVersion(uri)) {
-      notifyDocumentChange(file, snapshot.content, snapshot.version, snapshot.revision, sourceEvent)
-    } else if (sourceEvent != null) {
-      KlsLogs.info(
-          "Kotlin document sync trace: action=event-snapshot-mismatch, path={}, eventVersion={}, snapshotVersion={}, eventRevision={}, snapshotRevision={}, serverVersion={}",
-          file,
-          sourceEvent.version,
-          snapshot.version,
-          sourceEvent.revision,
-          snapshot.revision,
-          getDocumentVersion(uri),
-      )
+      notifyDocumentChange(file, snapshot.content, snapshot.version, snapshot.revision)
     }
   }
 

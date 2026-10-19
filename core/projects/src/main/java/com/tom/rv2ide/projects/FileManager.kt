@@ -156,13 +156,14 @@ object FileManager {
       val targetContent = event.newText ?: base.content
       val target =
           ActiveDocumentSnapshot(file, event.version, Instant.now(), targetContent, event.revision)
-      val verifiedEdit = verifiedOneHopEdit(base, target, event.changeType, event.changedText)
-      val failureReason =
-          if (verifiedEdit == null) {
-            oneHopFailureReason(base, target, event.changeType, event.changedText)
-          } else {
-            null
-          }
+      val verifiedEdit =
+          verifiedOneHopEdit(
+              base,
+              target,
+              event.changeType,
+              event.changedText,
+              event.changeRange,
+          )
       if (verifiedEdit != null) {
         latestOneHopEdits[file] = verifiedEdit
       } else {
@@ -174,40 +175,6 @@ object FileManager {
           modified = target.modified,
           content = target.content,
           revision = target.revision,
-      )
-      val latestEdit = latestOneHopEdits[file]
-      val textDiff = documentTextDiff(base.content, target.content)
-      log.info(
-          "Document one-hop trace: path={}, result={}, reason={}, changeType={}, changedTextLength={}, changedTextShape={}, changedTextBreaks={}, changedTextSignature={}, removedLength={}, removedShape={}, removedBreaks={}, removedSignature={}, replacementLength={}, replacementShape={}, replacementBreaks={}, replacementSignature={}, diffStart={}, diffBaseEnd={}, diffTargetEnd={}, baseVersion={}, targetVersion={}, baseRevision={}, targetRevision={}, baseTextLength={}, targetTextLength={}, latestEditBaseVersion={}, latestEditTargetVersion={}, latestEditBaseRevision={}, latestEditTargetRevision={}",
-          file,
-          if (verifiedEdit != null) "accepted" else "rejected",
-          failureReason ?: "none",
-          event.changeType,
-          event.changedText.length,
-          textShape(event.changedText),
-          lineBreakSummary(event.changedText),
-          textSignature(event.changedText),
-          textDiff.removed.length,
-          textShape(textDiff.removed),
-          lineBreakSummary(textDiff.removed),
-          textSignature(textDiff.removed),
-          textDiff.replacement.length,
-          textShape(textDiff.replacement),
-          lineBreakSummary(textDiff.replacement),
-          textSignature(textDiff.replacement),
-          textDiff.start,
-          textDiff.baseEnd,
-          textDiff.targetEnd,
-          base.version,
-          target.version,
-          base.revision,
-          target.revision,
-          base.content.length,
-          target.content.length,
-          latestEdit?.base?.version,
-          latestEdit?.target?.version,
-          latestEdit?.base?.revision,
-          latestEdit?.target?.revision,
       )
     }
   }
@@ -245,55 +212,7 @@ object FileManager {
     activeDocuments.remove(file)
   }
 
-  private fun oneHopFailureReason(
-      base: ActiveDocumentSnapshot,
-      target: ActiveDocumentSnapshot,
-      changeType: com.tom.rv2ide.eventbus.events.editor.ChangeType,
-      changedText: String,
-  ): String {
-    if (changeType == com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT) {
-      return "new-text"
-    }
-    if (target.version != base.version + 1) {
-      return "version-not-contiguous"
-    }
-    if (target.revision <= base.revision) {
-      return "revision-not-increasing"
-    }
-
-    val baseText = base.content
-    val targetText = target.content
-    var start = 0
-    val commonLength = minOf(baseText.length, targetText.length)
-    while (start < commonLength && baseText[start] == targetText[start]) {
-      start++
-    }
-
-    var baseEnd = baseText.length
-    var targetEnd = targetText.length
-    while (
-        baseEnd > start &&
-            targetEnd > start &&
-            baseText[baseEnd - 1] == targetText[targetEnd - 1]
-    ) {
-      baseEnd--
-      targetEnd--
-    }
-    val replacement = targetText.substring(start, targetEnd)
-    val removed = baseText.substring(start, baseEnd)
-    if (start == baseEnd && replacement.isEmpty()) {
-      return "no-text-difference"
-    }
-    return when (changeType) {
-      com.tom.rv2ide.eventbus.events.editor.ChangeType.INSERT ->
-          if (replacement == changedText && replacement.isNotEmpty()) "unknown" else "insert-payload-mismatch"
-      com.tom.rv2ide.eventbus.events.editor.ChangeType.DELETE ->
-          if (removed == changedText && removed.isNotEmpty() && replacement.isEmpty()) "unknown"
-          else "delete-payload-mismatch"
-      com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT -> "new-text"
-    }
-  }
-
+  // A range is required for edits around line separators: prefix/suffix diffing can assign an adjacent LF to the wrong side of a multiline edit.
   private data class TextDiff(
       val start: Int,
       val baseEnd: Int,
@@ -329,70 +248,12 @@ object FileManager {
     )
   }
 
-  private fun lineBreakSummary(text: String): String {
-    var crlf = 0
-    var lf = 0
-    var cr = 0
-    var index = 0
-    while (index < text.length) {
-      when (text[index]) {
-        '\r' -> {
-          if (index + 1 < text.length && text[index + 1] == '\n') {
-            crlf++
-            index++
-          } else {
-            cr++
-          }
-        }
-        '\n' -> lf++
-      }
-      index++
-    }
-    return "crlf=$crlf,lf=$lf,cr=$cr"
-  }
-
-  private fun textSignature(text: String): String {
-    if (text.isEmpty()) return "empty"
-    val signature = mutableListOf<String>()
-    var index = 0
-    while (index < text.length && signature.size < 32) {
-      val current = text[index]
-      val category =
-          when {
-            current == '\r' && index + 1 < text.length && text[index + 1] == '\n' -> {
-              index++
-              "CRLF"
-            }
-            current == '\n' -> "LF"
-            current == '\r' -> "CR"
-            current == ' ' -> "SP"
-            current == '\t' -> "TAB"
-            current.isWhitespace() -> "WS"
-            else -> "OTHER"
-          }
-      signature += category
-      index++
-    }
-    if (index < text.length) signature += "..."
-    return signature.joinToString(",")
-  }
-
-  private fun textShape(text: String): String {
-    if (text.isEmpty()) return "empty"
-    return when {
-      text.all { it == ' ' } -> "spaces"
-      text.all { it == '\t' } -> "tabs"
-      text.all { it == ' ' || it == '\t' } -> "horizontal-whitespace"
-      text.contains('\n') || text.contains('\r') -> "contains-line-break"
-      else -> "text"
-    }
-  }
-
   private fun verifiedOneHopEdit(
       base: ActiveDocumentSnapshot,
       target: ActiveDocumentSnapshot,
       changeType: com.tom.rv2ide.eventbus.events.editor.ChangeType,
       changedText: String,
+      changeRange: com.tom.rv2ide.models.Range,
   ): OneHopDocumentEdit? {
     if (
         changeType == com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT ||
@@ -402,36 +263,108 @@ object FileManager {
       return null
     }
 
+    // Line-separator edits can have the same LF on both sides of the changed region; prefix/suffix diffing may assign that LF to the wrong side, so use the editor range first.
+    val rangeEdit = verifiedOneHopEditFromRange(base, target, changeType, changedText, changeRange)
+    if (rangeEdit != null) {
+      return rangeEdit
+    }
+    if (!hasUsableChangeRange(changeRange)) {
+      return verifiedOneHopEditFromTextDiff(base, target, changeType, changedText)
+    }
+    return null
+  }
+
+  private fun verifiedOneHopEditFromRange(
+      base: ActiveDocumentSnapshot,
+      target: ActiveDocumentSnapshot,
+      changeType: com.tom.rv2ide.eventbus.events.editor.ChangeType,
+      changedText: String,
+      changeRange: com.tom.rv2ide.models.Range,
+  ): OneHopDocumentEdit? {
+    if (!hasUsableChangeRange(changeRange)) return null
+    val start = changeRange.start.index
+    val end = changeRange.end.index
+    if (start < 0 || end < start) return null
+
     val baseText = base.content
     val targetText = target.content
-    var start = 0
-    val commonLength = minOf(baseText.length, targetText.length)
-    while (start < commonLength && baseText[start] == targetText[start]) {
-      start++
+    val baseStart: Int
+    val baseEnd: Int
+    val targetStart: Int
+    val targetEnd: Int
+    when (changeType) {
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.INSERT -> {
+        baseStart = start
+        baseEnd = start
+        targetStart = start
+        targetEnd = end
+      }
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.DELETE -> {
+        baseStart = start
+        baseEnd = end
+        targetStart = start
+        targetEnd = start
+      }
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT -> return null
+    }
+    if (
+        baseStart > baseText.length ||
+            baseEnd > baseText.length ||
+            targetStart > targetText.length ||
+            targetEnd > targetText.length
+    ) {
+      return null
     }
 
-    var baseEnd = baseText.length
-    var targetEnd = targetText.length
-    while (
-        baseEnd > start &&
-            targetEnd > start &&
-            baseText[baseEnd - 1] == targetText[targetEnd - 1]
-    ) {
-      baseEnd--
-      targetEnd--
-    }
-    val replacement = targetText.substring(start, targetEnd)
-    val removed = baseText.substring(start, baseEnd)
+    val removed = baseText.substring(baseStart, baseEnd)
+    val replacement = targetText.substring(targetStart, targetEnd)
+    val payloadMatches =
+        when (changeType) {
+          com.tom.rv2ide.eventbus.events.editor.ChangeType.INSERT ->
+              replacement == changedText && replacement.isNotEmpty() && removed.isEmpty()
+          com.tom.rv2ide.eventbus.events.editor.ChangeType.DELETE ->
+              removed == changedText && removed.isNotEmpty() && replacement.isEmpty()
+          com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT -> false
+        }
+    if (!payloadMatches) return null
+
+    val expectedTarget =
+        baseText.substring(0, baseStart) + replacement + baseText.substring(baseEnd)
+    if (expectedTarget != targetText) return null
+
     val kind =
         when {
-          start == baseEnd && replacement.isNotEmpty() -> OneHopDocumentEdit.Kind.INSERT
-          start != baseEnd && replacement.isEmpty() -> OneHopDocumentEdit.Kind.DELETE
-          start != baseEnd && replacement.isNotEmpty() -> OneHopDocumentEdit.Kind.REPLACE
+          removed.isEmpty() && replacement.isNotEmpty() -> OneHopDocumentEdit.Kind.INSERT
+          removed.isNotEmpty() && replacement.isEmpty() -> OneHopDocumentEdit.Kind.DELETE
           else -> return null
         }
-    // ContentChangeEvent reports inserted text for INSERT and removed text for DELETE. Do not
-    // infer replacement semantics from the action alone; accept a replacement only if the full
-    // base/target comparison and the action-specific payload agree.
+    return OneHopDocumentEdit(
+        base = DocumentSnapshotIdentity(base.file.normalize(), base.version, base.revision),
+        target = DocumentSnapshotIdentity(target.file.normalize(), target.version, target.revision),
+        baseStartIndex = baseStart,
+        baseEndIndex = baseEnd,
+        removedText = removed,
+        replacementText = replacement,
+        kind = kind,
+    )
+  }
+
+  private fun verifiedOneHopEditFromTextDiff(
+      base: ActiveDocumentSnapshot,
+      target: ActiveDocumentSnapshot,
+      changeType: com.tom.rv2ide.eventbus.events.editor.ChangeType,
+      changedText: String,
+  ): OneHopDocumentEdit? {
+    val diff = documentTextDiff(base.content, target.content)
+    val removed = diff.removed
+    val replacement = diff.replacement
+    val kind =
+        when {
+          diff.start == diff.baseEnd && replacement.isNotEmpty() -> OneHopDocumentEdit.Kind.INSERT
+          diff.start != diff.baseEnd && replacement.isEmpty() -> OneHopDocumentEdit.Kind.DELETE
+          diff.start != diff.baseEnd && replacement.isNotEmpty() -> OneHopDocumentEdit.Kind.REPLACE
+          else -> return null
+        }
     val payloadMatches =
         when (changeType) {
           com.tom.rv2ide.eventbus.events.editor.ChangeType.INSERT ->
@@ -440,19 +373,20 @@ object FileManager {
               removed == changedText && removed.isNotEmpty() && replacement.isEmpty()
           com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT -> false
         }
-    if (!payloadMatches) {
-      return null
-    }
+    if (!payloadMatches) return null
     return OneHopDocumentEdit(
         base = DocumentSnapshotIdentity(base.file.normalize(), base.version, base.revision),
         target = DocumentSnapshotIdentity(target.file.normalize(), target.version, target.revision),
-        baseStartIndex = start,
-        baseEndIndex = baseEnd,
+        baseStartIndex = diff.start,
+        baseEndIndex = diff.baseEnd,
         removedText = removed,
         replacementText = replacement,
         kind = kind,
     )
   }
+
+  private fun hasUsableChangeRange(range: com.tom.rv2ide.models.Range): Boolean =
+      range.start.index >= 0 && range.end.index >= range.start.index
 
   private fun createDocument(event: DocumentOpenEvent): ActiveDocument {
     val initialContent = readOpenEventText(event)
