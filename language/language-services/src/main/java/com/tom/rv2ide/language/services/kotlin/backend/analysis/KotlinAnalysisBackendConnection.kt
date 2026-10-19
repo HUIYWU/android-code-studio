@@ -266,10 +266,21 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didChange" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           if (supportsDocument(path)) {
-            runtime?.onFileContentChanged(
+            val textDocument = params.getAsJsonObject("textDocument")
+            val didChangeVersion = textDocument?.get("version")?.asInt
+            val latestEdit = FileManager.getLatestOneHopDocumentEdit(path)
+            KlsLogs.info(
+                "Kotlin Analysis didChange trace: path={}, version={}, latestEditBaseVersion={}, latestEditTargetVersion={}, latestEditBaseRevision={}, latestEditTargetRevision={}, latestEditBaseFile={}, latestEditTargetFile={}",
                 path,
-                FileManager.getLatestOneHopDocumentEdit(path),
+                didChangeVersion,
+                latestEdit?.base?.version,
+                latestEdit?.target?.version,
+                latestEdit?.base?.revision,
+                latestEdit?.target?.revision,
+                latestEdit?.base?.file,
+                latestEdit?.target?.file,
             )
+            runtime?.onFileContentChanged(path, latestEdit)
             scheduleDiagnostics(path)
           }
         }

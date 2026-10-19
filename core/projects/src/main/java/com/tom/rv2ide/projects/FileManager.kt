@@ -157,6 +157,12 @@ object FileManager {
       val target =
           ActiveDocumentSnapshot(file, event.version, Instant.now(), targetContent, event.revision)
       val verifiedEdit = verifiedOneHopEdit(base, target, event.changeType, event.changedText)
+      val failureReason =
+          if (verifiedEdit == null) {
+            oneHopFailureReason(base, target, event.changeType, event.changedText)
+          } else {
+            null
+          }
       if (verifiedEdit != null) {
         latestOneHopEdits[file] = verifiedEdit
       } else {
@@ -168,6 +174,40 @@ object FileManager {
           modified = target.modified,
           content = target.content,
           revision = target.revision,
+      )
+      val latestEdit = latestOneHopEdits[file]
+      val textDiff = documentTextDiff(base.content, target.content)
+      log.info(
+          "Document one-hop trace: path={}, result={}, reason={}, changeType={}, changedTextLength={}, changedTextShape={}, changedTextBreaks={}, changedTextSignature={}, removedLength={}, removedShape={}, removedBreaks={}, removedSignature={}, replacementLength={}, replacementShape={}, replacementBreaks={}, replacementSignature={}, diffStart={}, diffBaseEnd={}, diffTargetEnd={}, baseVersion={}, targetVersion={}, baseRevision={}, targetRevision={}, baseTextLength={}, targetTextLength={}, latestEditBaseVersion={}, latestEditTargetVersion={}, latestEditBaseRevision={}, latestEditTargetRevision={}",
+          file,
+          if (verifiedEdit != null) "accepted" else "rejected",
+          failureReason ?: "none",
+          event.changeType,
+          event.changedText.length,
+          textShape(event.changedText),
+          lineBreakSummary(event.changedText),
+          textSignature(event.changedText),
+          textDiff.removed.length,
+          textShape(textDiff.removed),
+          lineBreakSummary(textDiff.removed),
+          textSignature(textDiff.removed),
+          textDiff.replacement.length,
+          textShape(textDiff.replacement),
+          lineBreakSummary(textDiff.replacement),
+          textSignature(textDiff.replacement),
+          textDiff.start,
+          textDiff.baseEnd,
+          textDiff.targetEnd,
+          base.version,
+          target.version,
+          base.revision,
+          target.revision,
+          base.content.length,
+          target.content.length,
+          latestEdit?.base?.version,
+          latestEdit?.target?.version,
+          latestEdit?.base?.revision,
+          latestEdit?.target?.revision,
       )
     }
   }
@@ -203,6 +243,149 @@ object FileManager {
     val file = event.file.toPath().normalize()
     latestOneHopEdits.remove(file)
     activeDocuments.remove(file)
+  }
+
+  private fun oneHopFailureReason(
+      base: ActiveDocumentSnapshot,
+      target: ActiveDocumentSnapshot,
+      changeType: com.tom.rv2ide.eventbus.events.editor.ChangeType,
+      changedText: String,
+  ): String {
+    if (changeType == com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT) {
+      return "new-text"
+    }
+    if (target.version != base.version + 1) {
+      return "version-not-contiguous"
+    }
+    if (target.revision <= base.revision) {
+      return "revision-not-increasing"
+    }
+
+    val baseText = base.content
+    val targetText = target.content
+    var start = 0
+    val commonLength = minOf(baseText.length, targetText.length)
+    while (start < commonLength && baseText[start] == targetText[start]) {
+      start++
+    }
+
+    var baseEnd = baseText.length
+    var targetEnd = targetText.length
+    while (
+        baseEnd > start &&
+            targetEnd > start &&
+            baseText[baseEnd - 1] == targetText[targetEnd - 1]
+    ) {
+      baseEnd--
+      targetEnd--
+    }
+    val replacement = targetText.substring(start, targetEnd)
+    val removed = baseText.substring(start, baseEnd)
+    if (start == baseEnd && replacement.isEmpty()) {
+      return "no-text-difference"
+    }
+    return when (changeType) {
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.INSERT ->
+          if (replacement == changedText && replacement.isNotEmpty()) "unknown" else "insert-payload-mismatch"
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.DELETE ->
+          if (removed == changedText && removed.isNotEmpty() && replacement.isEmpty()) "unknown"
+          else "delete-payload-mismatch"
+      com.tom.rv2ide.eventbus.events.editor.ChangeType.NEW_TEXT -> "new-text"
+    }
+  }
+
+  private data class TextDiff(
+      val start: Int,
+      val baseEnd: Int,
+      val targetEnd: Int,
+      val removed: String,
+      val replacement: String,
+  )
+
+  private fun documentTextDiff(baseText: String, targetText: String): TextDiff {
+    var start = 0
+    val commonLength = minOf(baseText.length, targetText.length)
+    while (start < commonLength && baseText[start] == targetText[start]) {
+      start++
+    }
+
+    var baseEnd = baseText.length
+    var targetEnd = targetText.length
+    while (
+        baseEnd > start &&
+            targetEnd > start &&
+            baseText[baseEnd - 1] == targetText[targetEnd - 1]
+    ) {
+      baseEnd--
+      targetEnd--
+    }
+
+    return TextDiff(
+        start = start,
+        baseEnd = baseEnd,
+        targetEnd = targetEnd,
+        removed = baseText.substring(start, baseEnd),
+        replacement = targetText.substring(start, targetEnd),
+    )
+  }
+
+  private fun lineBreakSummary(text: String): String {
+    var crlf = 0
+    var lf = 0
+    var cr = 0
+    var index = 0
+    while (index < text.length) {
+      when (text[index]) {
+        '\r' -> {
+          if (index + 1 < text.length && text[index + 1] == '\n') {
+            crlf++
+            index++
+          } else {
+            cr++
+          }
+        }
+        '\n' -> lf++
+      }
+      index++
+    }
+    return "crlf=$crlf,lf=$lf,cr=$cr"
+  }
+
+  private fun textSignature(text: String): String {
+    if (text.isEmpty()) return "empty"
+    val signature = mutableListOf<String>()
+    var index = 0
+    while (index < text.length && signature.size < 32) {
+      val current = text[index]
+      val category =
+          when {
+            current == '\r' && index + 1 < text.length && text[index + 1] == '\n' -> {
+              index++
+              "CRLF"
+            }
+            current == '\n' -> "LF"
+            current == '\r' -> "CR"
+            current == ' ' -> "SP"
+            current == '\t' -> "TAB"
+            current.isWhitespace() -> "WS"
+            else -> "OTHER"
+          }
+      signature += category
+      index++
+    }
+    if (index < text.length) signature += "..."
+    return signature.joinToString(",")
+  }
+
+  private fun textShape(text: String): String {
+    if (text.isEmpty()) return "empty"
+    return when {
+      text.all { it == ' ' } -> "spaces"
+      text.all { it == '\t' } -> "tabs"
+      text.all { it == ' ' || it == '\t' } -> "horizontal-whitespace"
+      text.contains('\n') || text.contains('\r') -> "contains-line-break"
+      else -> "text"
+    }
   }
 
   private fun verifiedOneHopEdit(
