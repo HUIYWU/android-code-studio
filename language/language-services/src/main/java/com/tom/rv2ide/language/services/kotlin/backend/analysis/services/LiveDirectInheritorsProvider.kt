@@ -54,17 +54,6 @@ internal class LiveDirectInheritorsProvider : KotlinDirectInheritorsProvider {
         .filter { it.kind == KotlinSourceDeclarationKind.CLASS_LIKE }
     val materialized = candidates.mapNotNull(::materializeClass)
     val result = materialized.filter { isValidInheritor(it, baseFirClass, scope, includeLocalInheritors) }
-    KlsLogs.infoThrottled(
-        "kotlin-analysis-direct-inheritors-query:$classId:$includeLocalInheritors",
-        500L,
-        "Kotlin Analysis direct inheritors: action=query, baseClassId={}, aliasNameCount={}, candidateCount={}, materializedCount={}, resultCount={}, includeLocalInheritors={}",
-        classId,
-        baseClassNames.size,
-        candidates.size,
-        materialized.size,
-        result.size,
-        includeLocalInheritors,
-    )
     return result
   }
 

@@ -79,21 +79,29 @@ internal abstract class AbstractLiveDeclarationProvider(
 
   override fun findFilesForFacade(facadeFqName: FqName): Collection<KtFile> {
     if (facadeFqName.shortNameOrSpecial().isSpecial) return emptyList()
-    return findFilesForFacadeByPackage(facadeFqName.parent()).filter { it.javaFileFacadeFqName == facadeFqName }
+    val candidates = metadataIndex.facadeDeclarations(facadeFqName)
+        .filter { it.kind == KotlinSourceDeclarationKind.FACADE }
+    val materialized = candidates.mapNotNull(::materializeFile)
+    val result = materialized.filter { it.javaFileFacadeFqName == facadeFqName }
+    return result
   }
 
   override fun findInternalFilesForFacade(facadeFqName: FqName): Collection<KtFile> = emptyList()
 
   override fun findFilesForFacadeByPackage(packageFqName: FqName): Collection<KtFile> = filesForPackage(packageFqName).toList()
 
-  override fun findFilesForScript(scriptFqName: FqName): Collection<KtScript> =
-      filesForPackage(scriptFqName).mapNotNull { it.script }.toList()
+  override fun findFilesForScript(scriptFqName: FqName): Collection<KtScript> {
+    val candidates = metadataIndex.scriptDeclarations(scriptFqName)
+        .filter { it.kind == KotlinSourceDeclarationKind.SCRIPT }
+    val result = candidates.mapNotNull { record -> materializeScript(record, scriptFqName) }
+    logScriptQuery(scriptFqName, candidates.size, result.size)
+    return result
+  }
 
   override fun getAllClassesByClassId(classId: ClassId): Collection<KtClassOrObject> {
     val candidates = metadataIndex.classLikeDeclarations(classId)
         .filter { it.kind == KotlinSourceDeclarationKind.CLASS_LIKE }
     val result = candidates.mapNotNull { record -> materialize(record, classId) as? KtClassOrObject }
-    logDeclarationQuery("class-like", classId, candidates.size, result.size)
     return result
   }
 
@@ -101,7 +109,6 @@ internal abstract class AbstractLiveDeclarationProvider(
     val candidates = metadataIndex.typeAliasDeclarations(classId)
         .filter { it.kind == KotlinSourceDeclarationKind.TYPE_ALIAS }
     val result = candidates.mapNotNull { record -> materialize(record, classId) as? KtTypeAlias }
-    logDeclarationQuery("type-alias", classId, candidates.size, result.size)
     return result
   }
 
@@ -117,7 +124,6 @@ internal abstract class AbstractLiveDeclarationProvider(
     val candidates = metadataIndex.topLevelCallableDeclarations(callableId)
         .filter { it.kind == KotlinSourceDeclarationKind.TOP_LEVEL_FUNCTION }
     val result = candidates.mapNotNull { record -> materialize(record, callableId) as? KtNamedFunction }
-    logDeclarationQuery("top-level-function", callableId, candidates.size, result.size)
     return result
   }
 
@@ -128,7 +134,6 @@ internal abstract class AbstractLiveDeclarationProvider(
         .flatMap { path -> metadataIndex.metadata(path)?.topLevelClassifierNames.orEmpty().asSequence() }
         .map { Name.identifier(it) }
         .toSet()
-    logDeclarationQuery("package-classifier-names", packageFqName, paths.size, result.size)
     return result
   }
 
@@ -139,7 +144,6 @@ internal abstract class AbstractLiveDeclarationProvider(
         .flatMap { path -> metadataIndex.metadata(path)?.topLevelCallableNames.orEmpty().asSequence() }
         .map { Name.identifier(it) }
         .toSet()
-    logDeclarationQuery("package-callable-names", packageFqName, paths.size, result.size)
     return result
   }
 
@@ -147,16 +151,14 @@ internal abstract class AbstractLiveDeclarationProvider(
     val candidates = metadataIndex.topLevelCallableDeclarations(callableId)
         .filter { it.kind == KotlinSourceDeclarationKind.TOP_LEVEL_PROPERTY }
     val result = candidates.mapNotNull { record -> materialize(record, callableId) as? KtProperty }
-    logDeclarationQuery("top-level-property", callableId, candidates.size, result.size)
     return result
   }
 
-  private fun logDeclarationQuery(kind: String, key: Any, candidateCount: Int, resultCount: Int) {
+  private fun logScriptQuery(key: FqName, candidateCount: Int, resultCount: Int) {
     KlsLogs.infoThrottled(
-        "kotlin-analysis-declaration-query:$kind:$key",
+        "kotlin-analysis-script-query:$key",
         500L,
-        "Kotlin Analysis declaration provider: action=query, queryKind={}, queryKey={}, candidateCount={}, resultCount={}",
-        kind,
+        "Kotlin Analysis script provider: action=query, queryKey={}, candidateCount={}, resultCount={}",
         key,
         candidateCount,
         resultCount,
@@ -169,6 +171,39 @@ internal abstract class AbstractLiveDeclarationProvider(
         ?: return false
     return virtualFile in scope
   }
+
+  private fun materializeFile(record: KotlinSourceDeclarationRecord): KtFile? {
+    val virtualFile = registry.virtualFile(record.path)
+        ?: VirtualFileManager.getInstance().findFileByNioPath(record.path)
+        ?: run {
+          KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=virtual-file-missing, identity={}", record.path, record.identity)
+          return null
+        }
+    if (virtualFile !in scope) {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=scope, identity={}", record.path, record.identity)
+      return null
+    }
+    val file = liveIndex.getCurrentKtFile(record.path) ?: run {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=current-file-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    val currentIdentity = metadataIndex.metadata(record.path)?.identity ?: run {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=metadata-missing, identity={}", record.path, record.identity)
+      return null
+    }
+    if (currentIdentity != record.identity || !liveIndex.isCurrent(record.path, record.identity, file)) {
+      KlsLogs.info("Kotlin Analysis declaration provider: action=candidate-drop, path={}, reason=stale-identity, candidateIdentity={}, currentIdentity={}", record.path, record.identity, currentIdentity)
+      return null
+    }
+    return file
+  }
+
+  private fun materializeScript(record: KotlinSourceDeclarationRecord, scriptFqName: FqName): KtScript? =
+      materializeFile(record)?.let { file ->
+        project.analysisRead {
+          file.script?.takeIf { it.fqName == scriptFqName }
+        }
+      }
 
   private fun materialize(record: KotlinSourceDeclarationRecord, key: Any): org.jetbrains.kotlin.psi.KtDeclaration? {
     val virtualFile = registry.virtualFile(record.path)

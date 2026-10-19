@@ -1,8 +1,10 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
 
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import org.jetbrains.kotlin.fileClasses.javaFileFacadeFqName
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.FqName
+
 import org.jetbrains.kotlin.psi.KtCallableDeclaration
 import org.jetbrains.kotlin.psi.KtClassLikeDeclaration
 import org.jetbrains.kotlin.psi.KtClassOrObject
@@ -23,12 +25,16 @@ internal enum class KotlinSourceDeclarationKind {
   TYPE_ALIAS,
   TOP_LEVEL_FUNCTION,
   TOP_LEVEL_PROPERTY,
+  FACADE,
+  SCRIPT,
 }
 
 internal sealed interface KotlinSourceDeclarationKey {
   data class ClassLike(val classId: ClassId) : KotlinSourceDeclarationKey
   data class TypeAlias(val classId: ClassId) : KotlinSourceDeclarationKey
   data class TopLevelCallable(val callableId: CallableId) : KotlinSourceDeclarationKey
+  data class Facade(val fqName: FqName) : KotlinSourceDeclarationKey
+  data class Script(val fqName: FqName) : KotlinSourceDeclarationKey
 }
 
 internal data class KotlinSourceDeclarationRecord(
@@ -56,44 +62,13 @@ internal data class KotlinSourceFileMetadata(
 
 internal class KotlinSourceMetadataIndex {
   private val lock = Any()
-
-  private fun logReplace(metadata: KotlinSourceFileMetadata) {
-    KlsLogs.info(
-        "Kotlin Analysis source index: action=replace, path={}, identity={}, ownerModule={}, sourceKind={}, declarationCount={}, indexed={}",
-        metadata.path,
-        metadata.identity,
-        metadata.ownerModulePath,
-        metadata.sourceKind,
-        metadata.declarations.size,
-        metadata.indexed,
-    )
-  }
-
-  private fun logRemove(path: Path, metadata: KotlinSourceFileMetadata?) {
-    KlsLogs.info(
-        "Kotlin Analysis source index: action=remove, path={}, identity={}, declarationCount={}, found={}",
-        path,
-        metadata?.identity,
-        metadata?.declarations?.size ?: 0,
-        metadata != null,
-    )
-  }
-
-  private fun logQuery(kind: String, key: Any, candidateCount: Int) {
-    KlsLogs.infoThrottled(
-        "kotlin-analysis-source-index-query:$kind:$key",
-        500L,
-        "Kotlin Analysis source index: action=query, queryKind={}, queryKey={}, candidateCount={}",
-        kind,
-        key,
-        candidateCount,
-    )
-  }
   private val records = mutableMapOf<Path, KotlinSourceFileMetadata>()
   private val packageToPaths = mutableMapOf<String, MutableSet<Path>>()
   private val classLikeById = mutableMapOf<ClassId, MutableSet<KotlinSourceDeclarationRecord>>()
   private val typeAliasById = mutableMapOf<ClassId, MutableSet<KotlinSourceDeclarationRecord>>()
   private val topLevelCallableById = mutableMapOf<CallableId, MutableSet<KotlinSourceDeclarationRecord>>()
+  private val facadeByFqName = mutableMapOf<FqName, MutableSet<KotlinSourceDeclarationRecord>>()
+  private val scriptByFqName = mutableMapOf<FqName, MutableSet<KotlinSourceDeclarationRecord>>()
   private val classesBySupertypeNameIndex = mutableMapOf<String, MutableSet<KotlinSourceDeclarationRecord>>()
   private val typeAliasesByAliasedNameIndex = mutableMapOf<String, MutableSet<KotlinSourceDeclarationRecord>>()
 
@@ -127,16 +102,12 @@ internal class KotlinSourceMetadataIndex {
       records[normalized] = metadata
       packageToPaths.getOrPut(metadata.packageName) { linkedSetOf() }.add(normalized)
       declarations.forEach(::addDeclarationLocked)
-      logReplace(metadata)
     }
   }
 
   fun remove(path: Path) {
     synchronized(lock) {
-      val normalized = path.normalize()
-      val removed = records[normalized]
-      removeLocked(normalized)
-      logRemove(normalized, removed)
+      removeLocked(path.normalize())
     }
   }
 
@@ -161,23 +132,31 @@ internal class KotlinSourceMetadataIndex {
   }
 
   fun classLikeDeclarations(classId: ClassId): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
-    classLikeById[classId]?.toList().orEmpty().also { logQuery("class-like", classId, it.size) }
+    classLikeById[classId]?.toList().orEmpty()
   }
 
   fun typeAliasDeclarations(classId: ClassId): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
-    typeAliasById[classId]?.toList().orEmpty().also { logQuery("type-alias", classId, it.size) }
+    typeAliasById[classId]?.toList().orEmpty()
   }
 
   fun topLevelCallableDeclarations(callableId: CallableId): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
-    topLevelCallableById[callableId]?.toList().orEmpty().also { logQuery("callable", callableId, it.size) }
+    topLevelCallableById[callableId]?.toList().orEmpty()
+  }
+
+  fun facadeDeclarations(fqName: FqName): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
+    facadeByFqName[fqName]?.toList().orEmpty()
+  }
+
+  fun scriptDeclarations(fqName: FqName): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
+    scriptByFqName[fqName]?.toList().orEmpty()
   }
 
   fun classesBySupertypeName(name: String): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
-    classesBySupertypeNameIndex[name]?.toList().orEmpty().also { logQuery("supertype", name, it.size) }
+    classesBySupertypeNameIndex[name]?.toList().orEmpty()
   }
 
   fun typeAliasesByAliasedName(name: String): List<KotlinSourceDeclarationRecord> = synchronized(lock) {
-    typeAliasesByAliasedNameIndex[name]?.toList().orEmpty().also { logQuery("type-alias-target", name, it.size) }
+    typeAliasesByAliasedNameIndex[name]?.toList().orEmpty()
   }
 
   fun paths(): Set<Path> = synchronized(lock) {
@@ -199,6 +178,8 @@ internal class KotlinSourceMetadataIndex {
       is KotlinSourceDeclarationKey.ClassLike -> classLikeById.getOrPut(key.classId) { linkedSetOf() }
       is KotlinSourceDeclarationKey.TypeAlias -> typeAliasById.getOrPut(key.classId) { linkedSetOf() }
       is KotlinSourceDeclarationKey.TopLevelCallable -> topLevelCallableById.getOrPut(key.callableId) { linkedSetOf() }
+      is KotlinSourceDeclarationKey.Facade -> facadeByFqName.getOrPut(key.fqName) { linkedSetOf() }
+      is KotlinSourceDeclarationKey.Script -> scriptByFqName.getOrPut(key.fqName) { linkedSetOf() }
     }
     target.add(record)
     record.directSupertypeNames.forEach { name ->
@@ -214,6 +195,8 @@ internal class KotlinSourceMetadataIndex {
       is KotlinSourceDeclarationKey.ClassLike -> removeFromMap(classLikeById, declarationKey.classId, record)
       is KotlinSourceDeclarationKey.TypeAlias -> removeFromMap(typeAliasById, declarationKey.classId, record)
       is KotlinSourceDeclarationKey.TopLevelCallable -> removeFromMap(topLevelCallableById, declarationKey.callableId, record)
+      is KotlinSourceDeclarationKey.Facade -> removeFromMap(facadeByFqName, declarationKey.fqName, record)
+      is KotlinSourceDeclarationKey.Script -> removeFromMap(scriptByFqName, declarationKey.fqName, record)
     }
     record.directSupertypeNames.forEach { name -> removeFromMap(classesBySupertypeNameIndex, name, record) }
     record.inheritableAliasedNames.forEach { name -> removeFromMap(typeAliasesByAliasedNameIndex, name, record) }
@@ -236,6 +219,26 @@ internal class KotlinSourceMetadataIndex {
       file: KtFile,
   ): List<KotlinSourceDeclarationRecord> {
     val declarations = mutableListOf<KotlinSourceDeclarationRecord>()
+    val facadeFqName = file.javaFileFacadeFqName
+    declarations += KotlinSourceDeclarationRecord(
+        kind = KotlinSourceDeclarationKind.FACADE,
+        key = KotlinSourceDeclarationKey.Facade(facadeFqName),
+        path = path,
+        identity = identity,
+        startOffset = 0,
+        name = facadeFqName.asString(),
+    )
+    file.script?.let { script ->
+      val scriptFqName = script.fqName
+      declarations += KotlinSourceDeclarationRecord(
+          kind = KotlinSourceDeclarationKind.SCRIPT,
+          key = KotlinSourceDeclarationKey.Script(scriptFqName),
+          path = path,
+          identity = identity,
+          startOffset = script.textRange?.startOffset ?: 0,
+          name = scriptFqName.asString(),
+      )
+    }
     file.accept(object : KtTreeVisitorVoid() {
       override fun visitClassOrObject(classOrObject: KtClassOrObject) {
         val classId = classOrObject.getClassId()
