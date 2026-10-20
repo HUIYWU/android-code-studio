@@ -20,6 +20,7 @@ package com.tom.rv2ide.projects
 import com.android.builder.model.v2.models.ProjectSyncIssues
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.tooling.api.models.BuildVariantInfo
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
 import java.io.File
 import java.nio.file.Path
 
@@ -43,6 +44,8 @@ interface IWorkspace {
 
   /** Get the issues that were encountered while synchronizing the project with Gradle files. */
   fun getProjectSyncIssues(): ProjectSyncIssues
+
+  fun getGradleKotlinDslSnapshot(): GradleKotlinDslSnapshot
 
   /**
    * Get the build variants that are selected (configured/synchronized) for each of the Android

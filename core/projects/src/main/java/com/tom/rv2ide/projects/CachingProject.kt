@@ -27,6 +27,7 @@ import com.tom.rv2ide.tooling.api.IProject
 import com.tom.rv2ide.tooling.api.ProjectType
 import com.tom.rv2ide.tooling.api.models.BasicProjectMetadata
 import com.tom.rv2ide.tooling.api.models.CompositeBuildDescriptor
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
 import com.tom.rv2ide.tooling.api.models.params.StringParameter
 import com.tom.rv2ide.tooling.api.models.result.SelectProjectResult
 import java.util.concurrent.CompletableFuture
@@ -43,6 +44,7 @@ open class CachingProject(val project: IProject) : IProject {
   private val projects = mutableListOf<BasicProjectMetadata>()
   private var syncIssues: DefaultProjectSyncIssues? = null
   private var compositeBuildDescriptors: List<CompositeBuildDescriptor>? = null
+  private var gradleKotlinDslSnapshot: GradleKotlinDslSnapshot? = null
 
   companion object {
 
@@ -102,6 +104,15 @@ open class CachingProject(val project: IProject) : IProject {
       }
 
       this.compositeBuildDescriptors = descriptors
+    }
+  }
+
+  override fun getGradleKotlinDslSnapshot(): CompletableFuture<GradleKotlinDslSnapshot> {
+    gradleKotlinDslSnapshot?.let {
+      return CompletableFuture.completedFuture(it)
+    }
+    return project.getGradleKotlinDslSnapshot().thenApply { snapshot ->
+      snapshot.immutableCopy().also { gradleKotlinDslSnapshot = it }
     }
   }
 

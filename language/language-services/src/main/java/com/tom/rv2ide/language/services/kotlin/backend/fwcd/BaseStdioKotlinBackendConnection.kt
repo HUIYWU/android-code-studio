@@ -21,8 +21,7 @@ import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendState
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
-import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
-import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
+import com.tom.rv2ide.language.services.kotlin.document.isKotlinLanguageDocument
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import java.io.BufferedInputStream
@@ -138,7 +137,7 @@ abstract class BaseStdioKotlinBackendConnection : KotlinBackendConnection {
   }
 
   override fun supportsDocument(path: java.nio.file.Path): Boolean =
-      path.kotlinDocumentKind(isGradleScript = true) != KotlinDocumentKind.UNSUPPORTED
+      path.isKotlinLanguageDocument()
 
   override fun initialize(params: JsonObject, callback: (JsonObject?) -> Unit) {
     sendRequest("initialize", params, callback)

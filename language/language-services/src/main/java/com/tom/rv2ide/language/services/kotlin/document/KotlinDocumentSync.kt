@@ -37,7 +37,7 @@ class KotlinDocumentSync(
   private val documentRevisions = ConcurrentHashMap<String, Long>()
   @Synchronized
   fun ensureDocumentOpen(file: Path, content: String? = null, version: Int? = null) {
-    if (!connection.supportsDocument(file) || !isServerReady()) return
+    if (!file.isKotlinLanguageDocument() || !isServerReady()) return
     val uri = file.toUri().toString()
     val snapshot = FileManager.getActiveDocumentSnapshot(file)
     if (openedDocuments.contains(uri)) {
@@ -61,7 +61,7 @@ class KotlinDocumentSync(
   }
 
   private fun openDocumentNow(file: Path, uri: String, text: String, version: Int, revision: Long?): Boolean {
-    if (!connection.supportsDocument(file) || !isServerReady()) return false
+    if (!file.isKotlinLanguageDocument() || !isServerReady()) return false
 
     val params =
         JsonObject().apply {
@@ -92,7 +92,7 @@ class KotlinDocumentSync(
 
   @Synchronized
   private fun notifyDocumentChange(file: Path, newText: String, version: Int, revision: Long) {
-    if (!connection.supportsDocument(file) || !isServerReady()) return
+    if (!file.isKotlinLanguageDocument() || !isServerReady()) return
     val uri = file.toUri().toString()
 
     if (!openedDocuments.contains(uri)) {
@@ -127,7 +127,7 @@ class KotlinDocumentSync(
 
   @Synchronized
   fun notifyDocumentSave(file: Path, text: String? = null) {
-    if (!connection.supportsDocument(file) || !isServerReady()) return
+    if (!file.isKotlinLanguageDocument() || !isServerReady()) return
     val uri = file.toUri().toString()
     if (!FileManager.isActive(file)) return
     syncActiveDocument(file)
@@ -198,7 +198,7 @@ class KotlinDocumentSync(
   fun resyncActiveDocuments() {
     clear()
     FileManager.getActiveDocumentFiles()
-        .filter(connection::supportsDocument)
+        .filter(Path::isKotlinLanguageDocument)
         .forEach { file ->
           val snapshot = FileManager.getActiveDocumentSnapshot(file)
           ensureDocumentOpen(file, snapshot?.content, snapshot?.version)

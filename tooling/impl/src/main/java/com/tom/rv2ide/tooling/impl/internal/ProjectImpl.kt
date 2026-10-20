@@ -25,6 +25,7 @@ import com.tom.rv2ide.tooling.api.IProject
 import com.tom.rv2ide.tooling.api.ProjectType
 import com.tom.rv2ide.tooling.api.models.BasicProjectMetadata
 import com.tom.rv2ide.tooling.api.models.CompositeBuildDescriptor
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
 import com.tom.rv2ide.tooling.api.models.params.StringParameter
 import com.tom.rv2ide.tooling.api.models.result.SelectProjectResult
 import com.tom.rv2ide.tooling.impl.internal.forwarding.ForwardingProject
@@ -38,9 +39,11 @@ internal class ProjectImpl(
     var projects: List<IGradleProject> = emptyList(),
     var projectSyncIssues: DefaultProjectSyncIssues = DefaultProjectSyncIssues(emptyList()),
     var compositeBuildDescriptors: List<CompositeBuildDescriptor> = emptyList(),
+    gradleKotlinDslSnapshot: GradleKotlinDslSnapshot = GradleKotlinDslSnapshot(),
 ) : IProject, Serializable {
 
   private val serialVersionUID = 1L
+  private var kotlinDslSnapshot = gradleKotlinDslSnapshot.immutableCopy()
 
   @Transient private var _lock: Any? = null
   private val lock: Any
@@ -61,7 +64,7 @@ internal class ProjectImpl(
     this.projects = other.projects
     this.projectSyncIssues = other.projectSyncIssues
     this.compositeBuildDescriptors = other.compositeBuildDescriptors
-
+    this.kotlinDslSnapshot = other.kotlinDslSnapshot.immutableCopy()
   }
 
   private fun getProject(path: String): IGradleProject? {
@@ -81,6 +84,10 @@ internal class ProjectImpl(
 
   override fun getCompositeBuildDescriptors(): CompletableFuture<List<CompositeBuildDescriptor>> {
     return CompletableFuture.completedFuture(compositeBuildDescriptors)
+  }
+
+  override fun getGradleKotlinDslSnapshot(): CompletableFuture<GradleKotlinDslSnapshot> {
+    return CompletableFuture.completedFuture(kotlinDslSnapshot)
   }
 
   override fun selectProject(param: StringParameter): CompletableFuture<SelectProjectResult> {

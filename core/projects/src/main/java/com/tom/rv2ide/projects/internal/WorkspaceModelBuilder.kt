@@ -91,7 +91,8 @@ internal object WorkspaceModelBuilder {
         projectDir,
         rootProject,
         transformedProjects,
-        project.getProjectSyncIssues().get()
+        project.getProjectSyncIssues().get(),
+        project.getGradleKotlinDslSnapshot().get(),
       )
 
     } catch (error: Throwable) {

@@ -25,6 +25,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentSync
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentEventBridge
+import com.tom.rv2ide.language.services.kotlin.document.isKotlinLanguageDocument
 import com.tom.rv2ide.language.services.kotlin.format.KotlinCodeFormatProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticService
@@ -62,7 +63,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private val documentSync = KotlinDocumentSync(connection) { backendReady && connection.isReady }
   @Volatile private var semanticService: KotlinSemanticService? = null
   private val documentEventBridge =
-      KotlinDocumentEventBridge(documentSync, connection, connection::supportsDocument) { file ->
+      KotlinDocumentEventBridge(documentSync, connection) { file ->
         _client?.clearDiagnostics(file, connection.diagnosticChannel)
       }
 
@@ -99,7 +100,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
                   resultGeneration == connection.generation) &&
               receivedRevision != null &&
               currentSnapshot?.revision == receivedRevision &&
-              connection.supportsDocument(diagnostics.file)
+              diagnostics.file.isKotlinLanguageDocument()
           current
         }
 
@@ -356,7 +357,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
     KlsLogs.debug("=== FILE SELECTED EVENT: {}", event.selectedFile)
     selectedFile = event.selectedFile
-    if (connection.supportsDocument(event.selectedFile)) {
+    if (event.selectedFile.isKotlinLanguageDocument()) {
       documentSync.ensureDocumentOpen(event.selectedFile)
     }
   }

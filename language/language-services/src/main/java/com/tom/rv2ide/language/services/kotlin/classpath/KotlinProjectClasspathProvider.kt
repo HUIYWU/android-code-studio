@@ -22,6 +22,7 @@ import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
 import java.io.File
+import java.security.MessageDigest
 import java.util.zip.ZipFile
 
 /*
@@ -32,6 +33,35 @@ class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
 
   private var cachedClasspathList: List<String>? = null
   private var cachedClasspath: String? = null
+  private var cachedClasspathSnapshot: KotlinClasspathSnapshot? = null
+  private var cachedScriptClasspathSnapshot: KotlinClasspathSnapshot? = null
+
+  fun getClasspathSnapshot(): KotlinClasspathSnapshot {
+    getClasspathList()
+    return cachedClasspathSnapshot ?: buildClasspathSnapshot(
+        kind = KotlinClasspathSnapshotKind.ORDINARY_COMPILER,
+        paths = emptyList(),
+        origins = emptyMap(),
+        missingSources = setOf("ordinary compiler classpath collection"),
+        resolved = false,
+    )
+  }
+
+  fun getGradleDslClasspathSnapshot(): KotlinClasspathSnapshot {
+    getClasspathList()
+    return cachedScriptClasspathSnapshot ?: buildClasspathSnapshot(
+        kind = KotlinClasspathSnapshotKind.GRADLE_DSL_SCRIPT,
+        paths = emptyList(),
+        origins = emptyMap(),
+        missingSources = setOf(
+            "Gradle runtime",
+            "gradle-kotlin-dsl",
+            "AGP/Android tooling",
+            "Kotlin scripting/compiler tooling",
+        ),
+        resolved = false,
+    )
+  }
 
   private fun isLikelyAgpGeneratedSourceDir(dir: File): Boolean {
     val normalized = dir.absolutePath.replace('\\', '/').lowercase()
@@ -183,6 +213,7 @@ class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
 
     val classpaths = mutableSetOf<String>()
     val projectDerivedFallbackAdded = mutableSetOf<String>()
+    val missingClasspathSources = linkedSetOf<String>()
     // Keep provenance only for this collection pass. It is diagnostic data used to
     // distinguish project dependencies from Kotlin compiler/tooling implementation jars.
     val classpathOrigins = mutableMapOf<String, MutableSet<String>>()
@@ -262,12 +293,125 @@ class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
     }
 
     val existingPaths = classpaths.filter { File(it).exists() }.toList()
+    if (workspace == null) {
+      missingClasspathSources += "workspace model"
+    }
+    if (existingPaths.isEmpty()) {
+      missingClasspathSources += "ordinary compiler classpath entries"
+    }
     logClasspathLayerSummary(existingPaths, projectDerivedFallbackAdded)
     logCompilerToolingClasspathOrigins(existingPaths, classpathOrigins)
     KlsLogs.info("Total classpath entries: {}, existing: {}", classpaths.size, existingPaths.size)
 
     cachedClasspathList = existingPaths
+    cachedClasspathSnapshot = buildClasspathSnapshot(
+        kind = KotlinClasspathSnapshotKind.ORDINARY_COMPILER,
+        paths = existingPaths,
+        origins = classpathOrigins,
+        missingSources = missingClasspathSources,
+        resolved = missingClasspathSources.isEmpty(),
+    )
+    val scriptCandidates = existingPaths.filter(::isGradleDslClasspathCandidate)
+    cachedScriptClasspathSnapshot = buildClasspathSnapshot(
+        kind = KotlinClasspathSnapshotKind.GRADLE_DSL_SCRIPT,
+        paths = scriptCandidates,
+        origins = classpathOrigins,
+        missingSources = setOf(
+            "dedicated Gradle DSL classpath source",
+            "Gradle runtime",
+            "gradle-kotlin-dsl",
+            "AGP/Android tooling",
+            "Kotlin scripting/compiler tooling",
+        ),
+        resolved = false,
+    )
+    KlsLogs.info(
+        "Kotlin classpath snapshots: ordinaryFingerprint={}, ordinaryEntries={}, scriptFingerprint={}, scriptEntries={}, scriptStatus={}",
+        cachedClasspathSnapshot?.fingerprint,
+        cachedClasspathSnapshot?.entries?.size ?: 0,
+        cachedScriptClasspathSnapshot?.fingerprint,
+        cachedScriptClasspathSnapshot?.entries?.size ?: 0,
+        cachedScriptClasspathSnapshot?.status,
+    )
     return existingPaths
+  }
+
+  private fun buildClasspathSnapshot(
+      kind: KotlinClasspathSnapshotKind,
+      paths: List<String>,
+      origins: Map<String, Set<String>>,
+      missingSources: Set<String>,
+      resolved: Boolean,
+  ): KotlinClasspathSnapshot {
+    val entries = paths.distinct().sorted().map { path ->
+      val file = File(path)
+      val entryOrigins = origins[path].orEmpty().toSortedSet()
+      val owners = entryOrigins.mapNotNull { origin ->
+        origin.substringAfter(':', missingDelimiterValue = "")
+            .takeIf { it.isNotBlank() }
+      }.toSortedSet()
+      val variants = workspace?.getSubProjects()
+          .orEmpty()
+          .filterIsInstance<AndroidModule>()
+          .filter { it.path in owners }
+          .mapNotNull { it.getSelectedVariant()?.name }
+          .toSortedSet()
+      KotlinClasspathEntrySnapshot(
+          path = path,
+          ownerModulePaths = owners,
+          variantNames = variants,
+          origins = entryOrigins,
+          exists = file.exists(),
+          fingerprint = fingerprintFile(file),
+      )
+    }
+    val status = when {
+      !resolved && entries.isEmpty() -> KotlinClasspathSnapshotStatus.MISSING
+      !resolved -> KotlinClasspathSnapshotStatus.UNRESOLVED
+      entries.any { !it.exists } -> KotlinClasspathSnapshotStatus.MISSING
+      else -> KotlinClasspathSnapshotStatus.COMPLETE
+    }
+    val snapshotLines = buildList {
+      add(kind.name)
+      add(status.name)
+      addAll(missingSources.sorted())
+      entries.forEach { entry ->
+        add(listOf(entry.path, entry.ownerModulePaths, entry.variantNames, entry.origins, entry.exists, entry.fingerprint).joinToString("|"))
+      }
+    }
+    return KotlinClasspathSnapshot(
+        kind = kind,
+        status = status,
+        resolved = resolved,
+        entries = entries,
+        missingSources = missingSources.toSortedSet(),
+        fingerprint = sha256Hex(snapshotLines),
+    )
+  }
+
+  private fun fingerprintFile(file: File): String = sha256Hex(
+      listOf(
+          file.absolutePath,
+          file.exists().toString(),
+          file.length().toString(),
+          file.lastModified().toString(),
+      ),
+  )
+
+  private fun sha256Hex(lines: Collection<String>): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val content = lines.joinToString("\\n")
+    return digest.digest(content.toByteArray()).joinToString("") { "%02x".format(it) }
+  }
+
+  private fun isGradleDslClasspathCandidate(path: String): Boolean {
+    val name = File(path).name.lowercase()
+    return isKotlinCompilerToolingArtifact(path) ||
+        name.contains("gradle-api") ||
+        name.contains("gradle-kotlin-dsl") ||
+        name.contains("android-gradle-plugin") ||
+        name.contains("kotlin-script") ||
+        name.contains("kotlin-scripting")
   }
 
   private fun logCompilerToolingClasspathOrigins(
@@ -528,6 +672,8 @@ class KotlinProjectClasspathProvider(val workspace: IWorkspace? = null) {
   fun invalidateCache() {
     cachedClasspathList = null
     cachedClasspath = null
+    cachedClasspathSnapshot = null
+    cachedScriptClasspathSnapshot = null
     KlsLogs.info("Classpath cache invalidated")
   }
 }

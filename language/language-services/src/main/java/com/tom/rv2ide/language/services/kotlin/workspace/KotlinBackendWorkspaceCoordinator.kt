@@ -23,6 +23,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConfigurator
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFileChange
+import com.tom.rv2ide.language.services.kotlin.document.isKotlinLanguageDocument
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.android.AndroidModule
@@ -70,7 +71,7 @@ class KotlinBackendWorkspaceCoordinator(
         workspaceRoot,
         workspace.getProjectDir().absolutePath,
     )
-    val hasSupportedDocuments = hasSupportedKotlinDocuments(workspaceRootDir, connection)
+    val hasSupportedDocuments = hasKotlinDocuments(workspaceRootDir)
     if (hasSupportedDocuments) {
       LogStream.emitLineBlocking("Starting Kotlin language server...")
     } else {
@@ -296,13 +297,13 @@ class KotlinBackendWorkspaceCoordinator(
     }
   }
 
-  private fun hasSupportedKotlinDocuments(root: File, connection: KotlinBackendConnection): Boolean {
+  private fun hasKotlinDocuments(root: File): Boolean {
     if (!root.exists() || !root.isDirectory) return false
 
     return try {
       root.walkTopDown()
           .onEnter { dir -> !shouldSkipKotlinSourceScanDir(dir) }
-          .any { file -> file.isFile && connection.supportsDocument(file.toPath()) }
+          .any { file -> file.isFile && file.toPath().isKotlinLanguageDocument() }
     } catch (e: Exception) {
       KlsLogs.warn("Failed to scan supported Kotlin files under {}", root.absolutePath, e)
       true

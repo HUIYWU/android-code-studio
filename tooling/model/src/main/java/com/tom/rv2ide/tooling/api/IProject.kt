@@ -20,6 +20,7 @@ package com.tom.rv2ide.tooling.api
 import com.tom.rv2ide.builder.model.DefaultProjectSyncIssues
 import com.tom.rv2ide.tooling.api.models.BasicProjectMetadata
 import com.tom.rv2ide.tooling.api.models.CompositeBuildDescriptor
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
 import java.util.concurrent.CompletableFuture
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import org.eclipse.lsp4j.jsonrpc.services.JsonSegment
@@ -48,6 +49,7 @@ interface IProject : IProjectQueries {
    */
   @JsonRequest fun getCompositeBuildDescriptors(): CompletableFuture<List<CompositeBuildDescriptor>>
 
+  @JsonRequest fun getGradleKotlinDslSnapshot(): CompletableFuture<GradleKotlinDslSnapshot>
 
   companion object {
 
