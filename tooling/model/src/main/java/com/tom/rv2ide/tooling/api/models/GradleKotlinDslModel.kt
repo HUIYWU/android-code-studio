@@ -40,7 +40,7 @@ data class GradleKotlinDslEditorReport(
     val position: GradleKotlinDslEditorPosition?,
 ) : Serializable
 
-data class GradleKotlinDslBuildEnvironment(
+data class GradleKotlinDslEnvironment(
     val state: GradleKotlinDslModelState = GradleKotlinDslModelState.NOT_REQUESTED,
     val gradleVersion: String? = null,
     val gradleUserHome: String? = null,
@@ -48,13 +48,13 @@ data class GradleKotlinDslBuildEnvironment(
     val jvmArguments: List<String> = emptyList(),
     val exceptions: List<String> = emptyList(),
 ) : Serializable {
-  fun immutableCopy(): GradleKotlinDslBuildEnvironment = copy(
+  fun immutableCopy(): GradleKotlinDslEnvironment = copy(
       jvmArguments = immutableList(jvmArguments),
       exceptions = immutableList(exceptions),
   )
 }
 
-data class GradleKotlinDslScriptSnapshot(
+data class GradleKotlinDslScriptModel(
     val scriptPath: String,
     val kind: GradleKotlinDslScriptKind,
     val projectPath: String?,
@@ -69,7 +69,7 @@ data class GradleKotlinDslScriptSnapshot(
     val inputFingerprint: String? = null,
     val fingerprint: String? = null,
 ) : Serializable {
-  fun immutableCopy(): GradleKotlinDslScriptSnapshot = copy(
+  fun immutableCopy(): GradleKotlinDslScriptModel = copy(
       classPath = immutableList(classPath),
       sourcePath = immutableList(sourcePath),
       implicitImports = immutableList(implicitImports),
@@ -78,29 +78,29 @@ data class GradleKotlinDslScriptSnapshot(
   )
 }
 
-data class GradleKotlinDslBuildSnapshot(
+data class GradleKotlinDslBuildModel(
     val buildRootPath: String,
     val state: GradleKotlinDslModelState,
-    val environment: GradleKotlinDslBuildEnvironment = GradleKotlinDslBuildEnvironment(),
-    val scripts: List<GradleKotlinDslScriptSnapshot> = emptyList(),
+    val environment: GradleKotlinDslEnvironment = GradleKotlinDslEnvironment(),
+    val scripts: List<GradleKotlinDslScriptModel> = emptyList(),
     val exceptions: List<String> = emptyList(),
     val fingerprint: String? = null,
 ) : Serializable {
-  fun immutableCopy(): GradleKotlinDslBuildSnapshot = copy(
+  fun immutableCopy(): GradleKotlinDslBuildModel = copy(
       environment = environment.immutableCopy(),
       scripts = immutableList(scripts.map { it.immutableCopy() }),
       exceptions = immutableList(exceptions),
   )
 }
 
-data class GradleKotlinDslSnapshot(
+data class GradleKotlinDslModel(
     val schemaVersion: Int = 1,
     val state: GradleKotlinDslModelState = GradleKotlinDslModelState.NOT_REQUESTED,
-    val builds: List<GradleKotlinDslBuildSnapshot> = emptyList(),
+    val builds: List<GradleKotlinDslBuildModel> = emptyList(),
     val exceptions: List<String> = emptyList(),
     val fingerprint: String? = null,
 ) : Serializable {
-  fun immutableCopy(): GradleKotlinDslSnapshot = copy(
+  fun immutableCopy(): GradleKotlinDslModel = copy(
       builds = immutableList(builds.map { it.immutableCopy() }),
       exceptions = immutableList(exceptions),
   )

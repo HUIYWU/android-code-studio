@@ -55,6 +55,7 @@ import com.tom.rv2ide.tooling.impl.internal.AndroidProjectImpl
 import com.tom.rv2ide.tooling.impl.internal.ProjectImpl
 import com.tom.rv2ide.tooling.impl.net.SimpleHttpProxy
 import com.tom.rv2ide.tooling.impl.sync.ModelBuilderException
+import com.tom.rv2ide.tooling.impl.sync.KotlinDslModelReader
 import com.tom.rv2ide.tooling.impl.sync.RootModelBuilder
 import com.tom.rv2ide.tooling.impl.sync.RootProjectModelBuilderParams
 import com.tom.rv2ide.utils.StopWatch
@@ -205,10 +206,17 @@ internal class ToolingApiServerImpl(private val project: ProjectImpl) : ITooling
               val modelBuilderParams =
                   RootProjectModelBuilderParams(connection, this.buildCancellationToken!!.token())
               val impl =
-                  RootModelBuilder(params).build(modelBuilderParams) as? ProjectImpl?
-                      ?: throw ModelBuilderException("Failed to build project model")
-              impl
-            } catch (err: Throwable) {
+                   RootModelBuilder(params).build(modelBuilderParams) as? ProjectImpl?
+                       ?: throw ModelBuilderException("Failed to build project model")
+               val kotlinDslModel =
+                   KotlinDslModelReader.read(
+                       connection = connection,
+                       cancellationToken = this.buildCancellationToken!!.token(),
+                       buildRoot = projectDirectory,
+                   )
+               impl.setGradleKotlinDslModel(kotlinDslModel)
+               impl
+             } catch (err: Throwable) {
               throw err
             }
 

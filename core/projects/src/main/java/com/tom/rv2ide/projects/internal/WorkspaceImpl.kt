@@ -24,7 +24,7 @@ import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.tooling.api.models.BuildVariantInfo
-import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslModel
 import com.tom.rv2ide.utils.StopWatch
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -45,10 +45,10 @@ internal class WorkspaceImpl(
     private val rootProject: GradleProject,
     private val subProjects: List<GradleProject>,
     private val projectSyncIssues: ProjectSyncIssues,
-    gradleKotlinDslSnapshot: GradleKotlinDslSnapshot,
+    gradleKotlinDslModel: GradleKotlinDslModel,
 ) : IWorkspace {
 
-  private val kotlinDslSnapshot = gradleKotlinDslSnapshot.immutableCopy()
+  private val gradleKotlinDslModelValue = gradleKotlinDslModel.immutableCopy()
 
   companion object {
     private val log = LoggerFactory.getLogger(WorkspaceImpl::class.java)
@@ -79,8 +79,8 @@ internal class WorkspaceImpl(
     return this.projectSyncIssues
   }
 
-  override fun getGradleKotlinDslSnapshot(): GradleKotlinDslSnapshot {
-    return kotlinDslSnapshot
+  override fun getGradleKotlinDslModel(): GradleKotlinDslModel {
+    return gradleKotlinDslModelValue
   }
 
   override fun getAndroidVariantSelections(): Map<String, BuildVariantInfo> {

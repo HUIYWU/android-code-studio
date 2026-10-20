@@ -25,7 +25,7 @@ import com.tom.rv2ide.tooling.api.IProject
 import com.tom.rv2ide.tooling.api.ProjectType
 import com.tom.rv2ide.tooling.api.models.BasicProjectMetadata
 import com.tom.rv2ide.tooling.api.models.CompositeBuildDescriptor
-import com.tom.rv2ide.tooling.api.models.GradleKotlinDslSnapshot
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslModel
 import com.tom.rv2ide.tooling.api.models.params.StringParameter
 import com.tom.rv2ide.tooling.api.models.result.SelectProjectResult
 import com.tom.rv2ide.tooling.impl.internal.forwarding.ForwardingProject
@@ -39,11 +39,11 @@ internal class ProjectImpl(
     var projects: List<IGradleProject> = emptyList(),
     var projectSyncIssues: DefaultProjectSyncIssues = DefaultProjectSyncIssues(emptyList()),
     var compositeBuildDescriptors: List<CompositeBuildDescriptor> = emptyList(),
-    gradleKotlinDslSnapshot: GradleKotlinDslSnapshot = GradleKotlinDslSnapshot(),
+    gradleKotlinDslModel: GradleKotlinDslModel = GradleKotlinDslModel(),
 ) : IProject, Serializable {
 
   private val serialVersionUID = 1L
-  private var kotlinDslSnapshot = gradleKotlinDslSnapshot.immutableCopy()
+  private var kotlinDslModel = gradleKotlinDslModel.immutableCopy()
 
   @Transient private var _lock: Any? = null
   private val lock: Any
@@ -58,13 +58,17 @@ internal class ProjectImpl(
     this.selectedProject = ForwardingProject()
   }
 
+  fun setGradleKotlinDslModel(model: GradleKotlinDslModel) {
+    this.kotlinDslModel = model.immutableCopy()
+  }
+
   fun setFrom(other: ProjectImpl) {
     this.rootProject = other.rootProject
     this.rootProjectPath = other.rootProjectPath
     this.projects = other.projects
     this.projectSyncIssues = other.projectSyncIssues
     this.compositeBuildDescriptors = other.compositeBuildDescriptors
-    this.kotlinDslSnapshot = other.kotlinDslSnapshot.immutableCopy()
+    this.kotlinDslModel = other.kotlinDslModel.immutableCopy()
   }
 
   private fun getProject(path: String): IGradleProject? {
@@ -86,8 +90,8 @@ internal class ProjectImpl(
     return CompletableFuture.completedFuture(compositeBuildDescriptors)
   }
 
-  override fun getGradleKotlinDslSnapshot(): CompletableFuture<GradleKotlinDslSnapshot> {
-    return CompletableFuture.completedFuture(kotlinDslSnapshot)
+  override fun getGradleKotlinDslModel(): CompletableFuture<GradleKotlinDslModel> {
+    return CompletableFuture.completedFuture(kotlinDslModel)
   }
 
   override fun selectProject(param: StringParameter): CompletableFuture<SelectProjectResult> {
