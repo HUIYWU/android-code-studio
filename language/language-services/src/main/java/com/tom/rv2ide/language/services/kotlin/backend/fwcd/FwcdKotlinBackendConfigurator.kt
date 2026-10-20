@@ -25,6 +25,10 @@ import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslBuildModel
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslEnvironment
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslModel
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslScriptModel
 import java.io.File
 import java.security.MessageDigest
 
@@ -86,9 +90,10 @@ class FwcdKotlinBackendConfigurator(
                 // Disable Gradle Kotlin script support for Android source editing. The current KLS
                 // build crashes while analyzing settings.gradle.kts, which prevents reliable
                 // diagnostics for normal .kt files.
-                addProperty("enabled", false)
-                addProperty("buildScriptsEnabled", false)
-                // Keep template metadata present for compatibility, but scripts remain disabled.
+                 addProperty("enabled", false)
+                 addProperty("buildScriptsEnabled", false)
+                 add("model", createGradleKotlinDslModelJson(workspace.getGradleKotlinDslModel()))
+                 // Keep template metadata present for compatibility, but scripts remain disabled.
                 add(
                     "templates",
                     JsonArray().apply {
@@ -181,6 +186,12 @@ class FwcdKotlinBackendConfigurator(
   private fun stringArray(values: Collection<String>): JsonArray {
     val array = JsonArray()
     values.distinct().sorted().forEach { array.add(it) }
+    return array
+  }
+
+  private fun orderedStringArray(values: Collection<String>): JsonArray {
+    val array = JsonArray()
+    values.forEach { array.add(it) }
     return array
   }
 
@@ -378,13 +389,11 @@ class FwcdKotlinBackendConfigurator(
                   add("classpath", classpathArray)
                   add("javaSourceRoots", javaSourceRootsArray)
                   add(
-                      "scripts",
-                      JsonObject().apply {
-                        addProperty("enabled", false)
-                        addProperty("buildScriptsEnabled", false)
-                        // Keep legacy fwcd runtime compatibility: older parsing only reads
-                        // predefined classpath updates from settings.kotlin.scripts.classpath.
-                        add("classpath", classpathArray.deepCopy())
+"scripts",
+                       JsonObject().apply {
+                         addProperty("enabled", false)
+                         addProperty("buildScriptsEnabled", false)
+                         add("model", createGradleKotlinDslModelJson(workspace.getGradleKotlinDslModel()))
                       },
                   )
                   add(
@@ -412,6 +421,63 @@ class FwcdKotlinBackendConfigurator(
       )
     }
   }
+
+  private fun createGradleKotlinDslModelJson(model: GradleKotlinDslModel): JsonObject =
+      JsonObject().apply {
+        addProperty("schemaVersion", model.schemaVersion)
+        addProperty("state", model.state.name)
+        add("builds", JsonArray().apply { model.builds.forEach { add(createGradleKotlinDslBuildJson(it)) } })
+        add("exceptions", stringArray(model.exceptions))
+        model.fingerprint?.let { addProperty("fingerprint", it) }
+      }
+
+  private fun createGradleKotlinDslBuildJson(build: GradleKotlinDslBuildModel): JsonObject =
+      JsonObject().apply {
+        addProperty("buildRootPath", build.buildRootPath)
+        addProperty("state", build.state.name)
+        add("environment", createGradleKotlinDslEnvironmentJson(build.environment))
+        add("scripts", JsonArray().apply { build.scripts.forEach { add(createGradleKotlinDslScriptJson(it)) } })
+        add("exceptions", stringArray(build.exceptions))
+        build.fingerprint?.let { addProperty("fingerprint", it) }
+      }
+
+  private fun createGradleKotlinDslEnvironmentJson(environment: GradleKotlinDslEnvironment): JsonObject =
+      JsonObject().apply {
+        addProperty("state", environment.state.name)
+        environment.gradleVersion?.let { addProperty("gradleVersion", it) }
+        environment.gradleUserHome?.let { addProperty("gradleUserHome", it) }
+        environment.javaHome?.let { addProperty("javaHome", it) }
+        add("jvmArguments", orderedStringArray(environment.jvmArguments))
+        add("exceptions", orderedStringArray(environment.exceptions))
+      }
+
+  private fun createGradleKotlinDslScriptJson(script: GradleKotlinDslScriptModel): JsonObject =
+      JsonObject().apply {
+        addProperty("scriptPath", script.scriptPath)
+        addProperty("kind", script.kind.name)
+        script.projectPath?.let { addProperty("projectPath", it) }
+        addProperty("state", script.state.name)
+        addProperty("modelSource", script.modelSource)
+        add("classPath", orderedStringArray(script.classPath))
+        add("sourcePath", orderedStringArray(script.sourcePath))
+        add("implicitImports", orderedStringArray(script.implicitImports))
+        add("editorReports", JsonArray().apply {
+          script.editorReports.forEach { report ->
+            add(JsonObject().apply {
+              addProperty("severity", report.severity.name)
+              addProperty("message", report.message)
+              report.position?.let {
+                addProperty("line", it.line)
+                addProperty("column", it.column)
+              }
+            })
+          }
+        })
+        add("exceptions", orderedStringArray(script.exceptions))
+        addProperty("inputState", script.inputState.name)
+        script.inputFingerprint?.let { addProperty("inputFingerprint", it) }
+        script.fingerprint?.let { addProperty("fingerprint", it) }
+      }
 
   private fun sendFwcdRuntimeConfig(connection: KotlinBackendConnection) {
     val configParams = createFwcdRuntimeConfig()
