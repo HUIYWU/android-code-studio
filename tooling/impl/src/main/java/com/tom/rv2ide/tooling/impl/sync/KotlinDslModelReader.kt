@@ -36,10 +36,11 @@ internal object KotlinDslModelReader {
       connection: ProjectConnection,
       cancellationToken: CancellationToken?,
       buildRoot: File,
+      gradleHome: File? = null,
   ): GradleKotlinDslModel {
     val executor =
         connection.action { controller ->
-          capture(controller, buildRoot)
+          capture(controller, buildRoot, gradleHome)
         }
 
     finalizeLauncher(executor)
@@ -55,11 +56,15 @@ internal object KotlinDslModelReader {
       throw error
     } catch (error: Throwable) {
       logger.warn("Unable to obtain Gradle Kotlin DSL model", error)
-      failedModel(buildRoot, error)
+      failedModel(buildRoot, error, gradleHome = gradleHome)
     }
   }
 
-  private fun capture(controller: BuildController, requestedBuildRoot: File): GradleKotlinDslModel {
+  private fun capture(
+      controller: BuildController,
+      requestedBuildRoot: File,
+      gradleHome: File?,
+  ): GradleKotlinDslModel {
     val buildEnvironment =
         runCatching { controller.getModel(BuildEnvironment::class.java) }
             .onFailure { logger.debug("Gradle BuildEnvironment model unavailable", it) }
@@ -82,7 +87,7 @@ internal object KotlinDslModelReader {
           return failedModel(
               File(buildRootPath),
               error,
-              buildEnvironment = copyBuildEnvironment(buildEnvironment, GradleKotlinDslModelState.FAILED),
+              buildEnvironment = copyBuildEnvironment(buildEnvironment, GradleKotlinDslModelState.FAILED, gradleHome),
           )
         }
 
@@ -93,7 +98,7 @@ internal object KotlinDslModelReader {
               copyScriptModel(script, scriptModel, modulePaths)
             }
 
-    val environment = copyBuildEnvironment(buildEnvironment, environmentState(buildEnvironment))
+    val environment = copyBuildEnvironment(buildEnvironment, environmentState(buildEnvironment), gradleHome)
     val hasScriptProblems = scripts.any { it.state != GradleKotlinDslModelState.VALID }
     val hasEnvironmentProblem = environment.state != GradleKotlinDslModelState.VALID
     val buildState =
@@ -165,10 +170,12 @@ internal object KotlinDslModelReader {
   private fun copyBuildEnvironment(
       environment: BuildEnvironment?,
       state: GradleKotlinDslModelState,
+      gradleHome: File? = null,
   ): GradleKotlinDslEnvironment {
     return GradleKotlinDslEnvironment(
         state = state,
         gradleVersion = environment?.gradle?.gradleVersion,
+        gradleHome = gradleHome?.canonicalPath,
         gradleUserHome = environment?.gradle?.gradleUserHome?.canonicalPath,
         javaHome = runCatching { environment?.java?.javaHome?.canonicalPath }.getOrNull(),
         jvmArguments = runCatching { environment?.java?.jvmArguments?.toList() }.getOrNull().orEmpty(),
@@ -205,13 +212,15 @@ internal object KotlinDslModelReader {
       buildRoot: File,
       error: Throwable,
       buildEnvironment: GradleKotlinDslEnvironment = GradleKotlinDslEnvironment(),
+      gradleHome: File? = null,
   ): GradleKotlinDslModel {
     val message = "${error.javaClass.name}: ${error.message ?: "unknown error"}"
+    val environment = buildEnvironment.copy(gradleHome = gradleHome?.canonicalPath ?: buildEnvironment.gradleHome)
     val build =
         GradleKotlinDslBuildModel(
             buildRootPath = buildRoot.canonicalPath,
             state = GradleKotlinDslModelState.FAILED,
-            environment = buildEnvironment,
+            environment = environment,
             exceptions = listOf(message),
         ).withFingerprint()
     return GradleKotlinDslModel(

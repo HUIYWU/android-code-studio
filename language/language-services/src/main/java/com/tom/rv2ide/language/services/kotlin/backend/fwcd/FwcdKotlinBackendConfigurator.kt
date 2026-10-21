@@ -445,6 +445,7 @@ class FwcdKotlinBackendConfigurator(
       JsonObject().apply {
         addProperty("state", environment.state.name)
         environment.gradleVersion?.let { addProperty("gradleVersion", it) }
+        environment.gradleHome?.let { addProperty("gradleHome", it) }
         environment.gradleUserHome?.let { addProperty("gradleUserHome", it) }
         environment.javaHome?.let { addProperty("javaHome", it) }
         add("jvmArguments", orderedStringArray(environment.jvmArguments))

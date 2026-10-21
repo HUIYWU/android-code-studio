@@ -43,6 +43,7 @@ data class GradleKotlinDslEditorReport(
 data class GradleKotlinDslEnvironment(
     val state: GradleKotlinDslModelState = GradleKotlinDslModelState.NOT_REQUESTED,
     val gradleVersion: String? = null,
+    val gradleHome: String? = null,
     val gradleUserHome: String? = null,
     val javaHome: String? = null,
     val jvmArguments: List<String> = emptyList(),

@@ -209,11 +209,16 @@ internal class ToolingApiServerImpl(private val project: ProjectImpl) : ITooling
                    RootModelBuilder(params).build(modelBuilderParams) as? ProjectImpl?
                        ?: throw ModelBuilderException("Failed to build project model")
                val kotlinDslModel =
-                   KotlinDslModelReader.read(
-                       connection = connection,
-                       cancellationToken = this.buildCancellationToken!!.token(),
-                       buildRoot = projectDirectory,
-                   )
+KotlinDslModelReader.read(
+                        connection = connection,
+                        cancellationToken = this.buildCancellationToken!!.token(),
+                        buildRoot = projectDirectory,
+                        gradleHome = params.gradleDistribution
+                            .takeIf { it.type == GradleDistributionType.GRADLE_INSTALLATION }
+                            ?.value
+                            ?.let(::File)
+                            ?.takeIf { it.isDirectory },
+                    )
                impl.setGradleKotlinDslModel(kotlinDslModel)
                impl
              } catch (err: Throwable) {
