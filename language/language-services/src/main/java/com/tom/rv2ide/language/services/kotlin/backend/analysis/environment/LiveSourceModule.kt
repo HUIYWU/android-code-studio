@@ -37,10 +37,11 @@ internal class LiveSourceModule(
 
   override val baseContentScope: GlobalSearchScope = object : GlobalSearchScope(project) {
     override fun contains(file: VirtualFile): Boolean {
+      if (file.extension == "kts") return false
       if (registry.moduleForVirtualFile(file) === this@LiveSourceModule) return true
       val path = runCatching { Path.of(file.path).normalize() }.getOrNull() ?: return false
       val extension = path.extension
-      return (extension == "kt" || extension == "kts" || extension == "java") &&
+      return (extension == "kt" || extension == "java") &&
           sourceRoots.any { path == it || path.startsWith(it) }
     }
 
@@ -54,7 +55,7 @@ internal class LiveSourceModule(
       Files.walk(root).use { stream ->
         stream.iterator().asSequence()
             .filter { Files.isRegularFile(it) }
-            .filter { it.extension == "kt" || it.extension == "kts" || it.extension == "java" }
+            .filter { it.extension == "kt" || it.extension == "java" }
             .mapNotNull { path ->
               VirtualFileManager.getInstance().findFileByNioPath(path)?.let {
                 PsiManager.getInstance(project).findFile(it)

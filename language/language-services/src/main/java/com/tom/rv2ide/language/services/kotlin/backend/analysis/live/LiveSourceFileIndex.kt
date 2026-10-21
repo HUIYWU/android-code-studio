@@ -59,6 +59,7 @@ private data class LiveFileSourceSnapshot(
 
 private const val ENABLE_INCREMENTAL_EDIT_TRACE = false
 
+@OptIn(org.jetbrains.kotlin.analysis.api.KaExperimentalApi::class)
 internal class LiveSourceFileIndex(
     val project: Project,
     private val sourceRegistry: LiveSourceFileRegistry,
@@ -83,6 +84,9 @@ internal class LiveSourceFileIndex(
   }
 
   lateinit var parser: KtPsiFactory
+  var onScriptFileCommitted: ((KtFile) -> Unit)? = null
+  var onScriptModulesChanged: (() -> Unit)? = null
+
   private fun logLive(
       action: String,
       path: Path,
@@ -210,6 +214,7 @@ internal class LiveSourceFileIndex(
     val module = sourceRegistry.moduleForPath(path)
     val current = currentFiles.remove(path)
     sourceRegistry.unregister(path)
+    if (path.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
     metadataIndex.remove(path)
     return current?.let { RemovedSource(it.file, module) }
   }
@@ -497,6 +502,7 @@ internal class LiveSourceFileIndex(
         val module = sourceRegistry.moduleForPath(normalized)
         val file = currentFiles.remove(normalized)?.file ?: pin.file
         sourceRegistry.unregister(normalized)
+        if (normalized.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
         metadataIndex.remove(normalized)
         pin.pending = PendingState.Removed(RemovedSource(file, module))
         return@synchronized null
@@ -504,6 +510,7 @@ internal class LiveSourceFileIndex(
       val module = sourceRegistry.moduleForPath(normalized)
       val file = currentFiles.remove(normalized)?.file
       sourceRegistry.unregister(normalized)
+      if (normalized.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
       metadataIndex.remove(normalized)
       RemovedSource(file, module)
     }
@@ -589,7 +596,9 @@ internal class LiveSourceFileIndex(
       project.analysisWrite {
         val file = source.file
         val module = source.module
-        if (file != null) {
+        if (module is org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule) {
+          project.publishModificationEvent(org.jetbrains.kotlin.analysis.api.platform.modification.KotlinGlobalScriptModuleStateModificationEvent)
+        } else if (file != null) {
           KaSourceModificationService.getInstance(project)
               .handleElementModification(file, KaElementModificationType.ElementRemoved(file))
         } else if (module != null) {
@@ -628,8 +637,14 @@ internal class LiveSourceFileIndex(
             return@synchronized
           }
           val old = currentFiles[path]?.file
-          val module = sourceRegistry.moduleForPath(path)
           sourceRegistry.register(path, newFile.viewProvider.virtualFile)
+          val module = sourceRegistry.moduleForPath(path)
+          val script = path.toString().endsWith(".kts")
+          if (script) {
+            // TODO(ACS-KTS-EXPERIMENT): Verify script session invalidation across PSI replacement and pin release.
+            onScriptFileCommitted?.invoke(newFile)
+            project.publishModificationEvent(org.jetbrains.kotlin.analysis.api.platform.modification.KotlinGlobalScriptModuleStateModificationEvent)
+          }
           project.analysisRead {
             metadataIndex.replace(
                 path = path,
@@ -639,15 +654,17 @@ internal class LiveSourceFileIndex(
             )
           }
           currentFiles[path] = VersionedFile(identity, newFile)
-           if (old == null) {
-             KaSourceModificationService.getInstance(project)
-                 .handleElementModification(newFile, KaElementModificationType.Unknown)
-           } else if (module != null) {
-             project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
-           } else {
-             KaSourceModificationService.getInstance(project)
-                 .handleElementModification(old, KaElementModificationType.Unknown)
-           }
+          if (!script) {
+            if (old == null) {
+              KaSourceModificationService.getInstance(project)
+                  .handleElementModification(newFile, KaElementModificationType.Unknown)
+            } else if (module != null) {
+              project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
+            } else {
+              KaSourceModificationService.getInstance(project)
+                  .handleElementModification(old, KaElementModificationType.Unknown)
+            }
+          }
           result = newFile
         }
       }

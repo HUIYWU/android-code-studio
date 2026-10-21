@@ -56,6 +56,8 @@ import org.jetbrains.kotlin.com.intellij.pom.PomModel
 import org.jetbrains.kotlin.com.intellij.pom.core.impl.PomModelImpl
 import org.jetbrains.kotlin.com.intellij.pom.tree.TreeAspect
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaElementSourceFactory
+import org.jetbrains.kotlin.scripting.definitions.ScriptConfigurationsProvider
+import org.jetbrains.kotlin.scripting.definitions.ScriptDefinitionProvider
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaFixedElementSourceFactory
 
 @OptIn(KaImplementationDetail::class)
@@ -69,6 +71,8 @@ internal class LiveAnalysisServiceRegistrar(
     private val packagePartProviderFactory: AnalysisPackagePartProviderFactory,
     private val projectStructureProvider: LiveProjectStructureProvider,
     private val directInheritorsProvider: LiveDirectInheritorsProvider,
+    private val scriptDefinitionProvider: ScriptDefinitionProvider,
+    private val scriptConfigurationsProvider: ScriptConfigurationsProvider,
 ) : AnalysisApiSimpleServiceRegistrar() {
   companion object {
     const val PLUGIN_PATH = "/META-INF/acs-kotlin/acs-kotlin.xml"
@@ -138,6 +142,8 @@ internal class LiveAnalysisServiceRegistrar(
     project.registerService(PomModel::class.java, PomModelImpl::class.java)
     project.registerService(BlockSupport::class.java, BlockSupportImpl::class.java)
     project.registerService(CodeStyleManager::class.java, AnalysisPsiReparseCodeStyleManager(project))
+    project.registerService(ScriptDefinitionProvider::class.java, scriptDefinitionProvider)
+    project.registerService(ScriptConfigurationsProvider::class.java, scriptConfigurationsProvider)
     logPsiReparseServices(project)
   }
 

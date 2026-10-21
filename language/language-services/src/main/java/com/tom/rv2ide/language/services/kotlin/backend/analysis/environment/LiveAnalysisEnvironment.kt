@@ -23,6 +23,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LivePac
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LiveProjectStructureProvider
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslModelState
 import com.tom.rv2ide.utils.Environment
 import org.jetbrains.kotlin.K1Deprecation
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
@@ -33,6 +34,7 @@ import org.jetbrains.kotlin.analysis.api.platform.java.KotlinJavaModuleAnnotatio
 import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KotlinModuleDependentsProvider
 import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KotlinProjectStructureProvider
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibrarySourceModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISession
@@ -49,6 +51,12 @@ import org.jetbrains.kotlin.cli.jvm.modules.JavaModuleGraph
 import org.jetbrains.kotlin.analysis.api.standalone.base.java.KotlinStandaloneJavaModuleAccessibilityChecker
 import org.jetbrains.kotlin.analysis.api.standalone.base.java.KotlinStandaloneJavaModuleAnnotationsProvider
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.StandardFileSystems
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.impl.jar.CoreJarFileSystem
+import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
+import org.jetbrains.kotlin.com.intellij.util.io.URLUtil.JAR_SEPARATOR
 import org.jetbrains.kotlin.com.intellij.mock.MockProject
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
@@ -123,6 +131,9 @@ internal class LiveAnalysisEnvironment(
 
       sourceRegistry = LiveSourceFileRegistry()
       metadataIndex = KotlinSourceMetadataIndex()
+      val scriptModels = workspace.getGradleKotlinDslModel()
+      val scriptDefinitionProvider = LiveGradleScriptDefinitionProvider(scriptModels)
+      val scriptConfigurationsProvider = LiveGradleScriptConfigurationsProvider(project, scriptDefinitionProvider)
       val annotationsResolverFactory = LiveAnnotationsResolverFactory()
       val declarationFactory = LiveDeclarationProviderFactory()
       val declarationMerger = LiveDeclarationProviderMerger(project)
@@ -142,6 +153,8 @@ internal class LiveAnalysisEnvironment(
           packagePartFactory,
           provisionalStructure,
           directInheritorsProvider,
+          scriptDefinitionProvider,
+          scriptConfigurationsProvider,
       )
       ApplicationServiceRegistration.registerWithCustomRegistration(application, listOf(registrar)) {
         registrar.registerApplicationServices(application)
@@ -211,7 +224,54 @@ internal class LiveAnalysisEnvironment(
 
       modules = projectContext.modules.sortedBy { it.modulePath }.map(::source)
       sourceModulesByPath = sourceModules
-      val allModules = modules + libraryModules.values.sortedBy { moduleIdentity(it) }
+      val scriptDependencies = linkedMapOf<Path, List<KaModule>>()
+      val scriptLibraries = mutableListOf<KaLibraryModule>()
+      val scriptSourceLibraries = mutableListOf<KaLibrarySourceModule>()
+      if (scriptModels.schemaVersion == 1 && scriptModels.state in setOf(GradleKotlinDslModelState.VALID, GradleKotlinDslModelState.PARTIAL)) {
+        scriptModels.builds
+            .filter { it.state in setOf(GradleKotlinDslModelState.VALID, GradleKotlinDslModelState.PARTIAL) }
+            .flatMap { build -> build.scripts.map { build.buildRootPath to it } }
+            .groupBy { (_, script) -> Path.of(script.scriptPath).normalize() }
+            .toSortedMap(compareBy(Path::toString))
+            .forEach { (path, candidates) ->
+              val candidate = candidates.singleOrNull()
+              if (candidate == null) {
+                KlsLogs.warn("Kotlin Analysis ambiguous script model: path={}, builds={}", path, candidates.map { it.first })
+                return@forEach
+              }
+              val (buildRoot, script) = candidate
+              if (script.state !in setOf(GradleKotlinDslModelState.VALID, GradleKotlinDslModelState.PARTIAL)) return@forEach
+              val roots = script.classPath.map { Path.of(it).normalize() }.distinct()
+              val missingRoots = roots.filterNot { java.nio.file.Files.exists(it) }
+              if (missingRoots.isNotEmpty()) {
+                KlsLogs.warn("Kotlin Analysis missing script binary roots: path={}, roots={}", path, missingRoots)
+              }
+              val existingRoots = roots.filter { java.nio.file.Files.exists(it) }
+              val libraryName = "acs-script-dependencies:$buildRoot:$path"
+              val sourceFiles = scriptSourceVirtualFiles(script.sourcePath)
+              val pair = createLiveScriptLibraryModulePair(
+                  coreApplicationEnvironment = projectEnvironment.environment,
+                  project = project,
+                  platform = platform,
+                  libraryName = libraryName,
+                  binaryRoots = existingRoots,
+                  sourceFiles = sourceFiles,
+              )
+              val dependency = pair.binary
+              pair.source?.let(scriptSourceLibraries::add)
+              scriptLibraries.add(dependency)
+              scriptDependencies[path] = listOf(dependency)
+            }
+      }
+      val allModules = modules + libraryModules.values.sortedBy { moduleIdentity(it) } + scriptLibraries + scriptSourceLibraries
+      val scriptRegistry = LiveScriptModuleRegistry(
+          projectEnvironment.environment,
+          project,
+          sourceRegistry,
+          platform,
+          languageVersionSettings,
+          scriptDependencies,
+      )
       val structure = LiveStaticProjectStructureProvider(project, allModules, sourceRegistry)
 
       StandaloneProjectFactory.registerServicesForProjectEnvironment(
@@ -236,18 +296,29 @@ internal class LiveAnalysisEnvironment(
       moduleDependents.setup(allModules, runtimeGraph.dependentsByIdentity)
       val parser = KtPsiFactory(project, eventSystemEnabled = true)
       liveIndex.parser = parser
+      liveIndex.onScriptFileCommitted = { file ->
+        scriptRegistry.refresh(file)
+        moduleDependents.refreshScriptModules(sourceRegistry.scriptModules())
+      }
+      liveIndex.onScriptModulesChanged = {
+        moduleDependents.refreshScriptModules(sourceRegistry.scriptModules())
+      }
       val libraryRoots = StandaloneProjectFactory.getAllBinaryRoots(
-          libraryModules.values.toList(),
+          (libraryModules.values + scriptLibraries).toList(),
           projectEnvironment.environment,
       )
       packagePartFactory.setup(languageVersionSettings, libraryRoots)
       allModules.filterIsInstance<LiveSourceModule>().forEach { module ->
         module.sourceRoots.flatMap(::sourcePaths).forEach(liveIndex::registerDiskFile)
       }
+      scriptModels.builds.flatMap { it.scripts }
+          .map { Path.of(it.scriptPath).normalize() }
+          .distinct()
+          .forEach(liveIndex::registerDiskFile)
 
-session = StandaloneAnalysisAPISession(projectEnvironment) {
-         sourceModules.values.associateWith { module -> liveIndex.currentPsiFilesFor(module) }
-       }
+      session = StandaloneAnalysisAPISession(projectEnvironment) {
+        sourceModules.values.associateWith { module -> liveIndex.currentPsiFilesFor(module) }
+      }
        true
     } catch (t: Throwable) {
       KlsLogs.error("Kotlin Analysis live environment failed to start", t)
@@ -346,6 +417,28 @@ session = StandaloneAnalysisAPISession(projectEnvironment) {
           .toList()
     }
   }.getOrDefault(emptyList())
+
+  private fun scriptSourceVirtualFiles(paths: Collection<String>): List<VirtualFile> = buildList {
+    paths.map { Path.of(it).toAbsolutePath().normalize() }.forEach { path ->
+      if (java.nio.file.Files.isDirectory(path)) {
+        addAll(sourcePaths(path).mapNotNull { VirtualFileManager.getInstance().findFileByNioPath(it) })
+      } else if (java.nio.file.Files.isRegularFile(path) && path.toString().endsWith(".jar")) {
+        val jarFileSystem = StandardFileSystems.jar() as? CoreJarFileSystem ?: return@forEach
+        val root = jarFileSystem.refreshAndFindFileByPath(path.toString() + JAR_SEPARATOR) ?: return@forEach
+        val files = mutableListOf<VirtualFile>()
+        org.jetbrains.kotlin.com.intellij.openapi.vfs.VfsUtilCore.iterateChildrenRecursively(
+            root,
+            { true },
+        ) { file ->
+          if (!file.isDirectory && (file.name.endsWith(".kt") || file.name.endsWith(".kts"))) files += file
+          true
+        }
+        addAll(files)
+      } else if (java.nio.file.Files.isRegularFile(path)) {
+        VirtualFileManager.getInstance().findFileByNioPath(path)?.let(::add)
+      }
+    }
+  }.distinct()
 
   private fun resolveJdkRelease(jdkHome: java.io.File): Int =
       Regex("java-(\\d+)").find(jdkHome.name)?.groupValues?.get(1)?.toIntOrNull() ?: 17

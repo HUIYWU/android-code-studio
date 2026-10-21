@@ -1,10 +1,11 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
-
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.extension
+
 
 internal enum class KotlinSourceKind {
   ORDINARY,
@@ -20,10 +21,12 @@ internal data class KotlinSourceRootDescriptor(
     val variantName: String?,
 )
 
+@OptIn(org.jetbrains.kotlin.analysis.api.KaExperimentalApi::class)
 internal class LiveSourceFileRegistry {
   private val pathToVirtualFile = ConcurrentHashMap<Path, VirtualFile>()
   private val virtualFileToPath = ConcurrentHashMap<VirtualFile, Path>()
   private val virtualFileToModule = ConcurrentHashMap<VirtualFile, KaModule>()
+  private val pathToScriptModule = ConcurrentHashMap<Path, KaScriptModule>()
   private val moduleRoots = ConcurrentHashMap<KaModule, List<KotlinSourceRootDescriptor>>()
 
   fun bindModule(module: KaModule, roots: Collection<KotlinSourceRootDescriptor>) {
@@ -58,8 +61,20 @@ internal class LiveSourceFileRegistry {
     return module
   }
 
+  fun bindScriptModule(path: Path, module: KaScriptModule) {
+    val normalized = path.normalize()
+    pathToScriptModule[normalized] = module
+    pathToVirtualFile[normalized]?.let { virtualFileToModule[it] = module }
+  }
+
+  fun scriptModules(): List<KaScriptModule> = pathToScriptModule.entries
+      .sortedBy { it.key.toString() }
+      .map { it.value }
+
   fun unregister(path: Path) {
-    pathToVirtualFile.remove(path.normalize())?.let {
+    val normalized = path.normalize()
+    pathToScriptModule.remove(normalized)
+    pathToVirtualFile.remove(normalized)?.let {
       virtualFileToModule.remove(it)
       virtualFileToPath.remove(it)
     }
@@ -71,10 +86,15 @@ internal class LiveSourceFileRegistry {
 
   fun moduleForVirtualFile(virtualFile: VirtualFile): KaModule? = virtualFileToModule[virtualFile]
 
-  fun moduleForPath(path: Path): KaModule? = bestRootCandidates(path)
-      .map { it.first }
-      .distinct()
-      .singleOrNull()
+  fun moduleForPath(path: Path): KaModule? {
+    val normalized = path.normalize()
+    pathToScriptModule[normalized]?.let { return it }
+    if (normalized.extension == "kts") return null
+    return bestRootCandidates(normalized)
+        .map { it.first }
+        .distinct()
+        .singleOrNull()
+  }
 
   fun sourceRootForPath(path: Path): KotlinSourceRootDescriptor? {
     val candidates = bestRootCandidates(path)

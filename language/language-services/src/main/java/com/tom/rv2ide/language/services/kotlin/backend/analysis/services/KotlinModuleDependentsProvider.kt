@@ -1,21 +1,33 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
+import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
 import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KotlinModuleDependentsProviderBase
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibraryModule
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaLibrarySourceModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 
-@OptIn(KaExperimentalApi::class)
+@OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
 internal class LiveModuleDependentsProvider : KotlinModuleDependentsProviderBase() {
   private fun moduleIdentity(module: KaModule): String = when (module) {
     is KaSourceModule -> module.name
     is KaLibraryModule -> module.libraryName
+    is KaLibrarySourceModule -> module.libraryName
+    is KaScriptModule -> scriptIdentity(module)
     else -> module.stableModuleName ?: module.javaClass.name
   }
 
+  private fun scriptIdentity(module: KaScriptModule): String =
+      module.file.liveBackingPath?.normalize()?.let { "acs-script:$it" }
+          ?: "acs-script:psi:${System.identityHashCode(module.file)}"
+
+  private var baseModules: List<KaModule> = emptyList()
+  private var baseDependentsByIdentity: Map<String, List<String>> = emptyMap()
   private lateinit var modules: List<KaModule>
   private val modulesByIdentity = ConcurrentHashMap<String, KaModule>()
   private val direct = ConcurrentHashMap<KaModule, Set<KaModule>>()
@@ -25,13 +37,32 @@ internal class LiveModuleDependentsProvider : KotlinModuleDependentsProviderBase
       modules: List<KaModule>,
       dependentsByIdentity: Map<String, List<String>>,
   ) {
-    this.modules = modules.sortedBy { moduleIdentity(it) }
+    baseModules = modules.filterNot { it is KaScriptModule }
+    baseDependentsByIdentity = dependentsByIdentity
+    rebuild(emptyList())
+  }
+
+  fun refreshScriptModules(scriptModules: Collection<KaScriptModule>) {
+    rebuild(scriptModules)
+  }
+
+  private fun rebuild(scriptModules: Collection<KaScriptModule>) {
+    modules = (baseModules + scriptModules).distinct().sortedBy(::moduleIdentity)
     modulesByIdentity.clear()
-    modulesByIdentity.putAll(this.modules.associateBy(::moduleIdentity))
+    modulesByIdentity.putAll(modules.associateBy(::moduleIdentity))
     direct.clear()
     transitive.clear()
 
-    dependentsByIdentity.toSortedMap().forEach { (dependencyIdentity, dependentIdentities) ->
+    val dependents = baseDependentsByIdentity
+        .mapValues { (_, identities) -> identities.toMutableList() }
+        .toMutableMap()
+    modules.filterIsInstance<KaScriptModule>().forEach { script ->
+      val scriptIdentity = moduleIdentity(script)
+      script.directRegularDependencies.forEach { dependency ->
+        dependents.getOrPut(moduleIdentity(dependency)) { mutableListOf() }.add(scriptIdentity)
+      }
+    }
+    dependents.toSortedMap().forEach { (dependencyIdentity, dependentIdentities) ->
       val dependency = modulesByIdentity[dependencyIdentity] ?: return@forEach
       direct[dependency] = dependentIdentities
           .mapNotNull(modulesByIdentity::get)

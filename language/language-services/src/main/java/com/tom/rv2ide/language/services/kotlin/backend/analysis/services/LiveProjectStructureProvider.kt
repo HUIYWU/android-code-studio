@@ -54,20 +54,20 @@ internal class LiveProjectStructureProvider : KotlinProjectStructureProviderBase
 
   override fun getModule(element: PsiElement, useSiteModule: KaModule?): KaModule {
     val containingFile = element.containingFile ?: return fallback(null)
-    val virtualFile = containingFile.virtualFile
-    registry.moduleForVirtualFile(virtualFile ?: return fallback(containingFile))?.let { return it }
     val ktFile = containingFile as? KtFile
     val backingPath = ktFile?.liveBackingPath ?: ktFile?.originalKtFile?.liveBackingPath
     if (backingPath != null) registry.moduleForPath(backingPath)?.let { return it }
+    val virtualFile = containingFile.virtualFile
+    registry.moduleForVirtualFile(virtualFile ?: return fallback(containingFile))?.let { return it }
     if (virtualFile != null) {
-      modules.firstOrNull { it.contentScope.contains(virtualFile) }?.let { return it }
       runCatching { Path.of(virtualFile.path).normalize() }.getOrNull()?.let { registry.moduleForPath(it) }?.let { return it }
+      modules.firstOrNull { it.contentScope.contains(virtualFile) }?.let { return it }
     }
     return fallback(containingFile)
   }
 
   override fun getImplementingModules(module: KaModule): List<KaModule> =
-      modules.filter { module in it.directDependsOnDependencies }
+      (modules + registry.scriptModules()).filter { module in it.directDependsOnDependencies }
 
   override fun getNotUnderContentRootModule(project: Project): KaNotUnderContentRootModule = fallback(null)
 
