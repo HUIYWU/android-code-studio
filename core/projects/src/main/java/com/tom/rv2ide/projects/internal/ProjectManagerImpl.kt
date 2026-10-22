@@ -143,6 +143,8 @@ class ProjectManagerImpl : IProjectManager, EventReceiver {
       // wait for the indexing to finish
       jobs.toList().awaitAll()
     }
+
+    publishProjectInitialized()
   }
 
   override fun destroy() {
@@ -211,10 +213,15 @@ class ProjectManagerImpl : IProjectManager, EventReceiver {
         }
       }
 
-      val event = ProjectInitializedEvent()
-      event.put(IWorkspace::class.java, getWorkspace())
-      EventBus.getDefault().post(event)
+      publishProjectInitialized()
     }
+  }
+
+  private fun publishProjectInitialized() {
+    val workspace = getWorkspace() ?: return
+    val event = ProjectInitializedEvent()
+    event.put(IWorkspace::class.java, workspace)
+    EventBus.getDefault().post(event)
   }
 
   private fun updateBuildVariants(onUpdated: (Map<String, BuildVariantInfo>) -> Unit = {}) {
