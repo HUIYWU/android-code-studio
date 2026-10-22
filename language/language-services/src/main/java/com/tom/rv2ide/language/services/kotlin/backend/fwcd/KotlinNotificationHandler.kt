@@ -69,8 +69,6 @@ class KotlinNotificationHandler {
         params.get("version")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
             ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION
 
-    KlsLogs.info("Received {} diagnostics for: {}", diagnosticsArray.size(), uri)
-
     val diagnostics =
         diagnosticsArray.mapNotNull { element ->
           try {
@@ -212,11 +210,6 @@ class KotlinNotificationHandler {
       1 -> KlsLogs.error("KLS: {}", message)
       2 -> KlsLogs.warn("KLS: {}", message)
       3 -> {
-        if (shouldThrottleKlsInfo(message)) {
-          KlsLogs.infoThrottled(normalizeKlsThrottleKey(message), 1500L, "KLS: {}", message)
-        } else {
-          KlsLogs.info("KLS: {}", message)
-        }
       }
       4 -> {
         if (shouldThrottleKlsDebug(message)) {

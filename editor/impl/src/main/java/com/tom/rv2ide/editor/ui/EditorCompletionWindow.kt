@@ -181,17 +181,6 @@ class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(edito
       return false
     }
     return try {
-      val selectedItem = items.getOrNull(pos)
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info(
-            "Selecting completion item: pos={}, count={}, currentSelection={}, itemClass={}, item={}",
-            pos,
-            adapter!!.count,
-            currentSelection,
-            selectedItem?.javaClass?.name,
-            selectedItem,
-        )
-      }
       super.select(pos)
     } catch (e: Throwable) {
       val selectedItem = items.getOrNull(pos)
@@ -209,16 +198,6 @@ class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(edito
   }
   override fun select() : Boolean {
     try {
-      val selectedItem = items.getOrNull(currentSelection)
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info(
-            "Selecting current completion item: currentSelection={}, count={}, itemClass={}, item={}",
-            currentSelection,
-            adapter?.count,
-            selectedItem?.javaClass?.name,
-            selectedItem,
-        )
-      }
       return super.select()
     } catch (e: Throwable) {
       val selectedItem = items.getOrNull(currentSelection)

@@ -72,6 +72,9 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   private var disabledByPreference = false
   private var workspaceCoordinator: KotlinBackendWorkspaceCoordinator? = null
   @Volatile private var activeWorkspace: IWorkspace? = null
+  private val workspaceSetupLock = Any()
+  @Volatile private var workspaceSetupInProgress = false
+  private var pendingWorkspace: IWorkspace? = null
   private val diagnosticsEpoch = java.util.concurrent.atomic.AtomicLong()
 
 
@@ -122,11 +125,28 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun setupWorkspace(workspace: IWorkspace) {
-    LSPEditorActions.ensureActionsMenuRegistered(KotlinCodeActionsMenu)
-    if (activeWorkspace === workspace && backendReady && connection.isReady) {
-      KlsLogs.info("Kotlin language server workspace setup is already current")
-      return
+    synchronized(workspaceSetupLock) {
+      if (workspaceSetupInProgress) {
+        pendingWorkspace = workspace
+        KlsLogs.info("Queued Kotlin language server workspace setup while another setup is in progress")
+        return
+      }
+      if (activeWorkspace === workspace && backendReady && connection.isReady) {
+        KlsLogs.info("Kotlin language server workspace setup is already current")
+        return
+      }
+      workspaceSetupInProgress = true
     }
+    try {
+      setupWorkspaceNow(workspace)
+    } catch (error: Exception) {
+      KlsLogs.error("Kotlin language server workspace setup failed before backend initialization", error)
+      finishWorkspaceSetup(workspace, null)
+    }
+  }
+
+  private fun setupWorkspaceNow(workspace: IWorkspace) {
+    LSPEditorActions.ensureActionsMenuRegistered(KotlinCodeActionsMenu)
 
     val replacingWorkspace = activeWorkspace != null && activeWorkspace !== workspace
     backendReady = false
@@ -139,6 +159,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       disabledByPreference = true
       backendReady = false
       KlsLogs.info("Skipping Kotlin language server setup because KLS is disabled by preference")
+      finishWorkspaceSetup(workspace, null)
       return
     }
 
@@ -166,7 +187,11 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     )
     backendReady = false
     documentSync.clear()
-    val currentSetup = workspaceCoordinator ?: return
+    val currentSetup = workspaceCoordinator
+    if (currentSetup == null) {
+      finishWorkspaceSetup(workspace, null)
+      return
+    }
     val backendStarted =
         if (replacingWorkspace && connection.isReady && connection.isInitialized) {
           backendContext.classpathProvider.invalidateCache()
@@ -176,14 +201,19 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         }
     if (!backendStarted) {
       KlsLogs.error("Kotlin backend failed to refresh for the new workspace")
+      finishWorkspaceSetup(workspace, currentSetup)
       return
     }
     currentSetup.setup(connection) { success ->
-      if (workspaceCoordinator !== currentSetup || activeWorkspace !== workspace) return@setup
+      if (workspaceCoordinator !== currentSetup || activeWorkspace !== workspace) {
+        finishWorkspaceSetup(workspace, currentSetup)
+        return@setup
+      }
       if (!success || !connection.isReady) {
         backendReady = false
         workspaceCoordinator?.cleanup()
         KlsLogs.error("Kotlin language server backend did not become ready")
+        finishWorkspaceSetup(workspace, currentSetup)
         return@setup
       }
 
@@ -193,9 +223,20 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       if (!EventBus.getDefault().isRegistered(this)) {
         EventBus.getDefault().register(this)
       }
+      finishWorkspaceSetup(workspace, currentSetup)
     }
+  }
 
-
+  private fun finishWorkspaceSetup(workspace: IWorkspace, setup: KotlinBackendWorkspaceCoordinator?) {
+    val nextWorkspace = synchronized(workspaceSetupLock) {
+      workspaceSetupInProgress = false
+      val next = pendingWorkspace
+      pendingWorkspace = null
+      next
+    }
+    if (nextWorkspace != null && nextWorkspace !== workspace) {
+      setupWorkspace(nextWorkspace)
+    }
   }
 
   override fun complete(params: CompletionParams?): CompletionResult {
@@ -321,6 +362,10 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   override fun shutdown() {
+    synchronized(workspaceSetupLock) {
+      workspaceSetupInProgress = false
+      pendingWorkspace = null
+    }
     semanticService?.close()
     semanticService = null
     backendReady = false

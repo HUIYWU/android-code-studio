@@ -119,7 +119,7 @@ class FwcdKotlinBackendConfigurator(
   override fun beforeBackendStart(connection: KotlinBackendConnection) = Unit
 
   override fun afterBackendInitialized(connection: KotlinBackendConnection, hasSupportedDocuments: Boolean) {
-    sendFwcdRuntimeConfig(connection)
+    KlsLogs.debug("FWCD initialized with complete classpath and Gradle Kotlin DSL model")
   }
 
   override fun onEnvironmentRefreshed(connection: KotlinBackendConnection) {

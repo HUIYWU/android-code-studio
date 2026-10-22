@@ -53,22 +53,6 @@ open class DefaultEditHandler : IEditHandler {
     if (Looper.myLooper() != Looper.getMainLooper()) {
       ThreadUtils.runOnUiThread {
         try {
-          if (IdeLogConfig.shouldLogInfo()) {
-          log.info(
-              "DefaultEditHandler.performEdits(ui-dispatch): label='{}', insertText='{}', format={}, line={}, column={}, index={}, kind={}, command={}, additionalTextEditsCount={}, additionalEditHandler={}, editorClass={}",
-                item.ideLabel,
-                item.insertText,
-                item.insertTextFormat,
-                line,
-                column,
-                index,
-                item.completionKind,
-                item.command?.command,
-                item.additionalTextEdits?.size ?: 0,
-                item.additionalEditHandler?.javaClass?.name,
-                editor::class.java.name,
-            )
-          }
           performEditsInternal(item, editor, text, line, column, index)
         } catch (t: Throwable) {
           log.error(
@@ -93,22 +77,6 @@ open class DefaultEditHandler : IEditHandler {
     }
 
     try {
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info(
-            "DefaultEditHandler.performEdits: label='{}', insertText='{}', format={}, line={}, column={}, index={}, kind={}, command={}, additionalTextEditsCount={}, additionalEditHandler={}, editorClass={}",
-            item.ideLabel,
-            item.insertText,
-            item.insertTextFormat,
-            line,
-            column,
-            index,
-            item.completionKind,
-            item.command?.command,
-            item.additionalTextEdits?.size ?: 0,
-            item.additionalEditHandler?.javaClass?.name,
-            editor::class.java.name,
-        )
-      }
       performEditsInternal(item, editor, text, line, column, index)
     } catch (t: Throwable) {
       log.error(
@@ -138,98 +106,28 @@ open class DefaultEditHandler : IEditHandler {
       column: Int,
       index: Int,
   ) {
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.performEditsInternal start: label='{}', insertText='{}', format={}, line={}, column={}, index={}, textLength={}, hasCommand={}, additionalTextEditsCount={}, hasAdditionalEditHandler={}, snippetDescription={}",
-          item.ideLabel,
-          item.insertText,
-          item.insertTextFormat,
-          line,
-          column,
-          index,
-          text.length,
-          item.command != null,
-          item.additionalTextEdits?.size ?: 0,
-          item.additionalEditHandler != null,
-          item.snippetDescription,
-      )
-    }
     if (item.insertTextFormat == SNIPPET) {
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info("DefaultEditHandler.performEditsInternal: entering snippet branch for label='{}'", item.ideLabel)
-      }
       insertSnippet(item, editor, text, line, column, index)
       return
     }
 
     val lineText = text.getLine(line)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.performEditsInternal: lineText='{}', lineLength={}, requestedColumn={}",
-          lineText,
-          lineText.length,
-          column,
-      )
-    }
     val start = getIdentifierStart(lineText, column)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.performEditsInternal: computed identifier start={}, deleting range line={} [{}..{})",
-          start,
-          line,
-          start,
-          column,
-      )
-    }
     text.delete(line, start, line, column)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.performEditsInternal: delete succeeded, committing text='{}'",
-          item.insertText,
-      )
-    }
     editor.commitText(item.insertText)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.performEditsInternal: commitText succeeded")
-    }
 
     text.beginBatchEdit()
     try {
       if (item.additionalEditHandler != null) {
-        if (IdeLogConfig.shouldLogInfo()) {
-          log.info(
-              "DefaultEditHandler.performEditsInternal: applying additionalEditHandler={} for label='{}'",
-              item.additionalEditHandler!!.javaClass.name,
-              item.ideLabel,
-          )
-        }
         item.additionalEditHandler!!.performEdits(item, editor, text, line, column, index)
       } else if (item.additionalTextEdits != null && item.additionalTextEdits!!.isNotEmpty()) {
-        if (IdeLogConfig.shouldLogInfo()) {
-          log.info(
-              "DefaultEditHandler.performEditsInternal: applying {} additionalTextEdits for label='{}': {}",
-              item.additionalTextEdits!!.size,
-              item.ideLabel,
-              item.additionalTextEdits,
-          )
-        }
         RewriteHelper.performEdits(item.additionalTextEdits!!, editor)
-      } else {
-        if (IdeLogConfig.shouldLogInfo()) {
-          log.info("DefaultEditHandler.performEditsInternal: no additional edits for label='{}'", item.ideLabel)
-        }
       }
     } finally {
       text.endBatchEdit()
     }
 
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.performEditsInternal: executing command={} for label='{}'", item.command, item.ideLabel)
-    }
     executeCommand(editor, item.command)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.performEditsInternal end: label='{}'", item.ideLabel)
-    }
   }
 
   protected open fun insertSnippet(
@@ -240,17 +138,6 @@ open class DefaultEditHandler : IEditHandler {
       column: Int,
       index: Int,
   ) {
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.insertSnippet start: label='{}', insertText='{}', line={}, column={}, index={}, snippetDescription={}",
-          item.ideLabel,
-          item.insertText,
-          line,
-          column,
-          index,
-          item.snippetDescription,
-      )
-    }
     val snippetDescription: SnippetDescription =
         item.snippetDescription
             ?: SnippetDescription(
@@ -276,50 +163,17 @@ open class DefaultEditHandler : IEditHandler {
       val lineText = text.getLine(line)
       val fallbackStart = getIdentifierStart(lineText, column)
       prefixLength = column - fallbackStart
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info(
-            "DefaultEditHandler.insertSnippet: selectedLength missing/zero, fallback computed prefixLength={} from line={}, column={}, fallbackStart={}, lineText='{}'",
-            prefixLength,
-            line,
-            column,
-            fallbackStart,
-            lineText,
-        )
-      }
-    }
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info(
-          "DefaultEditHandler.insertSnippet: prefixLength={}, deleteSelected={}, allowCommandExecution={}",
-          prefixLength,
-          snippetDescription.deleteSelected,
-          snippetDescription.allowCommandExecution,
-      )
     }
     val selectedText = text.subSequence(index - prefixLength, index).toString()
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.insertSnippet: selectedText='{}'", selectedText)
-    }
     var actionIndex = index
     if (snippetDescription.deleteSelected) {
       text.delete(index - prefixLength, index)
       actionIndex -= prefixLength
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info("DefaultEditHandler.insertSnippet: deleted selected prefix, newActionIndex={}", actionIndex)
-      }
     }
     editor.snippetController.startSnippet(actionIndex, snippet, selectedText)
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.insertSnippet: startSnippet succeeded")
-    }
 
     if (snippetDescription.allowCommandExecution) {
-      if (IdeLogConfig.shouldLogInfo()) {
-        log.info("DefaultEditHandler.insertSnippet: executing command={} for label='{}'", item.command, item.ideLabel)
-      }
       executeCommand(editor, item.command)
-    }
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("DefaultEditHandler.insertSnippet end: label='{}'", item.ideLabel)
     }
   }
 
