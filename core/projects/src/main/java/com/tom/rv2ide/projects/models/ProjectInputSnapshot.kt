@@ -115,4 +115,5 @@ public data class ProjectModuleInputSnapshot(
 public data class ProjectInputSnapshot(
     val workspaceRoot: Path,
     val modules: List<ProjectModuleInputSnapshot>,
+    val gradleKotlinDslModel: com.tom.rv2ide.tooling.api.models.GradleKotlinDslModel,
 )

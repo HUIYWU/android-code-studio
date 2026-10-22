@@ -6,6 +6,9 @@ import com.tom.rv2ide.projects.models.ProjectModuleInputSnapshot
 import com.tom.rv2ide.projects.models.ProjectRootDescriptor
 import com.tom.rv2ide.projects.models.ProjectVariantArtifactSnapshot
 import com.tom.rv2ide.projects.models.ProjectVariantSelectionSnapshot
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslBuildModel
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslModel
+import com.tom.rv2ide.tooling.api.models.GradleKotlinDslScriptModel
 import java.security.MessageDigest
 
 internal data class KotlinProjectInputFingerprints(
@@ -16,6 +19,7 @@ internal data class KotlinProjectInputFingerprints(
     val boot: String,
     val dependencyGraph: String,
     val variant: String,
+    val gradleKotlinDsl: String,
     val structure: String,
 )
 
@@ -62,6 +66,7 @@ internal object KotlinProjectInputFingerprint {
         module.variantArtifact?.let { addAll(artifactLines(it)) }
       }
     })
+    val gradleKotlinDsl = digest(gradleKotlinDslLines(snapshot.gradleKotlinDslModel))
     val structure = digest(
         listOf(
             moduleIdentity,
@@ -71,6 +76,7 @@ internal object KotlinProjectInputFingerprint {
             boot,
             dependencyGraph,
             variant,
+            gradleKotlinDsl,
         ),
     )
     return KotlinProjectInputFingerprints(
@@ -81,6 +87,7 @@ internal object KotlinProjectInputFingerprint {
         boot = boot,
         dependencyGraph = dependencyGraph,
         variant = variant,
+        gradleKotlinDsl = gradleKotlinDsl,
         structure = structure,
     )
   }
@@ -127,6 +134,51 @@ internal object KotlinProjectInputFingerprint {
       "targetSdk=${selection.targetSdk ?: -1}",
       "compileSdk=${selection.compileSdk ?: -1}",
   )
+
+  private fun gradleKotlinDslLines(model: GradleKotlinDslModel): List<String> = buildList {
+    add("schemaVersion=${model.schemaVersion}")
+    add("modelState=${model.state}")
+    add("modelFingerprint=${model.fingerprint.orEmpty()}")
+    model.exceptions.sorted().forEach { add("modelException=$it") }
+    model.builds.sortedBy { it.buildRootPath }.forEach { build ->
+      add("buildRoot=${build.buildRootPath}")
+      add("buildState=${build.state}")
+      add("buildFingerprint=${build.fingerprint.orEmpty()}")
+      addAll(build.environmentLines())
+      build.scripts.sortedBy { it.scriptPath }.forEach { script ->
+        addAll(scriptLines(script))
+      }
+      build.exceptions.sorted().forEach { add("buildException=$it") }
+    }
+  }
+
+  private fun GradleKotlinDslBuildModel.environmentLines(): List<String> = listOf(
+      "gradleState=${environment.state}",
+      "gradleVersion=${environment.gradleVersion.orEmpty()}",
+      "gradleHome=${environment.gradleHome.orEmpty()}",
+      "gradleUserHome=${environment.gradleUserHome.orEmpty()}",
+      "javaHome=${environment.javaHome.orEmpty()}",
+      "jvmArguments=${environment.jvmArguments.joinToString("\\u0000")}",
+      "environmentExceptions=${environment.exceptions.sorted().joinToString("\\u0000")}",
+  )
+
+  private fun scriptLines(script: GradleKotlinDslScriptModel): List<String> = buildList {
+    add("scriptPath=${script.scriptPath}")
+    add("scriptKind=${script.kind}")
+    add("scriptProject=${script.projectPath.orEmpty()}")
+    add("scriptState=${script.state}")
+    add("scriptModelSource=${script.modelSource}")
+    add("scriptInputState=${script.inputState}")
+    add("scriptInputFingerprint=${script.inputFingerprint.orEmpty()}")
+    add("scriptFingerprint=${script.fingerprint.orEmpty()}")
+    script.classPath.forEachIndexed { index, path -> add("scriptClassPath[$index]=$path") }
+    script.sourcePath.forEachIndexed { index, path -> add("scriptSourcePath[$index]=$path") }
+    script.implicitImports.forEachIndexed { index, import -> add("scriptImplicitImport[$index]=$import") }
+    script.editorReports.forEach { report ->
+      add("scriptReport=${report.severity}|${report.message}|${report.position?.line ?: -1}|${report.position?.column ?: -1}")
+    }
+    script.exceptions.sorted().forEach { add("scriptException=$it") }
+  }
 
   private fun artifactLines(artifact: ProjectVariantArtifactSnapshot): List<String> = buildList {
     add("variant=${artifact.variantName}")

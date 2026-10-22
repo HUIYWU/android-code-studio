@@ -35,6 +35,7 @@ public object ProjectInputSnapshotFactory {
     return ProjectInputSnapshot(
         workspaceRoot = workspace.getProjectDir().snapshotPath(),
         modules = snapshots.sortedBy { it.identity.modulePath },
+        gradleKotlinDslModel = workspace.getGradleKotlinDslModel().immutableCopy(),
     )
   }
 

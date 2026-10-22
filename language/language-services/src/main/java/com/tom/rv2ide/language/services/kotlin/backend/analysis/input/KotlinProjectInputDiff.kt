@@ -12,6 +12,7 @@ internal enum class KotlinProjectInputDimension {
   BOOT,
   DEPENDENCY_GRAPH,
   VARIANT,
+  GRADLE_KOTLIN_DSL,
 }
 
 internal enum class KotlinProjectChangeKind {
@@ -50,6 +51,7 @@ internal object KotlinProjectInputDiff {
               KotlinProjectInputDimension.BOOT,
               KotlinProjectInputDimension.DEPENDENCY_GRAPH,
               KotlinProjectInputDimension.VARIANT,
+              KotlinProjectInputDimension.GRADLE_KOTLIN_DSL,
           ),
           affectedModulesByDimension = mapOf(
               KotlinProjectInputDimension.MODULE_IDENTITY to modules,
@@ -59,6 +61,7 @@ internal object KotlinProjectInputDiff {
               KotlinProjectInputDimension.BOOT to modules,
               KotlinProjectInputDimension.DEPENDENCY_GRAPH to modules,
               KotlinProjectInputDimension.VARIANT to modules,
+              KotlinProjectInputDimension.GRADLE_KOTLIN_DSL to emptySet(),
           ),
       )
     }
@@ -87,6 +90,9 @@ internal object KotlinProjectInputDiff {
       if (oldFingerprints.variant != newFingerprints.variant) {
         add(KotlinProjectInputDimension.VARIANT)
       }
+      if (oldFingerprints.gradleKotlinDsl != newFingerprints.gradleKotlinDsl) {
+        add(KotlinProjectInputDimension.GRADLE_KOTLIN_DSL)
+      }
     }
     if (dimensions.isEmpty()) {
       return KotlinProjectChange(
@@ -100,6 +106,7 @@ internal object KotlinProjectInputDiff {
       KotlinProjectInputDimension.MODULE_IDENTITY in dimensions ||
           KotlinProjectInputDimension.COMPILER_CONFIGURATION in dimensions ->
           KotlinProjectChangeKind.WORKSPACE_STRUCTURE
+      KotlinProjectInputDimension.GRADLE_KOTLIN_DSL in dimensions -> KotlinProjectChangeKind.WORKSPACE_STRUCTURE
       KotlinProjectInputDimension.VARIANT in dimensions -> KotlinProjectChangeKind.VARIANT
       KotlinProjectInputDimension.DEPENDENCY_GRAPH in dimensions ->
           KotlinProjectChangeKind.DEPENDENCY_GRAPH
@@ -144,7 +151,8 @@ internal object KotlinProjectInputDiff {
         }
       }
       if (dimension != KotlinProjectInputDimension.MODULE_IDENTITY &&
-          dimension != KotlinProjectInputDimension.COMPILER_CONFIGURATION) {
+          dimension != KotlinProjectInputDimension.COMPILER_CONFIGURATION &&
+          dimension != KotlinProjectInputDimension.GRADLE_KOTLIN_DSL) {
         expandToDependents(directlyChanged, previousDependents, currentDependents)
       } else {
         directlyChanged
@@ -200,5 +208,6 @@ internal object KotlinProjectInputDiff {
             old.externalDependencyIdentities != new.externalDependencyIdentities
     KotlinProjectInputDimension.VARIANT ->
         old.variantSelection != new.variantSelection || old.variantArtifact != new.variantArtifact
+    KotlinProjectInputDimension.GRADLE_KOTLIN_DSL -> false
   }
 }
