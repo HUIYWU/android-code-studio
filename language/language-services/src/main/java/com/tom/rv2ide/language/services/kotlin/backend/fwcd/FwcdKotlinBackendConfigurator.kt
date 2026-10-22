@@ -60,6 +60,8 @@ class FwcdKotlinBackendConfigurator(
   override fun initializationOptions(): JsonObject {
     val effectiveClassPaths = classpathProvider.getClasspathList()
     val javaSourceRoots = classpathProvider.getJavaSourceRootsList()
+    val gradleKotlinDslModel = workspace.getGradleKotlinDslModel()
+    logGradleKotlinDslModel("initialize", gradleKotlinDslModel)
     val classpathArray = JsonArray()
     val javaSourceRootsArray = JsonArray()
 
@@ -87,13 +89,9 @@ class FwcdKotlinBackendConfigurator(
           add(
               "scripts",
               JsonObject().apply {
-                // Disable Gradle Kotlin script support for Android source editing. The current KLS
-                // build crashes while analyzing settings.gradle.kts, which prevents reliable
-                // diagnostics for normal .kt files.
-                 addProperty("enabled", false)
-                 addProperty("buildScriptsEnabled", false)
-                 add("model", createGradleKotlinDslModelJson(workspace.getGradleKotlinDslModel()))
-                 // Keep template metadata present for compatibility, but scripts remain disabled.
+                addProperty("enabled", true)
+                addProperty("buildScriptsEnabled", true)
+                add("model", createGradleKotlinDslModelJson(gradleKotlinDslModel))
                 add(
                     "templates",
                     JsonArray().apply {
@@ -366,6 +364,8 @@ class FwcdKotlinBackendConfigurator(
   private fun createFwcdRuntimeConfig(): JsonObject {
     val effectiveClassPaths = classpathProvider.getClasspathList()
     val javaSourceRoots = classpathProvider.getJavaSourceRootsList()
+    val gradleKotlinDslModel = workspace.getGradleKotlinDslModel()
+    logGradleKotlinDslModel("runtime", gradleKotlinDslModel)
     val classpathArray = JsonArray()
     val javaSourceRootsArray = JsonArray()
     effectiveClassPaths.forEach { path -> classpathArray.add(path) }
@@ -387,15 +387,15 @@ class FwcdKotlinBackendConfigurator(
                   addProperty("usePredefinedClasspath", true)
                   addProperty("disableDependencyResolution", true)
                   add("classpath", classpathArray)
-                  add("javaSourceRoots", javaSourceRootsArray)
-                  add(
-"scripts",
+                   add("javaSourceRoots", javaSourceRootsArray)
+                   add(
+                       "scripts",
                        JsonObject().apply {
-                         addProperty("enabled", false)
-                         addProperty("buildScriptsEnabled", false)
-                         add("model", createGradleKotlinDslModelJson(workspace.getGradleKotlinDslModel()))
-                      },
-                  )
+                         addProperty("enabled", true)
+                         addProperty("buildScriptsEnabled", true)
+                         add("model", createGradleKotlinDslModelJson(gradleKotlinDslModel))
+                       },
+                   )
                   add(
                       "completion",
                       JsonObject().apply {
@@ -420,6 +420,20 @@ class FwcdKotlinBackendConfigurator(
           },
       )
     }
+  }
+
+  private fun logGradleKotlinDslModel(source: String, model: GradleKotlinDslModel) {
+    val scriptCount = model.builds.sumOf { it.scripts.size }
+    val classpathCount = model.builds.sumOf { build -> build.scripts.sumOf { it.classPath.size } }
+    KlsLogs.info(
+        "FWCD Gradle Kotlin DSL model {}: state={}, builds={}, scripts={}, scriptClasspathEntries={}, fingerprint={}",
+        source,
+        model.state,
+        model.builds.size,
+        scriptCount,
+        classpathCount,
+        model.fingerprint ?: "<none>",
+    )
   }
 
   private fun createGradleKotlinDslModelJson(model: GradleKotlinDslModel): JsonObject =
