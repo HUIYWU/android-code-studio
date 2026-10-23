@@ -146,7 +146,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
   }
 
   private fun setupWorkspaceNow(workspace: IWorkspace) {
-    logInitializationMemory("workspace.begin")
     LSPEditorActions.ensureActionsMenuRegistered(KotlinCodeActionsMenu)
 
     val replacingWorkspace = activeWorkspace != null && activeWorkspace !== workspace
@@ -228,29 +227,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
     }
   }
 
-  // TODO(ACS-KTS-MEMORY-EXPERIMENT): Remove investigation telemetry after the startup memory regression is verified.
-  private fun logInitializationMemory(stage: String) {
-    val runtime = Runtime.getRuntime()
-    val processMemory = runCatching {
-      java.io.File("/proc/self/status").useLines { lines ->
-        lines.filter { it.startsWith("Pid:") || it.startsWith("VmRSS:") || it.startsWith("VmHWM:") || it.startsWith("RssAnon:") }
-            .joinToString("; ") { it.trim() }
-      }
-    }.getOrElse { "procStatus=unavailable" }
-    KlsLogs.warn(
-        "KTS memory checkpoint IDE {}: heapUsedMiB={}, heapCommittedMiB={}, nativeHeapAllocatedMiB={}, process=[{}], backendGeneration={}, backendReady={}",
-        stage,
-        (runtime.totalMemory() - runtime.freeMemory()) / 1_048_576L,
-        runtime.totalMemory() / 1_048_576L,
-        android.os.Debug.getNativeHeapAllocatedSize() / 1_048_576L,
-        processMemory,
-        connection.generation,
-        backendReady,
-    )
-  }
-
   private fun finishWorkspaceSetup(workspace: IWorkspace, setup: KotlinBackendWorkspaceCoordinator?) {
-    logInitializationMemory("workspace.finish")
     val nextWorkspace = synchronized(workspaceSetupLock) {
       workspaceSetupInProgress = false
       val next = pendingWorkspace
