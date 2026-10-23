@@ -40,7 +40,12 @@ internal object KotlinDslModelReader {
   ): GradleKotlinDslModel {
     val executor =
         connection.action { controller ->
-          capture(controller, buildRoot, gradleHome)
+          logger.warn("KTS memory checkpoint gradleAction.beforeCapture: {}", memorySummary())
+          try {
+            capture(controller, buildRoot, gradleHome)
+          } finally {
+            logger.warn("KTS memory checkpoint gradleAction.afterCapture: {}", memorySummary())
+          }
         }
 
     finalizeLauncher(executor)
@@ -50,6 +55,7 @@ internal object KotlinDslModelReader {
       executor.withCancellationToken(cancellationToken)
     }
 
+    logger.warn("KTS memory checkpoint tooling.beforeRequest: {}", memorySummary())
     return try {
       executor.run()
     } catch (error: BuildCancelledException) {
@@ -57,7 +63,21 @@ internal object KotlinDslModelReader {
     } catch (error: Throwable) {
       logger.warn("Unable to obtain Gradle Kotlin DSL model", error)
       failedModel(buildRoot, error, gradleHome = gradleHome)
+    } finally {
+      logger.warn("KTS memory checkpoint tooling.afterRequest: {}", memorySummary())
     }
+  }
+
+  // TODO(ACS-KTS-MEMORY-EXPERIMENT): Remove investigation telemetry after the startup memory regression is verified.
+  private fun memorySummary(): String {
+    val runtime = Runtime.getRuntime()
+    val processMemory = runCatching {
+      File("/proc/self/status").useLines { lines ->
+        lines.filter { it.startsWith("Pid:") || it.startsWith("VmRSS:") || it.startsWith("VmHWM:") || it.startsWith("RssAnon:") }
+            .joinToString("; ") { it.trim() }
+      }
+    }.getOrElse { "procStatus=unavailable" }
+    return "heapUsedMiB=${(runtime.totalMemory() - runtime.freeMemory()) / 1_048_576L}, heapCommittedMiB=${runtime.totalMemory() / 1_048_576L}, process=[$processMemory]"
   }
 
   private fun capture(
