@@ -57,6 +57,8 @@ class KotlinAnalysisBackendConnection internal constructor(
   private val stateRef = AtomicReference(KotlinBackendState.NEW)
   private val generationCounter = AtomicLong(0L)
   private val diagnosticDebounceJobs = ConcurrentHashMap<Path, Future<*>>()
+  private val diagnosticSequences = ConcurrentHashMap<Path, Long>()
+  private val diagnosticSequenceCounter = AtomicLong(0L)
   private var runtime: KotlinAnalysisRuntime? = null
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
   @Volatile private var initialized = false
@@ -91,19 +93,30 @@ class KotlinAnalysisBackendConnection internal constructor(
   override fun supportsDocument(path: Path): Boolean =
       path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
   override fun notifyFileCreated(path: Path) {
-    executeOnAnalysisQueue { runtime?.onFileCreated(path.normalize()) }
+    val normalized = path.normalize()
+    executeOnAnalysisQueue(path = normalized, mutationPaths = setOf(normalized)) {
+      runtime?.onFileCreated(normalized)
+    }
   }
 
   override fun notifyFileRemoved(path: Path) {
-    executeOnAnalysisQueue { runtime?.onFileRemoved(path.normalize()) }
+    val normalized = path.normalize()
+    executeOnAnalysisQueue(path = normalized, mutationPaths = setOf(normalized)) {
+      runtime?.onFileRemoved(normalized)
+    }
   }
 
   override fun notifyFileMoved(fromPath: Path, toPath: Path) {
-    executeOnAnalysisQueue { runtime?.onFileMoved(fromPath.normalize(), toPath.normalize()) }
+    val from = fromPath.normalize()
+    val to = toPath.normalize()
+    executeOnAnalysisQueue(path = to, mutationPaths = setOf(from, to)) {
+      runtime?.onFileMoved(from, to)
+    }
   }
 
-  override fun notifyFileChanges(changes: List<KotlinBackendFileChange>): Boolean =
-      executeOnAnalysisQueue {
+  override fun notifyFileChanges(changes: List<KotlinBackendFileChange>): Boolean {
+    val mutationPaths = changes.map { it.path.normalize() }.toSet()
+    return executeOnAnalysisQueue(mutationPaths = mutationPaths) {
         val provider = projectInputClasspathProvider
         if (changes.isEmpty() || provider == null || !isReady || runtime == null) {
           return@executeOnAnalysisQueue false
@@ -129,6 +142,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         projectInputState = currentState
         true
       } ?: false
+  }
 
   override fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit) {
     executeOnAnalysisQueue { diagnosticsCallback = callback }
@@ -231,13 +245,13 @@ class KotlinAnalysisBackendConnection internal constructor(
   }
 
   override fun sendNotification(method: String, params: JsonObject) {
-    executeOnAnalysisQueue {
+    executeOnAnalysisQueue(mutationPaths = notificationMutationPaths(method, params)) {
       if (isReady) handleNotification(method, params)
     }
   }
 
   override fun sendNotificationOrThrow(method: String, params: JsonObject) {
-    val handled = executeOnAnalysisQueue {
+    val handled = executeOnAnalysisQueue(mutationPaths = notificationMutationPaths(method, params)) {
       if (!isReady) return@executeOnAnalysisQueue false
       handleNotification(method, params)
       true
@@ -274,6 +288,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           runtime?.onFileClosed(path)
+          diagnosticSequences[path] = diagnosticSequenceCounter.incrementAndGet()
           diagnosticDebounceJobs.remove(path)?.cancel(false)
           diagnosticsCallback?.invoke(
               DiagnosticResult(
@@ -303,6 +318,13 @@ class KotlinAnalysisBackendConnection internal constructor(
     }
   }
 
+  private fun notificationMutationPaths(method: String, params: JsonObject): Set<Path> =
+      if (method in setOf("textDocument/didOpen", "textDocument/didChange", "textDocument/didClose")) {
+        extractFilePath(params)?.normalize()?.let(::setOf).orEmpty()
+      } else {
+        emptySet()
+      }
+
   private fun rescheduleActiveDocuments() {
     activeDocuments()
         .filter(::supportsDocument)
@@ -312,6 +334,8 @@ class KotlinAnalysisBackendConnection internal constructor(
   private fun scheduleDiagnostics(path: Path) {
     if (!isReady || !initialized) return
     val normalizedPath = path.normalize()
+    val sequence = diagnosticSequenceCounter.incrementAndGet()
+    diagnosticSequences[normalizedPath] = sequence
     diagnosticDebounceJobs.remove(normalizedPath)?.cancel(false)
     val (_, timer) = requestScheduler.schedule(
         delay = DIAGNOSTICS_DEBOUNCE_MS,
@@ -320,15 +344,16 @@ class KotlinAnalysisBackendConnection internal constructor(
         path = normalizedPath,
         backendGeneration = generation,
         cancelChecker = ICancelChecker.NOOP,
+        requiredMutationPaths = setOf(normalizedPath),
     ) {
       diagnosticDebounceJobs.remove(normalizedPath)
-      publishDiagnostics(normalizedPath)
+      publishDiagnostics(normalizedPath, sequence)
     }
     diagnosticDebounceJobs[normalizedPath] = timer
   }
 
-  private fun publishDiagnostics(path: Path) {
-    if (!isReady || !initialized) return
+  private fun publishDiagnostics(path: Path, sequence: Long) {
+    if (!isReady || !initialized || diagnosticSequences[path] != sequence) return
     val callback = diagnosticsCallback ?: return
     val requestGeneration = generation
     val normalizedPath = path.normalize()
@@ -339,35 +364,37 @@ class KotlinAnalysisBackendConnection internal constructor(
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
         return
       }
-if (requestGeneration != generation || state != KotlinBackendState.READY) {
-         KlsLogs.info(
-             "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=backend-generation-or-state",
-             normalizedPath,
-             requestGeneration,
-         )
-         return
-       }
-       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
-       if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
-           snapshot.revision != currentSnapshot.revision) {
-         KlsLogs.info(
-             "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=document-identity, requestedVersion={}, requestedRevision={}, currentVersion={}, currentRevision={}",
-             normalizedPath,
-             requestGeneration,
-             snapshot.version,
-             snapshot.revision,
-             currentSnapshot?.version,
-             currentSnapshot?.revision,
-         )
-         return
-       }
-       val published = result.copy(
-           channel = DiagnosticResult.CHANNEL_KOTLIN,
-           documentVersion = snapshot.version,
-           documentRevision = snapshot.revision,
-           backendGeneration = requestGeneration,
-       )
-        callback.invoke(published)
+      if (diagnosticSequences[normalizedPath] != sequence) return
+      if (requestGeneration != generation || state != KotlinBackendState.READY) {
+        KlsLogs.info(
+            "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=backend-generation-or-state",
+            normalizedPath,
+            requestGeneration,
+        )
+        return
+      }
+      val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
+      if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
+          snapshot.revision != currentSnapshot.revision) {
+        KlsLogs.info(
+            "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=document-identity, requestedVersion={}, requestedRevision={}, currentVersion={}, currentRevision={}",
+            normalizedPath,
+            requestGeneration,
+            snapshot.version,
+            snapshot.revision,
+            currentSnapshot?.version,
+            currentSnapshot?.revision,
+        )
+        return
+      }
+      if (diagnosticSequences[normalizedPath] != sequence) return
+      val published = result.copy(
+          channel = DiagnosticResult.CHANNEL_KOTLIN,
+          documentVersion = snapshot.version,
+          documentRevision = snapshot.revision,
+          backendGeneration = requestGeneration,
+      )
+      callback.invoke(published)
     } catch (t: Throwable) {
       KlsLogs.error("Kotlin Analysis API diagnostics failed for: $normalizedPath", t)
     }
@@ -412,14 +439,13 @@ internal suspend fun signatureHelp(
        request: KotlinSemanticRequest,
        isCurrent: (KotlinSemanticRequest) -> Boolean,
    ): SignatureHelp? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.signatureHelp(request) }
-
-  private suspend fun <T> executeSemanticRequest(
+private suspend fun <T> executeSemanticRequest(
       request: KotlinSemanticRequest,
       kind: AnalysisRequestKind,
       isCurrent: (KotlinSemanticRequest) -> Boolean,
       action: (KotlinAnalysisRuntime) -> T?,
-  ): T? = suspendCancellableCoroutine { continuation ->
-    fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
+   ): T? = suspendCancellableCoroutine { continuation ->
+     fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
         generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
     if (!canExecute()) {
       KlsLogs.info(
@@ -437,6 +463,7 @@ internal suspend fun signatureHelp(
         documentVersion = request.snapshot.version,
         documentRevision = request.snapshot.revision,
         cancelChecker = request.cancelChecker,
+        requiredMutationPaths = setOf(request.file),
     ) {
       val currentRuntime = runtime
       val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
@@ -503,12 +530,17 @@ internal suspend fun signatureHelp(
     diagnosticDebounceJobs.clear()
   }
 
-  private fun <T> executeOnAnalysisQueue(action: () -> T): T? =
-      requestScheduler.execute(
-          kind = AnalysisRequestKind.INDEXING,
-          cancelChecker = ICancelChecker.NOOP,
-          action = action,
-      )
+  private fun <T> executeOnAnalysisQueue(
+      path: Path? = null,
+      mutationPaths: Set<Path> = emptySet(),
+      action: () -> T,
+  ): T? = requestScheduler.execute(
+      kind = AnalysisRequestKind.INDEXING,
+      path = path,
+      cancelChecker = ICancelChecker.NOOP,
+      mutationPaths = mutationPaths,
+      action = action,
+  )
 
   private companion object {
     const val DIAGNOSTICS_DEBOUNCE_MS = 400L

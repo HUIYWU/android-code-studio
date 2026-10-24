@@ -18,6 +18,8 @@ internal class AnalysisRequest<T>(
     val documentVersion: Int?,
     val documentRevision: Long?,
     val cancelChecker: ICancelChecker,
+    val requiredMutationSequences: Map<Path, Long> = emptyMap(),
+    val mutationSequences: Map<Path, Long> = emptyMap(),
     val attempt: Int = 0,
     val action: () -> T?,
     val cancel: () -> Unit = {},

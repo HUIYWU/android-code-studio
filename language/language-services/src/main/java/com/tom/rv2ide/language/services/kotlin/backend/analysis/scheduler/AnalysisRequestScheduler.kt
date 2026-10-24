@@ -10,6 +10,8 @@ import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.nio.file.Path
+import java.util.HashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.CancellationException
@@ -22,6 +24,9 @@ internal class AnalysisRequestScheduler(
   private val queue = PriorityBlockingQueue<AnalysisRequest<*>>()
   private val wakeup = Object()
   private val pending = ConcurrentHashMap<Long, AnalysisRequest<*>>()
+  private val mutationLock = Any()
+  private val reservedMutationSequences = HashMap<Path, Long>()
+  private val completedMutationSequences = HashMap<Path, Long>()
   private val debounceExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
     Thread(runnable, "$workerName-debounce").apply { isDaemon = true }
   }
@@ -37,6 +42,8 @@ internal class AnalysisRequestScheduler(
       documentVersion: Int? = null,
       documentRevision: Long? = null,
       cancelChecker: ICancelChecker,
+      requiredMutationPaths: Set<Path> = emptySet(),
+      mutationPaths: Set<Path> = emptySet(),
       attempt: Int = 0,
       action: () -> T,
   ): CompletableFuture<T?> {
@@ -44,6 +51,24 @@ internal class AnalysisRequestScheduler(
     if (closed.get()) {
       future.complete(null)
       return future
+    }
+    val (requiredMutationSequences, reservation) = synchronized(mutationLock) {
+      val required = requiredMutationPaths
+          .map { it.normalize() }
+          .distinct()
+          .associateWith { reservedMutationSequences[it] ?: completedMutationSequences[it] ?: 0L }
+          .toMutableMap()
+      val reserved = mutationPaths
+          .map { it.normalize() }
+          .distinct()
+          .associateWith { path ->
+            val previous = reservedMutationSequences[path] ?: completedMutationSequences[path] ?: 0L
+            required.putIfAbsent(path, previous)
+            val sequence = previous + 1L
+            reservedMutationSequences[path] = sequence
+            sequence
+          }
+      required to reserved
     }
     val request = AnalysisRequest<T>(
         id = requestIds.incrementAndGet(),
@@ -53,6 +78,8 @@ internal class AnalysisRequestScheduler(
         documentVersion = documentVersion,
         documentRevision = documentRevision,
         cancelChecker = cancelChecker,
+        requiredMutationSequences = requiredMutationSequences,
+        mutationSequences = reservation,
         attempt = attempt,
         action = {
           if (closed.get() || future.isCancelled || cancelChecker.isCancelled()) {
@@ -87,6 +114,8 @@ internal class AnalysisRequestScheduler(
       documentVersion: Int? = null,
       documentRevision: Long? = null,
       cancelChecker: ICancelChecker,
+      requiredMutationPaths: Set<Path> = emptySet(),
+      mutationPaths: Set<Path> = emptySet(),
       attempt: Int = 0,
       action: () -> T,
   ): Pair<CompletableFuture<T?>, Future<*>> {
@@ -100,14 +129,16 @@ internal class AnalysisRequestScheduler(
           {
             if (!closed.get()) {
               val submitted = submit(
-                  kind,
-                  path,
-                  backendGeneration,
-                  documentVersion,
-                  documentRevision,
-                  cancelChecker,
-                  attempt,
-                  action,
+                  kind = kind,
+                  path = path,
+                  backendGeneration = backendGeneration,
+                  documentVersion = documentVersion,
+                  documentRevision = documentRevision,
+                  cancelChecker = cancelChecker,
+                  requiredMutationPaths = requiredMutationPaths,
+                  mutationPaths = mutationPaths,
+                  attempt = attempt,
+                  action = action,
               )
               submitted.whenComplete { value, error ->
                 if (error != null) future.completeExceptionally(error) else future.complete(value)
@@ -133,6 +164,8 @@ internal class AnalysisRequestScheduler(
       documentVersion: Int? = null,
       documentRevision: Long? = null,
       cancelChecker: ICancelChecker,
+      requiredMutationPaths: Set<Path> = emptySet(),
+      mutationPaths: Set<Path> = emptySet(),
       action: () -> T,
   ): T? {
     if (Thread.currentThread() === worker) {
@@ -140,7 +173,17 @@ internal class AnalysisRequestScheduler(
       return runCatching(action).getOrNull()
     }
     return try {
-      submit(kind, path, backendGeneration, documentVersion, documentRevision, cancelChecker, action = action).join()
+      submit(
+          kind = kind,
+          path = path,
+          backendGeneration = backendGeneration,
+          documentVersion = documentVersion,
+          documentRevision = documentRevision,
+          cancelChecker = cancelChecker,
+          requiredMutationPaths = requiredMutationPaths,
+          mutationPaths = mutationPaths,
+          action = action,
+      ).join()
     } catch (t: Throwable) {
       KlsLogs.warn("Kotlin Analysis request execution failed", t)
       null
@@ -161,22 +204,12 @@ internal class AnalysisRequestScheduler(
 
   private fun runWorker() {
     while (!closed.get()) {
-      val request = queue.poll()
-      if (request == null) {
-        synchronized(wakeup) {
-          if (!closed.get() && queue.isEmpty()) {
-            try {
-              wakeup.wait()
-            } catch (_: InterruptedException) {
-              if (closed.get()) return
-            }
-          }
-        }
-        continue
-      }
+      val request = takeExecutableRequest()
+      if (request == null) return
       pending.remove(request.id)
       if (request.cancelChecker.isCancelled()) {
         request.cancel()
+        completeMutationSequences(request.mutationSequences)
         continue
       }
       try {
@@ -185,7 +218,47 @@ internal class AnalysisRequestScheduler(
         if (!closed.get()) KlsLogs.debug("Kotlin Analysis request cancelled: id={}", request.id)
       } catch (t: Throwable) {
         KlsLogs.warn("Kotlin Analysis request failed: id={}", request.id, t)
+      } finally {
+        completeMutationSequences(request.mutationSequences)
       }
     }
+  }
+
+  private fun takeExecutableRequest(): AnalysisRequest<*>? {
+    while (!closed.get()) {
+      val candidate = queue
+          .toList()
+          .sorted()
+          .firstOrNull { isExecutable(it) }
+      if (candidate != null && queue.remove(candidate)) return candidate
+      synchronized(wakeup) {
+        if (!closed.get() && queue.none { isExecutable(it) }) {
+          try {
+            wakeup.wait()
+          } catch (_: InterruptedException) {
+            if (closed.get()) return null
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  private fun isExecutable(request: AnalysisRequest<*>): Boolean =
+      request.requiredMutationSequences.all { (path, sequence) ->
+        synchronized(mutationLock) {
+          (completedMutationSequences[path] ?: 0L) >= sequence
+        }
+      }
+
+  private fun completeMutationSequences(sequences: Map<Path, Long>) {
+    if (sequences.isEmpty()) return
+    synchronized(mutationLock) {
+      sequences.forEach { (path, sequence) ->
+        val current = completedMutationSequences[path] ?: 0L
+        if (sequence > current) completedMutationSequences[path] = sequence
+      }
+    }
+    synchronized(wakeup) { wakeup.notifyAll() }
   }
 }
