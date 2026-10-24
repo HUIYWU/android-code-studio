@@ -17,7 +17,7 @@ internal class AnalysisRequest<T>(
     val backendGeneration: Long,
     val documentVersion: Int?,
     val documentRevision: Long?,
-    val cancelChecker: ICancelChecker,
+    val cancelChecker: AnalysisRequestCancellation,
     val requiredMutationSequences: Map<Path, Long> = emptyMap(),
     val mutationSequences: Map<Path, Long> = emptyMap(),
     val attempt: Int = 0,

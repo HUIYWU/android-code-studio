@@ -20,7 +20,11 @@ internal interface KotlinAnalysisRuntime {
   fun onFileCreated(path: Path) = Unit
   fun onFileRemoved(path: Path) = Unit
   fun onFileMoved(fromPath: Path, toPath: Path) = Unit
-  fun analyze(path: Path, snapshot: ActiveDocumentSnapshot?): DiagnosticResult?
+  fun analyze(
+      path: Path,
+      snapshot: ActiveDocumentSnapshot?,
+      cancelChecker: com.tom.rv2ide.progress.ICancelChecker,
+  ): DiagnosticResult?
   fun complete(request: KotlinSemanticRequest): CompletionResult?
   fun hover(request: KotlinSemanticRequest): MarkupContent?
   fun findDefinition(request: KotlinSemanticRequest): DefinitionResult?

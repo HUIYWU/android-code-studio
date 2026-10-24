@@ -23,6 +23,7 @@ import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.progress.ICancelChecker
+import java.util.concurrent.CancellationException
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionResult
 import com.tom.rv2ide.lsp.models.DiagnosticResult
@@ -345,22 +346,26 @@ class KotlinAnalysisBackendConnection internal constructor(
         backendGeneration = generation,
         cancelChecker = ICancelChecker.NOOP,
         requiredMutationPaths = setOf(normalizedPath),
-    ) {
-      diagnosticDebounceJobs.remove(normalizedPath)
-      publishDiagnostics(normalizedPath, sequence)
-    }
+        action = {},
+        cancellableAction = { cancelChecker ->
+          diagnosticDebounceJobs.remove(normalizedPath)
+          publishDiagnostics(normalizedPath, sequence, cancelChecker)
+          Unit
+        },
+    )
     diagnosticDebounceJobs[normalizedPath] = timer
   }
 
-  private fun publishDiagnostics(path: Path, sequence: Long) {
+  private fun publishDiagnostics(path: Path, sequence: Long, cancelChecker: ICancelChecker) {
     if (!isReady || !initialized || diagnosticSequences[path] != sequence) return
+    cancelChecker.abortIfCancelled()
     val callback = diagnosticsCallback ?: return
     val requestGeneration = generation
     val normalizedPath = path.normalize()
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
     try {
-      val result = activeRuntime.analyze(normalizedPath, snapshot) ?: run {
+      val result = activeRuntime.analyze(normalizedPath, snapshot, cancelChecker) ?: run {
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
         return
       }
@@ -395,6 +400,8 @@ class KotlinAnalysisBackendConnection internal constructor(
           backendGeneration = requestGeneration,
       )
       callback.invoke(published)
+    } catch (e: CancellationException) {
+      KlsLogs.debug("Kotlin Analysis diagnostics cancelled: file={}", normalizedPath)
     } catch (t: Throwable) {
       KlsLogs.error("Kotlin Analysis API diagnostics failed for: $normalizedPath", t)
     }
@@ -456,6 +463,8 @@ private suspend fun <T> executeSemanticRequest(
       continuation.resume(null)
       return@suspendCancellableCoroutine
     }
+    cancelScheduledDiagnostics()
+    requestScheduler.cancelDiagnostics()
     val task = requestScheduler.submit(
         kind = kind,
         path = request.file,
@@ -464,19 +473,20 @@ private suspend fun <T> executeSemanticRequest(
         documentRevision = request.snapshot.revision,
         cancelChecker = request.cancelChecker,
         requiredMutationPaths = setOf(request.file),
-    ) {
-      val currentRuntime = runtime
-      val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-      val currentAfterExecution = canExecute()
-      if (!currentAfterExecution) {
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
-            request.file,
-            request.backendGeneration,
-        )
-      }
-      if (currentAfterExecution) result else null
-    }
+        action = {
+          val currentRuntime = runtime
+          val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+          val currentAfterExecution = canExecute()
+          if (!currentAfterExecution) {
+            KlsLogs.info(
+                "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
+                request.file,
+                request.backendGeneration,
+            )
+          }
+          if (currentAfterExecution) result else null
+        },
+    )
     task.whenComplete { result, error ->
       if (!continuation.isActive) return@whenComplete
       if (error != null) {

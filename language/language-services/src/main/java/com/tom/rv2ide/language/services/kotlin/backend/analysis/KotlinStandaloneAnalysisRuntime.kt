@@ -94,13 +94,17 @@ internal class KotlinStandaloneAnalysisRuntime(
     environment?.liveIndex?.moveSourceIndex(fromPath, toPath)
   }
 
-  override fun analyze(path: Path, snapshot: com.tom.rv2ide.projects.models.ActiveDocumentSnapshot?): DiagnosticResult? {
+  override fun analyze(
+      path: Path,
+      snapshot: com.tom.rv2ide.projects.models.ActiveDocumentSnapshot?,
+      cancelChecker: ICancelChecker,
+  ): DiagnosticResult? {
     val env = environment ?: return null
     val normalized = path.normalize()
-    return env.liveIndex.withLiveKtFile(normalized, action = { live ->
-      val checker = ICancelChecker.NOOP
+    return env.liveIndex.withLiveKtFile(normalized, cancelChecker, action = { live ->
+      cancelChecker.abortIfCancelled()
       if (live.isStale) return@withLiveKtFile null
-        val diagnostics = live.analyzing(checker) { file ->
+      val diagnostics = live.analyzing(cancelChecker) { file ->
           KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
         }
         DiagnosticResult(
