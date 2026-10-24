@@ -14,12 +14,15 @@ import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFileChange
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputDiff
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputSnapshotState
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisRequestKind
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisRequestScheduler
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionResult
 import com.tom.rv2ide.lsp.models.DiagnosticResult
@@ -30,16 +33,12 @@ import com.tom.rv2ide.projects.FileManager
 import java.net.URI
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** In-process Kotlin Analysis backend and its replaceable standalone runtime. */
@@ -54,17 +53,10 @@ class KotlinAnalysisBackendConnection internal constructor(
       },
   )
 
-  @Volatile private var queueThread: Thread? = null
-  private val analysisQueue =
-      ScheduledThreadPoolExecutor(1) { runnable ->
-        Thread(runnable, "acs-kotlin-analysis").apply {
-          isDaemon = true
-          queueThread = this
-        }
-      }.apply { removeOnCancelPolicy = true }
+  private val requestScheduler = AnalysisRequestScheduler()
   private val stateRef = AtomicReference(KotlinBackendState.NEW)
   private val generationCounter = AtomicLong(0L)
-  private val scheduledJobs = ConcurrentHashMap<Path, ScheduledFuture<*>>()
+  private val diagnosticDebounceJobs = ConcurrentHashMap<Path, Future<*>>()
   private var runtime: KotlinAnalysisRuntime? = null
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
   @Volatile private var initialized = false
@@ -282,7 +274,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           runtime?.onFileClosed(path)
-          scheduledJobs.remove(path)?.cancel(false)
+          diagnosticDebounceJobs.remove(path)?.cancel(false)
           diagnosticsCallback?.invoke(
               DiagnosticResult(
                   path,
@@ -320,21 +312,19 @@ class KotlinAnalysisBackendConnection internal constructor(
   private fun scheduleDiagnostics(path: Path) {
     if (!isReady || !initialized) return
     val normalizedPath = path.normalize()
-    scheduledJobs.remove(normalizedPath)?.cancel(false)
-    try {
-      val job =
-          analysisQueue.schedule(
-              {
-                scheduledJobs.remove(normalizedPath)
-                publishDiagnostics(normalizedPath)
-              },
-              DIAGNOSTICS_DEBOUNCE_MS,
-              TimeUnit.MILLISECONDS,
-          )
-      scheduledJobs[normalizedPath] = job
-    } catch (e: RejectedExecutionException) {
-      KlsLogs.debug("Analysis task rejected during shutdown: {}", e.message)
+    diagnosticDebounceJobs.remove(normalizedPath)?.cancel(false)
+    val (_, timer) = requestScheduler.schedule(
+        delay = DIAGNOSTICS_DEBOUNCE_MS,
+        unit = TimeUnit.MILLISECONDS,
+        kind = AnalysisRequestKind.DIAGNOSTICS,
+        path = normalizedPath,
+        backendGeneration = generation,
+        cancelChecker = ICancelChecker.NOOP,
+    ) {
+      diagnosticDebounceJobs.remove(normalizedPath)
+      publishDiagnostics(normalizedPath)
     }
+    diagnosticDebounceJobs[normalizedPath] = timer
   }
 
   private fun publishDiagnostics(path: Path) {
@@ -395,36 +385,37 @@ if (requestGeneration != generation || state != KotlinBackendState.READY) {
       diagnosticsCallback = null
       closeRuntime(activeRuntime)
     }
-    analysisQueue.shutdown()
+    requestScheduler.close()
   }
 
-  internal suspend fun complete(
-      request: KotlinSemanticRequest,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): CompletionResult? = executeSemanticRequest(request, isCurrent) { it.complete(request) }
+internal suspend fun complete(
+       request: KotlinSemanticRequest,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+   ): CompletionResult? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.complete(request) }
 
-  internal suspend fun hover(
-      request: KotlinSemanticRequest,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): MarkupContent? = executeSemanticRequest(request, isCurrent) { it.hover(request) }
+internal suspend fun hover(
+       request: KotlinSemanticRequest,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+   ): MarkupContent? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.hover(request) }
 
-  internal suspend fun findDefinition(
-      request: KotlinSemanticRequest,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): DefinitionResult? = executeSemanticRequest(request, isCurrent) { it.findDefinition(request) }
+internal suspend fun findDefinition(
+       request: KotlinSemanticRequest,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+   ): DefinitionResult? = executeSemanticRequest(request, AnalysisRequestKind.COMMAND, isCurrent) { it.findDefinition(request) }
 
-  internal suspend fun findReferences(
-      request: KotlinSemanticRequest,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): ReferenceResult? = executeSemanticRequest(request, isCurrent) { it.findReferences(request) }
+internal suspend fun findReferences(
+       request: KotlinSemanticRequest,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+   ): ReferenceResult? = executeSemanticRequest(request, AnalysisRequestKind.COMMAND, isCurrent) { it.findReferences(request) }
 
-  internal suspend fun signatureHelp(
-      request: KotlinSemanticRequest,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-  ): SignatureHelp? = executeSemanticRequest(request, isCurrent) { it.signatureHelp(request) }
+internal suspend fun signatureHelp(
+       request: KotlinSemanticRequest,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+   ): SignatureHelp? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.signatureHelp(request) }
 
   private suspend fun <T> executeSemanticRequest(
       request: KotlinSemanticRequest,
+      kind: AnalysisRequestKind,
       isCurrent: (KotlinSemanticRequest) -> Boolean,
       action: (KotlinAnalysisRuntime) -> T?,
   ): T? = suspendCancellableCoroutine { continuation ->
@@ -439,31 +430,36 @@ if (requestGeneration != generation || state != KotlinBackendState.READY) {
       continuation.resume(null)
       return@suspendCancellableCoroutine
     }
-    try {
-      val task = analysisQueue.submit {
-        try {
-          val currentRuntime = runtime
-val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-           val currentAfterExecution = canExecute()
-           if (!currentAfterExecution) {
-             KlsLogs.info(
-                 "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
-                 request.file,
-                 request.backendGeneration,
-             )
-           }
-           if (continuation.isActive) continuation.resume(if (currentAfterExecution) result else null)
-        } catch (e: java.util.concurrent.CancellationException) {
-          if (continuation.isActive) continuation.resumeWithException(e)
-        } catch (e: Throwable) {
-          KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, e)
-          if (continuation.isActive) continuation.resume(null)
-        }
+    val task = requestScheduler.submit(
+        kind = kind,
+        path = request.file,
+        backendGeneration = request.backendGeneration,
+        documentVersion = request.snapshot.version,
+        documentRevision = request.snapshot.revision,
+        cancelChecker = request.cancelChecker,
+    ) {
+      val currentRuntime = runtime
+      val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+      val currentAfterExecution = canExecute()
+      if (!currentAfterExecution) {
+        KlsLogs.info(
+            "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
+            request.file,
+            request.backendGeneration,
+        )
       }
-      continuation.invokeOnCancellation { task.cancel(false) }
-    } catch (e: RejectedExecutionException) {
-      if (continuation.isActive) continuation.resume(null)
+      if (currentAfterExecution) result else null
     }
+    task.whenComplete { result, error ->
+      if (!continuation.isActive) return@whenComplete
+      if (error != null) {
+        KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
+        continuation.resume(null)
+      } else {
+        continuation.resume(result)
+      }
+    }
+    continuation.invokeOnCancellation { task.cancel(false) }
   }
 
   private fun createRuntime(provider: KotlinProjectClasspathProvider): KotlinAnalysisRuntime? {
@@ -503,23 +499,16 @@ val result = if (canExecute() && currentRuntime != null) action(currentRuntime) 
   }
 
   private fun cancelScheduledDiagnostics() {
-    scheduledJobs.values.forEach { it.cancel(false) }
-    scheduledJobs.clear()
+    diagnosticDebounceJobs.values.forEach { it.cancel(false) }
+    diagnosticDebounceJobs.clear()
   }
 
-  private fun <T> executeOnAnalysisQueue(action: () -> T): T? {
-    if (analysisQueue.isShutdown) return null
-    return try {
-      if (Thread.currentThread() === queueThread) {
-        action()
-      } else {
-        CompletableFuture.supplyAsync({ action() }, analysisQueue).join()
-      }
-    } catch (t: Throwable) {
-      KlsLogs.warn("Kotlin Analysis backend operation failed", t)
-      null
-    }
-  }
+  private fun <T> executeOnAnalysisQueue(action: () -> T): T? =
+      requestScheduler.execute(
+          kind = AnalysisRequestKind.INDEXING,
+          cancelChecker = ICancelChecker.NOOP,
+          action = action,
+      )
 
   private companion object {
     const val DIAGNOSTICS_DEBOUNCE_MS = 400L

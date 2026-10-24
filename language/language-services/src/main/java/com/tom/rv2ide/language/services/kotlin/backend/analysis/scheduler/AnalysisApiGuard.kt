@@ -4,17 +4,10 @@ import com.tom.rv2ide.progress.ICancelChecker
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
-internal enum class AnalysisPriority {
-  INDEXING,
-  DIAGNOSTICS,
-  SEMANTIC,
-}
-
-internal object AnalysisScheduler {
+internal object AnalysisApiGuard {
   private val lock = ReentrantLock(true)
 
-  fun <T> withLock(
-      priority: AnalysisPriority,
+  fun <T> withAccess(
       cancelChecker: ICancelChecker,
       action: () -> T,
   ): T {

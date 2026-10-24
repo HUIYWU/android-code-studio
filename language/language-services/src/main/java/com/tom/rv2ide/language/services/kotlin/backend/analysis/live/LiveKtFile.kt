@@ -1,8 +1,8 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisPriority
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisScheduler
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisApiGuard
+
 import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.analyze
@@ -22,7 +22,6 @@ internal sealed interface LiveKtFile {
   fun <T> read(action: (KtFile) -> T): T
 
   fun <T> analyzing(
-      priority: AnalysisPriority,
       cancelChecker: ICancelChecker,
       useSite: KtElement? = null,
       action: KaSession.(KtFile) -> T,
@@ -31,7 +30,6 @@ internal sealed interface LiveKtFile {
   fun <T> analyzingVariant(
       name: String,
       text: String,
-      priority: AnalysisPriority,
       cancelChecker: ICancelChecker,
       action: KaSession.(KtFile) -> T,
   ): T
@@ -55,12 +53,11 @@ internal class PinnedLiveKtFile(
       })
 
   override fun <T> analyzing(
-      priority: AnalysisPriority,
       cancelChecker: ICancelChecker,
       useSite: KtElement?,
       action: KaSession.(KtFile) -> T,
   ): T =
-      AnalysisScheduler.withLock(priority, cancelChecker) {
+      AnalysisApiGuard.withAccess(cancelChecker) {
         ApplicationManager.getApplication().runReadAction(Computable {
           index.project.analysisRead {
             analyze(useSite ?: pinnedFile) { action(pinnedFile) }
@@ -71,7 +68,6 @@ internal class PinnedLiveKtFile(
   override fun <T> analyzingVariant(
       name: String,
       text: String,
-      priority: AnalysisPriority,
       cancelChecker: ICancelChecker,
       action: KaSession.(KtFile) -> T,
   ): T {
@@ -84,7 +80,7 @@ internal class PinnedLiveKtFile(
                 originalKtFile = pinnedFile
               }
         }
-    return AnalysisScheduler.withLock(priority, cancelChecker) {
+    return AnalysisApiGuard.withAccess(cancelChecker) {
       ApplicationManager.getApplication().runReadAction(Computable {
         index.project.analysisRead {
           analyze(variant) { action(variant) }

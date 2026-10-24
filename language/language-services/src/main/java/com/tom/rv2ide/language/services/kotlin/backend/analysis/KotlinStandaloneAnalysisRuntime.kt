@@ -4,7 +4,6 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.Live
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForElement
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisPriority
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
@@ -101,7 +100,7 @@ internal class KotlinStandaloneAnalysisRuntime(
     return env.liveIndex.withLiveKtFile(normalized, action = { live ->
       val checker = ICancelChecker.NOOP
       if (live.isStale) return@withLiveKtFile null
-        val diagnostics = live.analyzing(AnalysisPriority.DIAGNOSTICS, checker) { file ->
+        val diagnostics = live.analyzing(checker) { file ->
           KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
         }
         DiagnosticResult(
@@ -158,7 +157,7 @@ internal class KotlinStandaloneAnalysisRuntime(
       request.cancelChecker.abortIfCancelled()
       env.liveIndex.withLiveKtFile(path, request.cancelChecker) { live ->
         if (live.isStale) return@withLiveKtFile Unit
-        live.analyzing(AnalysisPriority.SEMANTIC, request.cancelChecker) { file ->
+        live.analyzing(request.cancelChecker) { file ->
           val visitor = object : org.jetbrains.kotlin.psi.KtTreeVisitorVoid() {
             override fun visitSimpleNameExpression(expression: org.jetbrains.kotlin.psi.KtSimpleNameExpression) {
               request.cancelChecker.abortIfCancelled()
@@ -223,7 +222,7 @@ internal class KotlinStandaloneAnalysisRuntime(
     val env = environment ?: return null
     return env.liveIndex.withLiveKtFile(request.file, request.cancelChecker) { live ->
       if (live.isStale) return@withLiveKtFile null
-      live.analyzing(AnalysisPriority.SEMANTIC, request.cancelChecker) {
+      live.analyzing(request.cancelChecker) {
         request.cancelChecker.abortIfCancelled()
         action(this, it)
       }
