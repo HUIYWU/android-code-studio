@@ -165,14 +165,22 @@ internal class AnalysisRequestScheduler(
     return future to timer
   }
 
-  fun cancelDiagnostics() {
+  fun cancelDiagnostics(): Set<Path> {
+    val paths = linkedSetOf<Path>()
     pending.values
         .filter { it.kind == AnalysisRequestKind.DIAGNOSTICS }
-        .forEach { it.cancel() }
+        .forEach { request ->
+          request.path?.let(paths::add)
+          request.cancel()
+        }
     activeRequest
         ?.takeIf { it.kind == AnalysisRequestKind.DIAGNOSTICS }
-        ?.cancel()
+        ?.also { request ->
+          request.path?.let(paths::add)
+          request.cancel()
+        }
     synchronized(wakeup) { wakeup.notifyAll() }
+    return paths
   }
 
   fun <T> execute(

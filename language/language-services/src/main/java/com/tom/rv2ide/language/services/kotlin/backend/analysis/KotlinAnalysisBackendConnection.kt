@@ -37,6 +37,8 @@ import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
@@ -58,8 +60,14 @@ class KotlinAnalysisBackendConnection internal constructor(
   private val stateRef = AtomicReference(KotlinBackendState.NEW)
   private val generationCounter = AtomicLong(0L)
   private val diagnosticDebounceJobs = ConcurrentHashMap<Path, Future<*>>()
+  private val diagnosticDebounceCancellations = ConcurrentHashMap<Path, ICancelChecker>()
   private val diagnosticSequences = ConcurrentHashMap<Path, Long>()
   private val diagnosticSequenceCounter = AtomicLong(0L)
+  private val diagnosticRescheduledSequences = ConcurrentHashMap<Path, Long>()
+  private val interruptedDiagnostics = ConcurrentHashMap<Path, Long>()
+  private val diagnosticsStateLock = Any()
+  private val interactiveRequestLock = Any()
+  private val activeInteractiveRequests = AtomicInteger(0)
   private var runtime: KotlinAnalysisRuntime? = null
   private var diagnosticsCallback: ((DiagnosticResult) -> Unit)? = null
   @Volatile private var initialized = false
@@ -188,6 +196,8 @@ class KotlinAnalysisBackendConnection internal constructor(
 
         stateRef.set(KotlinBackendState.REFRESHING)
         cancelScheduledDiagnostics()
+        diagnosticRescheduledSequences.clear()
+        interruptedDiagnostics.clear()
         val wasInitialized = initialized
         val oldRuntime = runtime
         val newRuntime = createRuntime(classpathProvider)
@@ -289,8 +299,13 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           runtime?.onFileClosed(path)
-          diagnosticSequences[path] = diagnosticSequenceCounter.incrementAndGet()
-          diagnosticDebounceJobs.remove(path)?.cancel(false)
+          synchronized(diagnosticsStateLock) {
+            diagnosticSequences[path] = diagnosticSequenceCounter.incrementAndGet()
+            diagnosticRescheduledSequences.remove(path)
+            interruptedDiagnostics.remove(path)
+            diagnosticDebounceCancellations.remove(path)?.cancel()
+            diagnosticDebounceJobs.remove(path)?.cancel(false)
+          }
           diagnosticsCallback?.invoke(
               DiagnosticResult(
                   path,
@@ -329,31 +344,45 @@ class KotlinAnalysisBackendConnection internal constructor(
   private fun rescheduleActiveDocuments() {
     activeDocuments()
         .filter(::supportsDocument)
-        .forEach(::scheduleDiagnostics)
+        .forEach { path -> scheduleDiagnostics(path) }
   }
 
-  private fun scheduleDiagnostics(path: Path) {
-    if (!isReady || !initialized) return
-    val normalizedPath = path.normalize()
-    val sequence = diagnosticSequenceCounter.incrementAndGet()
-    diagnosticSequences[normalizedPath] = sequence
-    diagnosticDebounceJobs.remove(normalizedPath)?.cancel(false)
-    val (_, timer) = requestScheduler.schedule(
-        delay = DIAGNOSTICS_DEBOUNCE_MS,
-        unit = TimeUnit.MILLISECONDS,
-        kind = AnalysisRequestKind.DIAGNOSTICS,
-        path = normalizedPath,
-        backendGeneration = generation,
-        cancelChecker = ICancelChecker.NOOP,
-        requiredMutationPaths = setOf(normalizedPath),
-        action = {},
-        cancellableAction = { cancelChecker ->
-          diagnosticDebounceJobs.remove(normalizedPath)
-          publishDiagnostics(normalizedPath, sequence, cancelChecker)
-          Unit
-        },
-    )
-    diagnosticDebounceJobs[normalizedPath] = timer
+  private fun scheduleDiagnostics(path: Path, preserveRescheduleState: Boolean = false) {
+    synchronized(diagnosticsStateLock) {
+      if (!isReady || !initialized) return
+      val normalizedPath = path.normalize()
+      val sequence = diagnosticSequenceCounter.incrementAndGet()
+      diagnosticSequences[normalizedPath] = sequence
+      if (!preserveRescheduleState) {
+        diagnosticRescheduledSequences.remove(normalizedPath)
+        interruptedDiagnostics.remove(normalizedPath)
+      }
+      diagnosticDebounceCancellations.remove(normalizedPath)?.cancel()
+      diagnosticDebounceJobs.remove(normalizedPath)?.cancel(false)
+      val debounceCancellation = ICancelChecker.Default()
+      diagnosticDebounceCancellations[normalizedPath] = debounceCancellation
+      val (_, timer) = requestScheduler.schedule(
+          delay = DIAGNOSTICS_DEBOUNCE_MS,
+          unit = TimeUnit.MILLISECONDS,
+          kind = AnalysisRequestKind.DIAGNOSTICS,
+          path = normalizedPath,
+          backendGeneration = generation,
+          cancelChecker = debounceCancellation,
+          requiredMutationPaths = setOf(normalizedPath),
+          action = {},
+          cancellableAction = { cancelChecker ->
+            synchronized(diagnosticsStateLock) {
+              if (diagnosticSequences[normalizedPath] == sequence) {
+                diagnosticDebounceJobs.remove(normalizedPath)
+                diagnosticDebounceCancellations.remove(normalizedPath)
+              }
+            }
+            publishDiagnostics(normalizedPath, sequence, cancelChecker)
+            Unit
+          },
+      )
+      diagnosticDebounceJobs[normalizedPath] = timer
+    }
   }
 
   private fun publishDiagnostics(path: Path, sequence: Long, cancelChecker: ICancelChecker) {
@@ -413,6 +442,8 @@ class KotlinAnalysisBackendConnection internal constructor(
       if (state == KotlinBackendState.CLOSED) return@executeOnAnalysisQueue
       stateRef.set(KotlinBackendState.CLOSED)
       cancelScheduledDiagnostics()
+      diagnosticRescheduledSequences.clear()
+      interruptedDiagnostics.clear()
       initialized = false
       val activeRuntime = runtime
       runtime = null
@@ -446,15 +477,15 @@ internal suspend fun signatureHelp(
        request: KotlinSemanticRequest,
        isCurrent: (KotlinSemanticRequest) -> Boolean,
    ): SignatureHelp? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.signatureHelp(request) }
-private suspend fun <T> executeSemanticRequest(
-      request: KotlinSemanticRequest,
-      kind: AnalysisRequestKind,
-      isCurrent: (KotlinSemanticRequest) -> Boolean,
-      action: (KotlinAnalysisRuntime) -> T?,
-   ): T? = suspendCancellableCoroutine { continuation ->
-     fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
-        generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
-    if (!canExecute()) {
+  private suspend fun <T> executeSemanticRequest(
+       request: KotlinSemanticRequest,
+       kind: AnalysisRequestKind,
+       isCurrent: (KotlinSemanticRequest) -> Boolean,
+       action: (KotlinAnalysisRuntime) -> T?,
+    ): T? = suspendCancellableCoroutine { continuation ->
+      fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
+         generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
+     if (!canExecute()) {
       KlsLogs.info(
           "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=before-execution-current-check",
           request.file,
@@ -463,40 +494,55 @@ private suspend fun <T> executeSemanticRequest(
       continuation.resume(null)
       return@suspendCancellableCoroutine
     }
-    cancelScheduledDiagnostics()
-    requestScheduler.cancelDiagnostics()
-    val task = requestScheduler.submit(
-        kind = kind,
-        path = request.file,
-        backendGeneration = request.backendGeneration,
-        documentVersion = request.snapshot.version,
-        documentRevision = request.snapshot.revision,
-        cancelChecker = request.cancelChecker,
-        requiredMutationPaths = setOf(request.file),
-        action = {
-          val currentRuntime = runtime
-          val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-          val currentAfterExecution = canExecute()
-          if (!currentAfterExecution) {
-            KlsLogs.info(
-                "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
-                request.file,
-                request.backendGeneration,
-            )
-          }
-          if (currentAfterExecution) result else null
-        },
-    )
-    task.whenComplete { result, error ->
-      if (!continuation.isActive) return@whenComplete
-      if (error != null) {
-        KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
-        continuation.resume(null)
-      } else {
-        continuation.resume(result)
-      }
-    }
-    continuation.invokeOnCancellation { task.cancel(false) }
+     cancelDiagnosticsForInteractiveRequest()
+     val completionReported = AtomicBoolean(false)
+     fun reportInteractiveCompletion() {
+       if (completionReported.compareAndSet(false, true)) {
+         finishInteractiveRequest()
+       }
+     }
+     try {
+       val task = requestScheduler.submit(
+           kind = kind,
+           path = request.file,
+           backendGeneration = request.backendGeneration,
+           documentVersion = request.snapshot.version,
+           documentRevision = request.snapshot.revision,
+           cancelChecker = request.cancelChecker,
+           requiredMutationPaths = setOf(request.file),
+           action = {
+             val currentRuntime = runtime
+             val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+             val currentAfterExecution = canExecute()
+             if (!currentAfterExecution) {
+               KlsLogs.info(
+                   "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
+                   request.file,
+                   request.backendGeneration,
+               )
+             }
+             if (currentAfterExecution) result else null
+           },
+       )
+       task.whenComplete { result, error ->
+         reportInteractiveCompletion()
+         if (!continuation.isActive) return@whenComplete
+         if (error != null) {
+           KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
+           continuation.resume(null)
+         } else {
+           continuation.resume(result)
+         }
+       }
+       continuation.invokeOnCancellation {
+         task.cancel(false)
+         reportInteractiveCompletion()
+       }
+     } catch (t: Throwable) {
+       reportInteractiveCompletion()
+       KlsLogs.warn("Kotlin Analysis semantic request submission failed for: {}", request.file, t)
+       if (continuation.isActive) continuation.resume(null)
+     }
   }
 
   private fun createRuntime(provider: KotlinProjectClasspathProvider): KotlinAnalysisRuntime? {
@@ -535,9 +581,57 @@ private suspend fun <T> executeSemanticRequest(
     }
   }
 
-  private fun cancelScheduledDiagnostics() {
-    diagnosticDebounceJobs.values.forEach { it.cancel(false) }
-    diagnosticDebounceJobs.clear()
+  private fun cancelDiagnosticsForInteractiveRequest() {
+    synchronized(interactiveRequestLock) {
+      synchronized(diagnosticsStateLock) {
+        val interruptedPaths = cancelScheduledDiagnostics().toMutableSet()
+        interruptedPaths += requestScheduler.cancelDiagnostics()
+        interruptedPaths.forEach { path ->
+          diagnosticSequences[path]?.let { sequence ->
+            if (diagnosticRescheduledSequences[path] != sequence) {
+              interruptedDiagnostics[path] = sequence
+            } else {
+              interruptedDiagnostics.remove(path)
+            }
+          }
+        }
+      }
+      activeInteractiveRequests.incrementAndGet()
+    }
+  }
+
+  private fun finishInteractiveRequest() {
+    synchronized(interactiveRequestLock) {
+      val remaining = activeInteractiveRequests.decrementAndGet()
+      if (remaining != 0 || !isReady || !initialized) return
+      synchronized(diagnosticsStateLock) {
+        val paths = interruptedDiagnostics.entries
+            .mapNotNull { (path, sequence) ->
+              interruptedDiagnostics.remove(path)
+              if (diagnosticSequences[path] == sequence &&
+                  diagnosticRescheduledSequences[path] != sequence) {
+                path to sequence
+              } else {
+                null
+              }
+            }
+        paths.forEach { (path, sequence) ->
+          scheduleDiagnostics(path, preserveRescheduleState = true)
+          diagnosticRescheduledSequences[path] = diagnosticSequences[path] ?: sequence
+        }
+      }
+    }
+  }
+
+  private fun cancelScheduledDiagnostics(): Set<Path> {
+    synchronized(diagnosticsStateLock) {
+      val paths = diagnosticDebounceJobs.keys.toSet()
+      diagnosticDebounceCancellations.values.forEach { it.cancel() }
+      diagnosticDebounceCancellations.clear()
+      diagnosticDebounceJobs.values.forEach { it.cancel(false) }
+      diagnosticDebounceJobs.clear()
+      return paths
+    }
   }
 
   private fun <T> executeOnAnalysisQueue(
