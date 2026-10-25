@@ -549,6 +549,20 @@ internal suspend fun signatureHelp(
     var candidate: KotlinAnalysisRuntime? = null
     return try {
       candidate = runtimeFactory.create(provider)
+      candidate.configureIndexingScheduler { path, action ->
+        val normalizedPath = path.normalize()
+        requestScheduler.submit(
+            kind = AnalysisRequestKind.INDEXING,
+            path = normalizedPath,
+            cancelChecker = ICancelChecker.NOOP,
+            mutationPaths = setOf(normalizedPath),
+            action = {
+              action()
+              Unit
+            },
+        )
+        Unit
+      }
       if (candidate.start()) {
         candidate
       } else {

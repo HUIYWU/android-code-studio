@@ -14,6 +14,7 @@ import java.nio.file.Path
 
 internal interface KotlinAnalysisRuntime {
   fun start(): Boolean
+  fun configureIndexingScheduler(schedule: (Path, () -> Unit) -> Unit) = Unit
   fun onFileOpened(path: Path) = Unit
   fun onFileContentChanged(path: Path, edit: OneHopDocumentEdit? = null) = Unit
   fun onFileClosed(path: Path) = Unit

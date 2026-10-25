@@ -233,6 +233,7 @@ class KotlinAnalysisBackendConnectionTest {
     override fun analyze(
         path: Path,
         snapshot: com.tom.rv2ide.projects.models.ActiveDocumentSnapshot?,
+        cancelChecker: ICancelChecker,
     ) = null
 
     override fun complete(request: KotlinSemanticRequest) = null

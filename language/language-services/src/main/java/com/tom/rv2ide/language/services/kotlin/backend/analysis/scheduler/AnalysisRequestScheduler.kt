@@ -45,7 +45,6 @@ internal class AnalysisRequestScheduler(
       cancelChecker: ICancelChecker,
       requiredMutationPaths: Set<Path> = emptySet(),
       mutationPaths: Set<Path> = emptySet(),
-      attempt: Int = 0,
       action: () -> T,
       cancellableAction: ((ICancelChecker) -> T)? = null,
   ): CompletableFuture<T?> {
@@ -83,7 +82,6 @@ internal class AnalysisRequestScheduler(
         cancelChecker = requestCancellation,
         requiredMutationSequences = requiredMutationSequences,
         mutationSequences = reservation,
-        attempt = attempt,
         action = {
           if (closed.get() || future.isCancelled || cancelChecker.isCancelled()) {
             future.complete(null)
@@ -122,7 +120,6 @@ internal class AnalysisRequestScheduler(
       cancelChecker: ICancelChecker,
       requiredMutationPaths: Set<Path> = emptySet(),
       mutationPaths: Set<Path> = emptySet(),
-      attempt: Int = 0,
       action: () -> T,
       cancellableAction: ((ICancelChecker) -> T)? = null,
   ): Pair<CompletableFuture<T?>, Future<*>> {
@@ -144,7 +141,6 @@ internal class AnalysisRequestScheduler(
                   cancelChecker = cancelChecker,
                   requiredMutationPaths = requiredMutationPaths,
                   mutationPaths = mutationPaths,
-                  attempt = attempt,
                   action = action,
                   cancellableAction = cancellableAction,
               )

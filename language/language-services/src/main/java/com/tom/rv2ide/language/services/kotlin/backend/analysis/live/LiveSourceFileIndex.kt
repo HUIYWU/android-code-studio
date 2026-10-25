@@ -35,8 +35,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 internal enum class LiveFileSourceKind {
   ACTIVE_DOCUMENT,
@@ -79,9 +77,7 @@ internal class LiveSourceFileIndex(
   private val currentFiles = ConcurrentHashMap<Path, VersionedFile>()
   private val pins = ConcurrentHashMap<Path, Pin>()
   private val refreshLock = Any()
-  private val refreshExecutor: ExecutorService = Executors.newFixedThreadPool(2) { runnable ->
-    Thread(runnable, "acs-kotlin-live-refresh").apply { isDaemon = true }
-  }
+  private var scheduleRefresh: ((Path, () -> Unit) -> Unit)? = null
 
   lateinit var parser: KtPsiFactory
   var onScriptFileCommitted: ((KtFile) -> Unit)? = null
@@ -234,8 +230,14 @@ internal class LiveSourceFileIndex(
     }
   }
 
-  fun refreshCurrentKtFileAsync(path: Path) {
-    refreshExecutor.submit { refreshCurrentKtFile(path) }
+  fun configureRefreshScheduler(schedule: (Path, () -> Unit) -> Unit) {
+    scheduleRefresh = schedule
+  }
+
+  fun scheduleRefreshCurrentKtFile(path: Path) {
+    val normalized = path.normalize()
+    scheduleRefresh?.invoke(normalized) { refreshCurrentKtFile(normalized) }
+        ?: refreshCurrentKtFile(normalized)
   }
 
   fun applyDocumentEdit(path: Path, edit: OneHopDocumentEdit?) {
@@ -540,11 +542,11 @@ internal class LiveSourceFileIndex(
         Files.walk(to).use { stream ->
           stream.filter { Files.isRegularFile(it) }
               .filter { sourceRegistry.isKotlinSource(it) }
-              .forEach { refreshCurrentKtFileAsync(it) }
+              .forEach { scheduleRefreshCurrentKtFile(it) }
         }
       }
     } else if (sourceRegistry.isKotlinSource(to)) {
-      refreshCurrentKtFileAsync(to)
+      scheduleRefreshCurrentKtFile(to)
     }
   }
 
@@ -585,7 +587,7 @@ internal class LiveSourceFileIndex(
       is PinRelease.Remove -> notifyRemoved(action.source)
       is PinRelease.Refresh -> {
         action.removed?.let(::notifyRemoved)
-        if (FileManager.isActive(path) || Files.exists(path)) refreshCurrentKtFileAsync(path)
+        if (FileManager.isActive(path) || Files.exists(path)) scheduleRefreshCurrentKtFile(path)
       }
       PinRelease.None -> Unit
     }
@@ -734,8 +736,8 @@ internal class LiveSourceFileIndex(
     synchronized(refreshLock) {
       currentFiles.clear()
       pins.clear()
+      scheduleRefresh = null
     }
-    refreshExecutor.shutdownNow()
   }
 
   private data class RemovedSource(

@@ -101,6 +101,10 @@ internal class LiveAnalysisEnvironment(
   lateinit var runtimeGraph: LiveAnalysisModuleGraph
     private set
 
+  fun configureRefreshScheduler(schedule: (Path, () -> Unit) -> Unit) {
+    if (::liveIndex.isInitialized) liveIndex.configureRefreshScheduler(schedule)
+  }
+
   fun start(): Boolean {
     val workspace = classpathProvider.workspace ?: return false
     projectContext = KotlinAnalysisProjectContext.create(workspace)

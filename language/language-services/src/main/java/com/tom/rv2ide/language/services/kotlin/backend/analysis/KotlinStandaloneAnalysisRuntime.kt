@@ -58,6 +58,12 @@ internal class KotlinStandaloneAnalysisRuntime(
 ) : KotlinAnalysisRuntime {
   private val closed = AtomicBoolean(false)
   private var environment: LiveAnalysisEnvironment? = null
+  private var scheduleIndexing: ((Path, () -> Unit) -> Unit)? = null
+
+  override fun configureIndexingScheduler(schedule: (Path, () -> Unit) -> Unit) {
+    scheduleIndexing = schedule
+    environment?.configureRefreshScheduler(schedule)
+  }
 
   override fun start(): Boolean {
     if (closed.get()) return false
@@ -66,6 +72,7 @@ internal class KotlinStandaloneAnalysisRuntime(
       created.close()
       return false
     }
+    scheduleIndexing?.let { schedule -> created.configureRefreshScheduler(schedule) }
     environment = created
     return true
   }
@@ -83,7 +90,7 @@ internal class KotlinStandaloneAnalysisRuntime(
   }
 
   override fun onFileCreated(path: Path) {
-    environment?.liveIndex?.refreshCurrentKtFileAsync(path)
+    environment?.liveIndex?.scheduleRefreshCurrentKtFile(path)
   }
 
   override fun onFileRemoved(path: Path) {

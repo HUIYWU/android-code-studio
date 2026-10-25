@@ -20,7 +20,6 @@ internal class AnalysisRequest<T>(
     val cancelChecker: AnalysisRequestCancellation,
     val requiredMutationSequences: Map<Path, Long> = emptyMap(),
     val mutationSequences: Map<Path, Long> = emptyMap(),
-    val attempt: Int = 0,
     val action: () -> T?,
     val cancel: () -> Unit = {},
 ) : Comparable<AnalysisRequest<*>> {
