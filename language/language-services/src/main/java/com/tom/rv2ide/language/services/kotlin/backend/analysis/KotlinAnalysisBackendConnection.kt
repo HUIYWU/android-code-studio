@@ -169,7 +169,8 @@ class KotlinAnalysisBackendConnection internal constructor(
         }
 
         stateRef.set(KotlinBackendState.STARTING)
-        val startedRuntime = createRuntime(classpathProvider)
+        val targetGeneration = generationCounter.get() + 1L
+        val startedRuntime = createRuntime(classpathProvider, targetGeneration)
         if (startedRuntime == null) {
           stateRef.set(KotlinBackendState.FAILED)
           return@executeOnAnalysisQueue false
@@ -200,7 +201,11 @@ class KotlinAnalysisBackendConnection internal constructor(
         interruptedDiagnostics.clear()
         val wasInitialized = initialized
         val oldRuntime = runtime
-        val newRuntime = createRuntime(classpathProvider)
+        val oldGeneration = generation
+        requestScheduler.cancelRequests(AnalysisRequestKind.DIAGNOSTICS, oldGeneration)
+        requestScheduler.cancelRequests(AnalysisRequestKind.INDEXING, oldGeneration)
+        val targetGeneration = oldGeneration + 1L
+        val newRuntime = createRuntime(classpathProvider, targetGeneration)
         if (newRuntime == null) {
           stateRef.set(if (oldRuntime != null) KotlinBackendState.READY else KotlinBackendState.FAILED)
           initialized = wasInitialized
@@ -438,6 +443,7 @@ class KotlinAnalysisBackendConnection internal constructor(
 
   override fun close() {
     if (state == KotlinBackendState.CLOSED) return
+    requestScheduler.cancelAll()
     executeOnAnalysisQueue {
       if (state == KotlinBackendState.CLOSED) return@executeOnAnalysisQueue
       stateRef.set(KotlinBackendState.CLOSED)
@@ -545,22 +551,30 @@ internal suspend fun signatureHelp(
      }
   }
 
-  private fun createRuntime(provider: KotlinProjectClasspathProvider): KotlinAnalysisRuntime? {
+  private fun createRuntime(
+      provider: KotlinProjectClasspathProvider,
+      backendGeneration: Long,
+  ): KotlinAnalysisRuntime? {
     var candidate: KotlinAnalysisRuntime? = null
     return try {
       candidate = runtimeFactory.create(provider)
       candidate.configureIndexingScheduler { path, action ->
-        val normalizedPath = path.normalize()
-        requestScheduler.submit(
-            kind = AnalysisRequestKind.INDEXING,
-            path = normalizedPath,
-            cancelChecker = ICancelChecker.NOOP,
-            mutationPaths = setOf(normalizedPath),
-            action = {
-              action()
-              Unit
-            },
-        )
+        if (isReady && generation == backendGeneration) {
+          val normalizedPath = path.normalize()
+          requestScheduler.submit(
+              kind = AnalysisRequestKind.INDEXING,
+              path = normalizedPath,
+              backendGeneration = backendGeneration,
+              cancelChecker = ICancelChecker.NOOP,
+              mutationPaths = setOf(normalizedPath),
+              action = { Unit },
+              cancellableAction = { cancelChecker ->
+                cancelChecker.abortIfCancelled()
+                action()
+                Unit
+              },
+          )
+        }
         Unit
       }
       if (candidate.start()) {

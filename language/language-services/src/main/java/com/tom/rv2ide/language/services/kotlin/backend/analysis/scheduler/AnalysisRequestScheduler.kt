@@ -161,16 +161,23 @@ internal class AnalysisRequestScheduler(
     return future to timer
   }
 
-  fun cancelDiagnostics(): Set<Path> {
+  fun cancelDiagnostics(): Set<Path> = cancelRequests { it.kind == AnalysisRequestKind.DIAGNOSTICS }
+
+  fun cancelRequests(kind: AnalysisRequestKind, backendGeneration: Long): Set<Path> =
+      cancelRequests { it.kind == kind && it.backendGeneration == backendGeneration }
+
+  fun cancelAll(): Set<Path> = cancelRequests { true }
+
+  private fun cancelRequests(predicate: (AnalysisRequest<*>) -> Boolean): Set<Path> {
     val paths = linkedSetOf<Path>()
     pending.values
-        .filter { it.kind == AnalysisRequestKind.DIAGNOSTICS }
+        .filter(predicate)
         .forEach { request ->
           request.path?.let(paths::add)
           request.cancel()
         }
     activeRequest
-        ?.takeIf { it.kind == AnalysisRequestKind.DIAGNOSTICS }
+        ?.takeIf(predicate)
         ?.also { request ->
           request.path?.let(paths::add)
           request.cancel()
