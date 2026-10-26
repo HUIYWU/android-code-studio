@@ -5,7 +5,6 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBacking
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForElement
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.projects.models.OneHopDocumentEdit
@@ -312,7 +311,9 @@ internal class KotlinStandaloneAnalysisRuntime(
   }
 
   override fun close() {
-    if (!closed.compareAndSet(false, true)) return
+    if (!closed.compareAndSet(false, true)) {
+      return
+    }
     environment?.close()
     environment = null
   }

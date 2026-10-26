@@ -40,7 +40,8 @@ sealed interface AgentMessage {
     /** [toolCalls] holds the calls the model asked for; empty for a pure text turn. */
     data class Assistant(
         override val content: String,
-        val toolCalls: List<AgentToolCall> = emptyList()
+        val toolCalls: List<AgentToolCall> = emptyList(),
+        val reasoningContent: String = ""
     ) : AgentMessage {
         override val role = "assistant"
     }
@@ -69,8 +70,9 @@ data class AgentToolSpec(
     val parameters: JSONObject
 )
 
-/** One round's outcome: the text produced, plus any tool calls the model asked for. */
+/** One round's outcome: the text, reasoning, and tool calls the model produced. */
 data class AgentTurn(
     val text: String,
-    val toolCalls: List<AgentToolCall> = emptyList()
+    val toolCalls: List<AgentToolCall> = emptyList(),
+    val reasoningContent: String = ""
 )

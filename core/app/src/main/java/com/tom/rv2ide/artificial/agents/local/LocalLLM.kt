@@ -284,6 +284,7 @@ class LocalLLM : AIAgent {
 
           val requestBody = buildToolRequestBody(messages, tools)
           val text = StringBuilder()
+          val reasoningContent = StringBuilder()
           val toolCalls = ToolCallAccumulator()
 
           streamToolTurn(requestBody) { delta ->
@@ -295,6 +296,7 @@ class LocalLLM : AIAgent {
 
             val reasoning = OpenAiCompat.reasoningOf(delta)
             if (reasoning.isNotEmpty()) {
+              reasoningContent.append(reasoning)
               onEvent(AgentStreamEvent.ThinkingDelta(reasoning))
             }
 
@@ -305,7 +307,13 @@ class LocalLLM : AIAgent {
             return@withContext Result.failure(Exception("Empty response from Local LLM"))
           }
 
-          Result.success(AgentTurn(text.toString(), toolCalls.finish()))
+          Result.success(
+              AgentTurn(
+                text = text.toString(),
+                toolCalls = toolCalls.finish(),
+                reasoningContent = reasoningContent.toString()
+              )
+            )
         } catch (e: com.tom.rv2ide.artificial.exceptions.RateLimitException) {
           Result.failure(e)
         } catch (e: com.tom.rv2ide.artificial.exceptions.QuotaExceededException) {

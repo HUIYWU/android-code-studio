@@ -181,7 +181,9 @@ internal class LiveSourceFileIndex(
 
   fun refreshCurrentKtFile(path: Path): KtFile? {
     val normalized = path.normalize()
-    if (!sourceRegistry.isKotlinSource(normalized)) return null
+    if (!sourceRegistry.isKotlinSource(normalized)) {
+      return null
+    }
     val source = sourceSnapshot(normalized) ?: return null
     val identity = source.identity
     var removed: RemovedSource? = null
@@ -202,7 +204,9 @@ internal class LiveSourceFileIndex(
       null
     }
     removed?.let(::notifyRemoved)
-    if (existing != null || !shouldRefresh) return existing
+    if (existing != null || !shouldRefresh) {
+      return existing
+    }
     return refreshLocked(normalized, source)
   }
 

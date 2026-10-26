@@ -57,6 +57,7 @@ class KotlinAnalysisBackendConnection internal constructor(
   )
 
   private val requestScheduler = AnalysisRequestScheduler()
+  private val closeRequested = AtomicBoolean(false)
   private val stateRef = AtomicReference(KotlinBackendState.NEW)
   private val generationCounter = AtomicLong(0L)
   private val diagnosticDebounceJobs = ConcurrentHashMap<Path, Future<*>>()
@@ -78,7 +79,7 @@ class KotlinAnalysisBackendConnection internal constructor(
     get() = stateRef.get()
 
   override val isReady: Boolean
-    get() = state == KotlinBackendState.READY
+    get() = state == KotlinBackendState.READY && !closeRequested.get()
 
   override val generation: Long
     get() = generationCounter.get()
@@ -203,7 +204,7 @@ class KotlinAnalysisBackendConnection internal constructor(
         val oldRuntime = runtime
         val oldGeneration = generation
         requestScheduler.cancelRequests(AnalysisRequestKind.DIAGNOSTICS, oldGeneration)
-        requestScheduler.cancelRequests(AnalysisRequestKind.INDEXING, oldGeneration)
+        requestScheduler.cancelPendingRequests(AnalysisRequestKind.INDEXING, oldGeneration)
         val targetGeneration = oldGeneration + 1L
         val newRuntime = createRuntime(classpathProvider, targetGeneration)
         if (newRuntime == null) {
@@ -226,7 +227,6 @@ class KotlinAnalysisBackendConnection internal constructor(
         if (initialized) {
           rescheduleActiveDocuments()
         }
-        KlsLogs.info("Kotlin Analysis API backend environment refreshed, generation={}", generation)
         true
       } ?: false
 
@@ -391,11 +391,13 @@ class KotlinAnalysisBackendConnection internal constructor(
   }
 
   private fun publishDiagnostics(path: Path, sequence: Long, cancelChecker: ICancelChecker) {
-    if (!isReady || !initialized || diagnosticSequences[path] != sequence) return
+    val normalizedPath = path.normalize()
+    if (!isReady || !initialized || diagnosticSequences[path] != sequence) {
+      return
+    }
     cancelChecker.abortIfCancelled()
     val callback = diagnosticsCallback ?: return
     val requestGeneration = generation
-    val normalizedPath = path.normalize()
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
     try {
@@ -403,29 +405,12 @@ class KotlinAnalysisBackendConnection internal constructor(
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
         return
       }
+      cancelChecker.abortIfCancelled()
       if (diagnosticSequences[normalizedPath] != sequence) return
-      if (requestGeneration != generation || state != KotlinBackendState.READY) {
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=backend-generation-or-state",
-            normalizedPath,
-            requestGeneration,
-        )
-        return
-      }
+      if (requestGeneration != generation || !isReady) return
       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
       if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
-          snapshot.revision != currentSnapshot.revision) {
-        KlsLogs.info(
-            "Kotlin Analysis live PSI: action=diagnostics-drop, path={}, generation={}, reason=document-identity, requestedVersion={}, requestedRevision={}, currentVersion={}, currentRevision={}",
-            normalizedPath,
-            requestGeneration,
-            snapshot.version,
-            snapshot.revision,
-            currentSnapshot?.version,
-            currentSnapshot?.revision,
-        )
-        return
-      }
+          snapshot.revision != currentSnapshot.revision) return
       if (diagnosticSequences[normalizedPath] != sequence) return
       val published = result.copy(
           channel = DiagnosticResult.CHANNEL_KOTLIN,
@@ -442,7 +427,10 @@ class KotlinAnalysisBackendConnection internal constructor(
   }
 
   override fun close() {
-    if (state == KotlinBackendState.CLOSED) return
+    if (state == KotlinBackendState.CLOSED) {
+      return
+    }
+    closeRequested.set(true)
     requestScheduler.cancelAll()
     executeOnAnalysisQueue {
       if (state == KotlinBackendState.CLOSED) return@executeOnAnalysisQueue
@@ -484,71 +472,63 @@ internal suspend fun signatureHelp(
        isCurrent: (KotlinSemanticRequest) -> Boolean,
    ): SignatureHelp? = executeSemanticRequest(request, AnalysisRequestKind.SEMANTIC, isCurrent) { it.signatureHelp(request) }
   private suspend fun <T> executeSemanticRequest(
-       request: KotlinSemanticRequest,
-       kind: AnalysisRequestKind,
-       isCurrent: (KotlinSemanticRequest) -> Boolean,
-       action: (KotlinAnalysisRuntime) -> T?,
-    ): T? = suspendCancellableCoroutine { continuation ->
-      fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
-         generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
-     if (!canExecute()) {
-      KlsLogs.info(
-          "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=before-execution-current-check",
-          request.file,
-          request.backendGeneration,
-      )
+      request: KotlinSemanticRequest,
+      kind: AnalysisRequestKind,
+      isCurrent: (KotlinSemanticRequest) -> Boolean,
+      action: (KotlinAnalysisRuntime) -> T?,
+  ): T? = suspendCancellableCoroutine { continuation ->
+    fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
+        generation == request.backendGeneration && !request.cancelChecker.isCancelled() && isCurrent(request)
+
+    if (!canExecute()) {
       continuation.resume(null)
       return@suspendCancellableCoroutine
     }
-     cancelDiagnosticsForInteractiveRequest()
-     val completionReported = AtomicBoolean(false)
-     fun reportInteractiveCompletion() {
-       if (completionReported.compareAndSet(false, true)) {
-         finishInteractiveRequest()
-       }
-     }
-     try {
-       val task = requestScheduler.submit(
-           kind = kind,
-           path = request.file,
-           backendGeneration = request.backendGeneration,
-           documentVersion = request.snapshot.version,
-           documentRevision = request.snapshot.revision,
-           cancelChecker = request.cancelChecker,
-           requiredMutationPaths = setOf(request.file),
-           action = {
-             val currentRuntime = runtime
-             val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-             val currentAfterExecution = canExecute()
-             if (!currentAfterExecution) {
-               KlsLogs.info(
-                   "Kotlin Analysis live PSI: action=semantic-drop, path={}, generation={}, reason=after-execution-current-check",
-                   request.file,
-                   request.backendGeneration,
-               )
-             }
-             if (currentAfterExecution) result else null
-           },
-       )
-       task.whenComplete { result, error ->
-         reportInteractiveCompletion()
-         if (!continuation.isActive) return@whenComplete
-         if (error != null) {
-           KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
-           continuation.resume(null)
-         } else {
-           continuation.resume(result)
-         }
-       }
-       continuation.invokeOnCancellation {
-         task.cancel(false)
-         reportInteractiveCompletion()
-       }
-     } catch (t: Throwable) {
-       reportInteractiveCompletion()
-       KlsLogs.warn("Kotlin Analysis semantic request submission failed for: {}", request.file, t)
-       if (continuation.isActive) continuation.resume(null)
-     }
+
+    cancelDiagnosticsForInteractiveRequest()
+    val completionReported = AtomicBoolean(false)
+
+    fun reportInteractiveCompletion() {
+      if (completionReported.compareAndSet(false, true)) {
+        finishInteractiveRequest()
+      }
+    }
+
+    try {
+      val task = requestScheduler.submit(
+          kind = kind,
+          path = request.file,
+          backendGeneration = request.backendGeneration,
+          documentVersion = request.snapshot.version,
+          documentRevision = request.snapshot.revision,
+          cancelChecker = request.cancelChecker,
+          requiredMutationPaths = setOf(request.file),
+          action = {
+            val currentRuntime = runtime
+            val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
+            val currentAfterExecution = canExecute()
+            if (currentAfterExecution) result else null
+          },
+      )
+      task.whenComplete { result, error ->
+        reportInteractiveCompletion()
+        if (!continuation.isActive) return@whenComplete
+        if (error != null) {
+          KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
+          continuation.resume(null)
+        } else {
+          continuation.resume(result)
+        }
+      }
+      continuation.invokeOnCancellation {
+        task.cancel(false)
+        reportInteractiveCompletion()
+      }
+    } catch (t: Throwable) {
+      reportInteractiveCompletion()
+      KlsLogs.warn("Kotlin Analysis semantic request submission failed for: {}", request.file, t)
+      if (continuation.isActive) continuation.resume(null)
+    }
   }
 
   private fun createRuntime(
@@ -559,8 +539,8 @@ internal suspend fun signatureHelp(
     return try {
       candidate = runtimeFactory.create(provider)
       candidate.configureIndexingScheduler { path, action ->
+        val normalizedPath = path.normalize()
         if (isReady && generation == backendGeneration) {
-          val normalizedPath = path.normalize()
           requestScheduler.submit(
               kind = AnalysisRequestKind.INDEXING,
               path = normalizedPath,

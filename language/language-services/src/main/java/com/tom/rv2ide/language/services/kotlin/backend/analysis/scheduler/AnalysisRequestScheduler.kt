@@ -161,14 +161,24 @@ internal class AnalysisRequestScheduler(
     return future to timer
   }
 
-  fun cancelDiagnostics(): Set<Path> = cancelRequests { it.kind == AnalysisRequestKind.DIAGNOSTICS }
+  fun cancelDiagnostics(): Set<Path> =
+      cancelRequests(predicate = { it.kind == AnalysisRequestKind.DIAGNOSTICS })
 
   fun cancelRequests(kind: AnalysisRequestKind, backendGeneration: Long): Set<Path> =
-      cancelRequests { it.kind == kind && it.backendGeneration == backendGeneration }
+      cancelRequests(predicate = { it.kind == kind && it.backendGeneration == backendGeneration })
 
-  fun cancelAll(): Set<Path> = cancelRequests { true }
+  fun cancelPendingRequests(kind: AnalysisRequestKind, backendGeneration: Long): Set<Path> =
+      cancelRequests(
+          predicate = { it.kind == kind && it.backendGeneration == backendGeneration },
+          includeActive = false,
+      )
 
-  private fun cancelRequests(predicate: (AnalysisRequest<*>) -> Boolean): Set<Path> {
+  fun cancelAll(): Set<Path> = cancelRequests(predicate = { true })
+
+  private fun cancelRequests(
+      predicate: (AnalysisRequest<*>) -> Boolean,
+      includeActive: Boolean = true,
+  ): Set<Path> {
     val paths = linkedSetOf<Path>()
     pending.values
         .filter(predicate)
@@ -176,12 +186,14 @@ internal class AnalysisRequestScheduler(
           request.path?.let(paths::add)
           request.cancel()
         }
-    activeRequest
-        ?.takeIf(predicate)
-        ?.also { request ->
-          request.path?.let(paths::add)
-          request.cancel()
-        }
+    if (includeActive) {
+      activeRequest
+          ?.takeIf(predicate)
+          ?.also { request ->
+            request.path?.let(paths::add)
+            request.cancel()
+          }
+    }
     synchronized(wakeup) { wakeup.notifyAll() }
     return paths
   }
@@ -222,7 +234,9 @@ internal class AnalysisRequestScheduler(
   }
 
   override fun close() {
-    if (!closed.compareAndSet(false, true)) return
+    if (!closed.compareAndSet(false, true)) {
+      return
+    }
     debounceExecutor.shutdownNow()
     pending.values.forEach { request ->
       request.cancelChecker.cancel()
@@ -246,10 +260,17 @@ internal class AnalysisRequestScheduler(
         } else {
           request.action()
         }
-      } catch (e: CancellationException) {
-        if (!closed.get()) KlsLogs.debug("Kotlin Analysis request cancelled: id={}", request.id)
+      } catch (_: CancellationException) {
+        Unit
       } catch (t: Throwable) {
-        KlsLogs.warn("Kotlin Analysis request failed: id={}", request.id, t)
+        KlsLogs.warn(
+            "Kotlin Analysis scheduler: action=request-failed, id={}, kind={}, path={}, generation={}",
+            request.id,
+            request.kind,
+            request.path,
+            request.backendGeneration,
+            t,
+        )
       } finally {
         completeMutationSequences(request.mutationSequences)
         activeRequest = null

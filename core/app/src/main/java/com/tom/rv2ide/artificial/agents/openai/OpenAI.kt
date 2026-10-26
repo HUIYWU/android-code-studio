@@ -268,30 +268,38 @@ class OpenAI : AIAgent {
                   IllegalStateException("OpenAI service not initialized")
               )
 
-          val requestBody = buildToolRequestBody(messages, tools)
-          val text = StringBuilder()
-          val toolCalls = ToolCallAccumulator()
+           val requestBody = buildToolRequestBody(messages, tools)
+           val text = StringBuilder()
+           val reasoningContent = StringBuilder()
+           val toolCalls = ToolCallAccumulator()
 
-          streamToolTurn(key, requestBody) { delta ->
+           streamToolTurn(key, requestBody) { delta ->
             val content = OpenAiCompat.contentOf(delta)
             if (content.isNotEmpty()) {
               text.append(content)
               onEvent(AgentStreamEvent.TextDelta(content))
             }
 
-            val reasoning = OpenAiCompat.reasoningOf(delta)
-            if (reasoning.isNotEmpty()) {
-              onEvent(AgentStreamEvent.ThinkingDelta(reasoning))
-            }
+             val reasoning = OpenAiCompat.reasoningOf(delta)
+             if (reasoning.isNotEmpty()) {
+               reasoningContent.append(reasoning)
+               onEvent(AgentStreamEvent.ThinkingDelta(reasoning))
+             }
 
-            toolCalls.accept(delta.optJSONArray("tool_calls"))
+             toolCalls.accept(delta.optJSONArray("tool_calls"))
           }
 
           if (text.isEmpty() && !toolCalls.hasCalls()) {
             return@withContext Result.failure(Exception("Empty response from AI"))
           }
 
-          Result.success(AgentTurn(text.toString(), toolCalls.finish()))
+          Result.success(
+             AgentTurn(
+               text = text.toString(),
+               toolCalls = toolCalls.finish(),
+               reasoningContent = reasoningContent.toString()
+             )
+           )
         } catch (e: Exception) {
           Result.failure(e)
         }

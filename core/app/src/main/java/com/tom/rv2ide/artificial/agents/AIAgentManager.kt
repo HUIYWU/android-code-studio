@@ -536,7 +536,13 @@ class AIAgentManager(private val context: Context) {
                         return ToolLoopOutcome.SUCCESS
                     }
 
-                    messages.add(AgentMessage.Assistant(turn.text, turn.toolCalls))
+                    messages.add(
+                        AgentMessage.Assistant(
+                            content = turn.text,
+                            toolCalls = turn.toolCalls,
+                            reasoningContent = turn.reasoningContent
+                        )
+                    )
                     for (call in turn.toolCalls) {
                         // An interrupt between calls stops the rest of the queue.
                         currentCoroutineContext().ensureActive()

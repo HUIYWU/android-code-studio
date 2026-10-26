@@ -332,7 +332,9 @@ internal class LiveAnalysisEnvironment(
   }
 
   override fun close() {
-    if (!closed.compareAndSet(false, true)) return
+    if (!closed.compareAndSet(false, true)) {
+      return
+    }
     if (::liveIndex.isInitialized) liveIndex.close()
     Disposer.dispose(disposable)
   }

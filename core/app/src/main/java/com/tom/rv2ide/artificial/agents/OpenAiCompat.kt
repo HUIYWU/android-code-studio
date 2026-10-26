@@ -101,6 +101,9 @@ internal object OpenAiCompat {
                 is AgentMessage.User -> put("content", message.content)
                 is AgentMessage.Assistant -> {
                     put("content", message.content)
+                    if (message.reasoningContent.isNotBlank()) {
+                        put("reasoning_content", message.reasoningContent)
+                    }
                     if (message.toolCalls.isNotEmpty()) {
                         put("tool_calls", callsJson(message.toolCalls))
                     }
