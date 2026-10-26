@@ -49,7 +49,8 @@ android {
 
 tasks.withType<Test>().configureEach {
   // Workspace integration tests launch this standalone Tooling API artifact in a child process.
-  dependsOn(":tooling:impl:jar") 
+  dependsOn(":tooling:impl:jar")
+  
   val home = System.getenv("HOME")
   val hostNativeLibraryDir =
       rootProject.file("$home/usr/jvm-test-lib").absoluteFile
@@ -75,10 +76,6 @@ dependencies {
 
   api(projects.core.indexingApi)
   api(projects.core.projectdata)
-
-  // Include the Kotlin language server modules
-  // implementation(projects.server.server)
-  // implementation(projects.server.shared)
 
   implementation(libs.androidide.ts)
   implementation(libs.androidide.ts.java)

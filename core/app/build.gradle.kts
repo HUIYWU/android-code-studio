@@ -70,17 +70,11 @@ android {
   
 
   signingConfigs {
-      create("custom") {
-          val keyStorePath = "${rootProject.projectDir}/signing/signing-key.jks"
-          val keyStoreFile = file(keyStorePath)
-          
-          val signing_storePassword = "cXdlcnR5MTI=" //暂用
-          val signing_keyPassword = "cXdlcnR5MS4=" //暂用
-          
-          storeFile = keyStoreFile
-          storePassword = signing_storePassword
-          keyAlias = "AndroidCS"
-          keyPassword = signing_keyPassword
+      create("common") {
+        keyAlias = "AndroidCS"
+        keyPassword = "cXdlcnR5MS4="
+        storePassword = "cXdlcnR5MTI="
+        storeFile = file("ide_release.jks")
       }
   }
 
@@ -93,12 +87,12 @@ android {
 
   buildTypes {
     debug {
-      signingConfig = signingConfigs.getByName("custom")
+      signingConfig = signingConfigs.getByName("common")
     }
 
     release {
       isShrinkResources = false
-      signingConfig = signingConfigs.getByName("custom")
+      signingConfig = signingConfigs.getByName("common")
     }
   }
   

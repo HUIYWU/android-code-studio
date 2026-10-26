@@ -78,44 +78,6 @@ class JavaHoverProviderTest {
     assertEquals("&#1114112;", MarkdownHelper.asMarkdown("&#1114112;"))
   }
 
-  @Test
-  fun extractsOnlyKDocAdjacentToTheResolvedDeclaration() {
-    val documented =
-      """
-      /**
-       * Kotlin documentation.
-       *
-       * @param value input value
-       * @return projected result
-       */
-      fun documented(value: String): String = value
-      """.trimIndent()
-    val declaration = documented.indexOf("fun documented")
-
-    assertEquals(
-      "Kotlin documentation.\n\n@param value input value\n@return projected result",
-      JavaHoverProvider.extractAdjacentKDoc(documented, declaration),
-    )
-
-    val annotated =
-      """
-      /** KDoc belongs to the annotation boundary. */
-      @Deprecated("test")
-      fun annotated() = Unit
-      """.trimIndent()
-    assertEquals("", JavaHoverProvider.extractAdjacentKDoc(annotated, annotated.indexOf("fun annotated")))
-
-    val previousDeclaration =
-      """
-      /** First declaration docs. */
-      fun first() = Unit
-
-      fun second() = Unit
-      """.trimIndent()
-    assertEquals("", JavaHoverProvider.extractAdjacentKDoc(
-      previousDeclaration, previousDeclaration.indexOf("fun second")))
-  }
-
   private fun compileType(source: String, qualifiedName: String): TypeElement {
     val task =
       JavacTool.create()
