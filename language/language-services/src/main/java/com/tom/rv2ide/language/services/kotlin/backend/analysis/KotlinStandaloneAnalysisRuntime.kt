@@ -34,6 +34,7 @@ import org.jetbrains.kotlin.analysis.api.resolution.calls
 import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.symbol
 import org.jetbrains.kotlin.analysis.api.symbols.pointers.KaSymbolPointer
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
@@ -59,15 +60,28 @@ internal class KotlinStandaloneAnalysisRuntime(
   private var environment: LiveAnalysisEnvironment? = null
   private var scheduleIndexing: ((Path, () -> Unit) -> Unit)? = null
 
+  internal var startFailure: Throwable? = null
+    private set
+
+  internal var startFailureReason: String? = null
+    private set
+
   override fun configureIndexingScheduler(schedule: (Path, () -> Unit) -> Unit) {
     scheduleIndexing = schedule
     environment?.configureRefreshScheduler(schedule)
   }
 
   override fun start(): Boolean {
-    if (closed.get()) return false
+    if (closed.get()) {
+      startFailureReason = "Kotlin Analysis runtime is already closed"
+      return false
+    }
+    startFailure = null
+    startFailureReason = null
     val created = LiveAnalysisEnvironment(classpathProvider, intellijPluginRoot)
     if (!created.start()) {
+      startFailure = created.startFailure
+      startFailureReason = created.startFailureReason
       created.close()
       return false
     }
@@ -169,15 +183,32 @@ internal class KotlinStandaloneAnalysisRuntime(
         if (live.isStale) return@withLiveKtFile Unit
         live.analyzing(request.cancelChecker) { file ->
           val visitor = object : org.jetbrains.kotlin.psi.KtTreeVisitorVoid() {
+            override fun visitElement(element: PsiElement) {
+              request.cancelChecker.abortIfCancelled()
+              if (request.includeDeclaration && element is KtNamedDeclaration) {
+                val nameIdentifier = element.nameIdentifier
+                if (nameIdentifier != null && runCatching {
+                      element.symbol.createPointer().pointsToTheSameSymbolAs(target.pointer)
+                    }.getOrDefault(false)) {
+                  val location = locationForElement(path, file, nameIdentifier)
+                  if (location != null) {
+                    locations += location
+                    roles += ReferenceRole.DEFINITION
+                  }
+                }
+              }
+              super.visitElement(element)
+            }
+
             override fun visitSimpleNameExpression(expression: org.jetbrains.kotlin.psi.KtSimpleNameExpression) {
               request.cancelChecker.abortIfCancelled()
               val reference = expression.reference as? KtReference
               if (reference != null && runCatching { reference.resolveToSymbols() }.getOrDefault(emptyList())
                       .any { it.createPointer().pointsToTheSameSymbolAs(target.pointer) }) {
                 val location = locationForElement(path, file, expression)
-                if (location != null && (request.includeDeclaration || path != target.path || expression.parent !is org.jetbrains.kotlin.psi.KtNamedDeclaration)) {
+                if (location != null && (request.includeDeclaration || path != target.path || expression.parent !is KtNamedDeclaration)) {
                   locations += location
-                  roles += if (path == target.path && expression.parent is org.jetbrains.kotlin.psi.KtNamedDeclaration) ReferenceRole.DEFINITION else ReferenceRole.USAGE
+                  roles += if (path == target.path && expression.parent is KtNamedDeclaration) ReferenceRole.DEFINITION else ReferenceRole.USAGE
                 }
               }
               super.visitSimpleNameExpression(expression)
@@ -268,6 +299,9 @@ internal class KotlinStandaloneAnalysisRuntime(
         else -> null
       }
       if (reference != null) runCatching { reference.resolveToSymbol() }.getOrNull()?.let { return it }
+      if (element is KtNamedDeclaration && element.nameIdentifier?.textRange?.contains(offset) == true) {
+        runCatching { element.symbol }.getOrNull()?.let { return it }
+      }
       element = element.parent
     }
     return null

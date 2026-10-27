@@ -1,0 +1,12 @@
+plugins {
+  id 'com.android.library'
+}
+
+android {
+  namespace 'com.tom.rv2ide.testing.kotlinfixture.library'
+  compileSdk 35
+
+  defaultConfig {
+    minSdk 23
+  }
+}

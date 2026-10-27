@@ -36,14 +36,6 @@ android {
       assets.srcDirs(rootProject.file("utilities/framework-stubs/libs"))
     }
   }
-
-  // kotlin-compiler-embeddable and the resolved Kotlin runtime both package these builtins metadata
-  // files. Keep one copy for the APK instead of excluding both copies; AGP requires explicit patterns
-  // for the root and one-package layouts observed during Android test resource merging.
-  packaging {
-    resources.pickFirsts += "kotlin/*.kotlin_builtins"
-    resources.pickFirsts += "kotlin/*/*.kotlin_builtins"
-  }
 }
 
 
@@ -66,6 +58,8 @@ dependencies {
   testImplementation(libs.tests.junit)
   testImplementation(libs.tests.robolectric)
   testImplementation(projects.testing.lspTest)
+  testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.6.3")//analysis api tests needed
+
 
   androidTestImplementation(libs.tests.junit)
   androidTestImplementation(libs.tests.androidx.junit)
@@ -110,12 +104,10 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   implementation(libs.common.kotlin)
 
-
   implementation(files(ktAnalysisEngineJar))
-  testImplementation(libs.kotlin.compiler.embeddable)
   implementation(libs.asm)
   
-  // LSP4J dependencies for kotlin-language-server integration
+  // LSP4J dependencies for external process kotlin-language-server
   implementation(libs.org.eclipse.lsp4j.lsp4j)
   implementation(libs.org.eclipse.lsp4j.jsonrpc)
 

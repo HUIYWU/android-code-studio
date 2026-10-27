@@ -81,11 +81,14 @@ object LspWorkspaceTestSupport {
   }
 
   @JvmStatic
-  fun withWorkspace(action: LspWorkspaceScope.() -> Unit) {
+  fun withWorkspace(
+      projectDir: Path = FileProvider.testProjectRoot(),
+      action: LspWorkspaceScope.() -> Unit,
+  ) {
     prepareJvmApplication()
-    ToolingApiTestLauncher.launch {
+    ToolingApiTestLauncher.launch(projectDir) {
       val manager = IProjectManager.getInstance()
-      manager.openProject(FileProvider.testProjectRoot().toFile())
+      manager.openProject(projectDir.toFile())
       runBlocking { manager.setupProject(requireProject()) }
       val workspace = manager.requireWorkspace()
       prepareCompilerEnvironment(workspace)

@@ -82,6 +82,14 @@ internal class LiveAnalysisEnvironment(
   private val closed = AtomicBoolean(false)
   private val platform = JvmPlatforms.defaultJvmPlatform
 
+  @Volatile
+  var startFailure: Throwable? = null
+    private set
+
+  @Volatile
+  var startFailureReason: String? = null
+    private set
+
   lateinit var project: MockProject
     private set
   lateinit var session: StandaloneAnalysisAPISession
@@ -106,9 +114,15 @@ internal class LiveAnalysisEnvironment(
   }
 
   fun start(): Boolean {
-    val workspace = classpathProvider.workspace ?: return false
+    val workspace = classpathProvider.workspace ?: run {
+      startFailureReason = "Kotlin Analysis workspace is unavailable"
+      return false
+    }
     projectContext = KotlinAnalysisProjectContext.create(workspace)
-    if (projectContext.modules.none { it.sourceRoots.isNotEmpty() }) return false
+    if (projectContext.modules.none { it.sourceRoots.isNotEmpty() }) {
+      startFailureReason = "Kotlin Analysis workspace has no source roots"
+      return false
+    }
     Environment.JAVA_HOME?.let { System.setProperty(JavacConfigProvider.PROP_ANDROIDIDE_JAVA_HOME, it.absolutePath) }
 
     val languageVersionSettings = createLanguageVersionSettings()
@@ -325,6 +339,8 @@ internal class LiveAnalysisEnvironment(
       }
        true
     } catch (t: Throwable) {
+      startFailure = t
+      startFailureReason = "Kotlin Analysis live environment failed to start"
       KlsLogs.error("Kotlin Analysis live environment failed to start", t)
       close()
       false

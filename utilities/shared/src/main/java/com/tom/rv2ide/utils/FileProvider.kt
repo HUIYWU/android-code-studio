@@ -65,6 +65,8 @@ class FileProvider {
 
     @JvmStatic fun testProjectRoot(): Path = testResourcesDir().resolve("test-project")
 
+    @JvmStatic fun kotlinAnalysisProjectRoot(): Path = testResourcesDir().resolve("kotlin-analysis-project")
+
     @JvmStatic fun sampleProjectRoot(): Path = testResourcesDir().resolve("sample-project")
 
     /**
