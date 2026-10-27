@@ -15,13 +15,19 @@ import org.jetbrains.kotlin.platform.TargetPlatform
 import java.nio.file.Path
 
 @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
+internal data class LiveLibraryModulePair(
+    val binary: KaLibraryModule,
+    val source: KaLibrarySourceModule?,
+)
+
+@OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
 internal data class LiveScriptLibraryModulePair(
     val binary: KaLibraryModule,
     val source: KaLibrarySourceModule?,
 )
 
 @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
-internal fun createLiveScriptLibraryModulePair(
+internal fun createLiveLibraryModulePair(
     coreApplicationEnvironment: CoreApplicationEnvironment,
     project: Project,
     platform: TargetPlatform,
@@ -29,7 +35,7 @@ internal fun createLiveScriptLibraryModulePair(
     binaryRoots: Collection<Path>,
     sourceFiles: Collection<VirtualFile>,
     directDependencies: List<KaModule> = emptyList(),
-): LiveScriptLibraryModulePair {
+): LiveLibraryModulePair {
     val binaryScope = StandaloneProjectFactory.createLibraryModuleSearchScope(
         binaryRoots,
         emptyList(),
@@ -41,11 +47,11 @@ internal fun createLiveScriptLibraryModulePair(
     } else {
         GlobalSearchScope.filesScope(project, sourceFiles)
     }
-    lateinit var binary: LiveScriptBinaryLibraryModule
+    lateinit var binary: LiveBinaryLibraryModule
     val source = if (sourceFiles.isEmpty()) {
         null
     } else {
-        LiveScriptSourceLibraryModule(
+        LiveSourceLibraryModule(
             project = project,
             targetPlatform = platform,
             libraryName = "$libraryName:sources",
@@ -54,7 +60,7 @@ internal fun createLiveScriptLibraryModulePair(
             directDependencies = directDependencies,
         )
     }
-    binary = LiveScriptBinaryLibraryModule(
+    binary = LiveBinaryLibraryModule(
         project = project,
         targetPlatform = platform,
         libraryName = libraryName,
@@ -63,11 +69,33 @@ internal fun createLiveScriptLibraryModulePair(
         librarySourcesProvider = { source },
         directDependencies = directDependencies,
     )
-    return LiveScriptLibraryModulePair(binary, source)
+    return LiveLibraryModulePair(binary, source)
 }
 
 @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
-private class LiveScriptBinaryLibraryModule(
+internal fun createLiveScriptLibraryModulePair(
+    coreApplicationEnvironment: CoreApplicationEnvironment,
+    project: Project,
+    platform: TargetPlatform,
+    libraryName: String,
+    binaryRoots: Collection<Path>,
+    sourceFiles: Collection<VirtualFile>,
+    directDependencies: List<KaModule> = emptyList(),
+): LiveScriptLibraryModulePair {
+    val pair = createLiveLibraryModulePair(
+        coreApplicationEnvironment = coreApplicationEnvironment,
+        project = project,
+        platform = platform,
+        libraryName = libraryName,
+        binaryRoots = binaryRoots,
+        sourceFiles = sourceFiles,
+        directDependencies = directDependencies,
+    )
+    return LiveScriptLibraryModulePair(pair.binary, pair.source)
+}
+
+@OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
+private class LiveBinaryLibraryModule(
     override val project: Project,
     override val targetPlatform: TargetPlatform,
     override val libraryName: String,
@@ -86,7 +114,7 @@ private class LiveScriptBinaryLibraryModule(
 }
 
 @OptIn(KaExperimentalApi::class, KaPlatformInterface::class)
-private class LiveScriptSourceLibraryModule(
+private class LiveSourceLibraryModule(
     override val project: Project,
     override val targetPlatform: TargetPlatform,
     override val libraryName: String,
@@ -100,3 +128,4 @@ private class LiveScriptSourceLibraryModule(
     override val binaryLibrary: KaLibraryModule
         get() = binaryLibraryProvider()
 }
+

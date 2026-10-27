@@ -173,12 +173,15 @@ class LspWorkspaceScope internal constructor(val workspace: IWorkspace) {
     EventBus.getDefault().post(event)
   }
 
+  fun closeDocument(file: Path) {
+    val normalized = file.normalize()
+    val event = DocumentCloseEvent(normalized)
+    FileManager.onDocumentClose(event)
+    EventBus.getDefault().post(event)
+    openFiles.remove(normalized)
+  }
+
   internal fun closeOpenDocuments() {
-    openFiles.toList().forEach { file ->
-      val event = DocumentCloseEvent(file)
-      FileManager.onDocumentClose(event)
-      EventBus.getDefault().post(event)
-    }
-    openFiles.clear()
+    openFiles.toList().forEach(::closeDocument)
   }
 }

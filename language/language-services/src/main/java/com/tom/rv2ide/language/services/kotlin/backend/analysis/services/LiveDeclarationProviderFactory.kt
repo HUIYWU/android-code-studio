@@ -11,9 +11,10 @@ import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinCompositeDe
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProviderFactory
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProviderMerger
-import org.jetbrains.kotlin.analysis.api.platform.declarations.createDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.mergeSpecificProviders
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
+import org.jetbrains.kotlin.analysis.api.standalone.base.declarations.KotlinStandaloneDeclarationProviderFactory
+import org.jetbrains.kotlin.com.intellij.core.CoreApplicationEnvironment
 import org.jetbrains.kotlin.com.intellij.mock.MockProject
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
@@ -39,32 +40,49 @@ internal class LiveDeclarationProviderFactory : KotlinDeclarationProviderFactory
   private lateinit var liveIndex: LiveSourceFileIndex
   private lateinit var registry: LiveSourceFileRegistry
   private lateinit var metadataIndex: KotlinSourceMetadataIndex
+  private var standaloneFactory: KotlinStandaloneDeclarationProviderFactory? = null
 
   fun setup(
       project: MockProject,
       liveIndex: LiveSourceFileIndex,
       registry: LiveSourceFileRegistry,
       metadataIndex: KotlinSourceMetadataIndex,
+      coreApplicationEnvironment: CoreApplicationEnvironment,
+      librarySourceFiles: Collection<KtFile>,
   ) {
     this.project = project
     this.liveIndex = liveIndex
     this.registry = registry
     this.metadataIndex = metadataIndex
+    standaloneFactory = KotlinStandaloneDeclarationProviderFactory(
+        project = project,
+        environment = coreApplicationEnvironment,
+        sourceKtFiles = librarySourceFiles,
+        postponeIndexing = true,
+    )
   }
+
+  internal fun createLiveProvider(scope: GlobalSearchScope): LiveDeclarationProvider =
+      LiveDeclarationProvider(scope, project, liveIndex, registry, metadataIndex)
 
   override fun createDeclarationProvider(
       scope: GlobalSearchScope,
       contextualModule: KaModule?,
-  ): KotlinDeclarationProvider = LiveDeclarationProvider(scope, project, liveIndex, registry, metadataIndex)
+  ): KotlinDeclarationProvider {
+    val live = createLiveProvider(scope)
+    val standalone = standaloneFactory?.createDeclarationProvider(scope, contextualModule)
+        ?: return live
+    return KotlinCompositeDeclarationProvider.create(listOf(live, standalone))
+  }
 }
 
-internal class LiveDeclarationProviderMerger(private val project: Project) : KotlinDeclarationProviderMerger {
+internal class LiveDeclarationProviderMerger(
+    private val factory: LiveDeclarationProviderFactory,
+) : KotlinDeclarationProviderMerger {
   override fun merge(providers: List<KotlinDeclarationProvider>): KotlinDeclarationProvider =
       providers.mergeSpecificProviders<_, LiveDeclarationProvider>(KotlinCompositeDeclarationProvider.factory) { targets ->
         val scope = GlobalSearchScope.union(targets.map { it.scope })
-        project.createDeclarationProvider(scope, contextualModule = null).also {
-          check(it is LiveDeclarationProvider)
-        }
+        factory.createLiveProvider(scope)
       }
 }
 

@@ -37,9 +37,12 @@ internal data class LiveAnalysisBinaryRootKey(
         LiveAnalysisBinaryRootKey(path.toAbsolutePath().normalize())
   }
 }
-private fun libraryGroupIdentity(consumers: Set<String>): String {
+private fun libraryGroupIdentity(consumers: Set<String>, libraryIdentities: Set<String>): String {
   val digest = MessageDigest.getInstance("SHA-256")
-      .digest(consumers.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
+      .digest(
+          (consumers.sorted().joinToString("\n") + "\n" + libraryIdentities.sorted().joinToString("\n"))
+              .toByteArray(Charsets.UTF_8),
+      )
       .joinToString("") { byte -> "%02x".format(byte) }
   return "acs-library-group-${digest.take(24)}"
 }
@@ -47,6 +50,7 @@ private fun libraryGroupIdentity(consumers: Set<String>): String {
 internal data class LiveAnalysisLibraryGroup(
     val identity: String,
     val rootKeys: List<LiveAnalysisBinaryRootKey>,
+    val sourcePaths: List<Path>,
     val consumers: List<String>,
 )
 
@@ -109,8 +113,19 @@ internal data class LiveAnalysisModuleGraph(
       val provenanceVariants = linkedMapOf<LiveAnalysisBinaryRootKey, MutableSet<String>>()
       val missingRoots = linkedSetOf<LiveAnalysisBinaryRootKey>()
       val rootsByModule = linkedMapOf<String, List<LiveAnalysisBinaryRootKey>>()
+      val sourcePathsByRoot = linkedMapOf<LiveAnalysisBinaryRootKey, MutableSet<Path>>()
+      val libraryIdentitiesByRoot = linkedMapOf<LiveAnalysisBinaryRootKey, MutableSet<String>>()
       val consumers = linkedMapOf<LiveAnalysisBinaryRootKey, MutableSet<String>>()
       sortedContexts.forEach { context ->
+        context.libraryAttachments.forEach { attachment ->
+          attachment.binaryPaths.forEach { binaryPath ->
+            val root = LiveAnalysisBinaryRootKey.of(binaryPath)
+            libraryIdentitiesByRoot.getOrPut(root) { linkedSetOf() }.add(attachment.libraryIdentity)
+            sourcePathsByRoot.getOrPut(root) { linkedSetOf() }.addAll(
+                attachment.sourcePaths.map { it.toAbsolutePath().normalize() },
+            )
+          }
+        }
         val moduleRoots = buildList {
           context.binaryRootContexts.forEach { binary ->
             val key = LiveAnalysisBinaryRootKey.of(binary.path)
@@ -149,16 +164,21 @@ internal data class LiveAnalysisModuleGraph(
           }
 
       val rootConsumers = consumers.mapValues { (_, modules) -> modules.toSet() }
-      val groupsByConsumerSet = rootConsumers.entries
-          .groupBy({ it.value }, { it.key })
-          .mapValues { (consumerSet, roots) ->
+      val groupsByConsumerAndLibrarySet = rootConsumers.entries
+          .groupBy { (root, consumerSet) -> consumerSet to libraryIdentitiesByRoot[root].orEmpty().toSet() }
+          .mapValues { (groupKey, entries) ->
+            val (consumerSet, libraryIdentities) = groupKey
+            val roots = entries.map { it.key }
             LiveAnalysisLibraryGroup(
-                identity = libraryGroupIdentity(consumerSet),
+                identity = libraryGroupIdentity(consumerSet, libraryIdentities),
                 rootKeys = roots.sortedBy { it.path.toString() },
+                sourcePaths = roots.flatMap { sourcePathsByRoot[it].orEmpty() }
+                    .distinct()
+                    .sortedBy { it.toString() },
                 consumers = consumerSet.sorted(),
             )
           }
-      val groupsByRoot = groupsByConsumerSet.values.flatMap { group ->
+      val groupsByRoot = groupsByConsumerAndLibrarySet.values.flatMap { group ->
         group.rootKeys.map { root -> root to group }
       }.toMap()
       val libraryGroupsByModule = modulePaths.associateWith { modulePath ->

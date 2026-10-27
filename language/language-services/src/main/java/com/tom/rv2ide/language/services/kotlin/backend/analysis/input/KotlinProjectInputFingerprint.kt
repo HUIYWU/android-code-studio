@@ -2,6 +2,8 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.input
 
 import com.tom.rv2ide.projects.models.ProjectBinaryDescriptor
 import com.tom.rv2ide.projects.models.ProjectInputSnapshot
+import com.tom.rv2ide.projects.models.ProjectLibraryArchiveDescriptor
+import com.tom.rv2ide.projects.models.ProjectLibraryAttachmentDescriptor
 import com.tom.rv2ide.projects.models.ProjectModuleInputSnapshot
 import com.tom.rv2ide.projects.models.ProjectRootDescriptor
 import com.tom.rv2ide.projects.models.ProjectVariantArtifactSnapshot
@@ -47,7 +49,9 @@ internal object KotlinProjectInputFingerprint {
           rootLines(module, module.javaSourceRoots)
     })
     val binaries = digest(snapshot.modules.flatMap { module ->
-      binaryLines(module, module.moduleOutputs) + binaryLines(module, module.externalBinaries)
+      binaryLines(module, module.moduleOutputs) +
+          binaryLines(module, module.externalBinaries) +
+          libraryAttachmentLines(module, module.libraryAttachments)
     })
     val boot = digest(snapshot.modules.flatMap { module ->
       binaryLines(module, module.bootBinaries)
@@ -123,6 +127,30 @@ internal object KotlinProjectInputFingerprint {
         "modified=${binary.lastModifiedMillis ?: -1L}",
     ).joinToString("|")
   }
+
+  private fun libraryAttachmentLines(
+      module: ProjectModuleInputSnapshot,
+      attachments: List<ProjectLibraryAttachmentDescriptor>,
+  ): List<String> = attachments.flatMap { attachment ->
+    val prefix = listOf(
+        "module=${module.identity.modulePath}",
+        "library=${attachment.libraryIdentity}",
+        "owner=${attachment.ownerModulePath}",
+        "binaries=${attachment.binaryPaths.map { it.toString() }.sorted().joinToString(",")}",
+    ).joinToString("|")
+    buildList {
+      add(prefix)
+      attachment.sourceArchives.forEach { add("$prefix|source=${archiveLine(it)}") }
+      attachment.javadocArchives.forEach { add("$prefix|javadoc=${archiveLine(it)}") }
+    }
+  }
+
+  private fun archiveLine(archive: ProjectLibraryArchiveDescriptor): String = listOf(
+      "path=${archive.path}",
+      "exists=${archive.exists}",
+      "size=${archive.size ?: -1L}",
+      "modified=${archive.lastModifiedMillis ?: -1L}",
+  ).joinToString("|")
 
   private fun selectionLines(selection: ProjectVariantSelectionSnapshot): List<String> = listOf(
       "project=${selection.projectPath}",

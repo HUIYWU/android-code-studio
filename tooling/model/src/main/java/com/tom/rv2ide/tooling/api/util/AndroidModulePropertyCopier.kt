@@ -167,7 +167,7 @@ object AndroidModulePropertyCopier {
       this.androidLibraryData = copy(value.androidLibraryData)
       this.artifact = value.artifact
       this.srcJar = value.srcJar
-      // this.srcJars = value.srcJars
+      this.srcJars = value.srcJars
       this.docJar = value.docJar
       this.samplesJar = value.samplesJar
       this.key = value.key

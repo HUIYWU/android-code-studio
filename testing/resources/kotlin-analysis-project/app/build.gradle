@@ -17,4 +17,5 @@ android {
 
 dependencies {
   implementation project(':library')
+  implementation files('libs/kotlin-stdlib-2.3.21.jar')
 }

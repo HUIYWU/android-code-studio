@@ -4,6 +4,7 @@ import com.tom.rv2ide.projects.IWorkspace
 import com.tom.rv2ide.projects.ModuleProject
 import com.tom.rv2ide.projects.android.AndroidModule
 import com.tom.rv2ide.projects.java.JavaModule
+import com.tom.rv2ide.builder.model.DefaultLibrary
 import com.android.builder.model.v2.ide.LibraryType.ANDROID_LIBRARY
 import com.android.builder.model.v2.ide.LibraryType.JAVA_LIBRARY
 import com.android.builder.model.v2.ide.LibraryType.PROJECT
@@ -59,6 +60,7 @@ public object ProjectInputSnapshotFactory {
     val moduleOutputs = moduleOutputDescriptors(module, variant)
     val externalBinaries = externalBinaryDescriptors(module, allOutputPaths, allBootPaths)
     val bootBinaries = bootBinaryDescriptors(module)
+    val libraryAttachments = libraryAttachmentDescriptors(module, externalBinaries.map { it.path }.toSet())
 
     return ProjectModuleInputSnapshot(
         identity = identity,
@@ -72,6 +74,7 @@ public object ProjectInputSnapshotFactory {
         moduleOutputs = moduleOutputs,
         externalBinaries = externalBinaries,
         bootBinaries = bootBinaries,
+        libraryAttachments = libraryAttachments,
         compileModulePaths = module.getCompileModuleProjects()
             .map(ModuleProject::path)
             .distinct()
@@ -351,6 +354,99 @@ public object ProjectInputSnapshotFactory {
     module.libraries.sorted().forEach(::visit)
     return result
   }
+
+  private fun libraryAttachmentDescriptors(
+      module: ModuleProject,
+      externalBinaryPaths: Set<Path>,
+  ): List<ProjectLibraryAttachmentDescriptor> {
+    val result = mutableListOf<ProjectLibraryAttachmentDescriptor>()
+    val visitedModules = mutableSetOf<String>()
+
+    fun addAttachment(
+        currentModulePath: String,
+        identity: String,
+        binaries: Collection<File>,
+        sources: Collection<File>,
+        javadoc: Collection<File>,
+    ) {
+      val binaryPaths = binaries.map { it.snapshotPath() }
+          .filter { it in externalBinaryPaths }
+          .distinct()
+          .sortedBy(Path::toString)
+      if (binaryPaths.isEmpty() || (sources.isEmpty() && javadoc.isEmpty())) return
+      result += ProjectLibraryAttachmentDescriptor(
+          libraryIdentity = identity,
+          binaryPaths = binaryPaths,
+          sourceArchives = libraryArchives(sources),
+          javadocArchives = libraryArchives(javadoc),
+          ownerModulePath = currentModulePath,
+      )
+    }
+
+    fun collect(current: ModuleProject) {
+      if (!visitedModules.add(current.path)) return
+      when (current) {
+        is AndroidModule -> {
+          val visitedLibraries = mutableSetOf<String>()
+          fun visit(key: String) {
+            if (!visitedLibraries.add(key)) return
+            val library = current.libraryMap[key] ?: return
+            if (library.type == ANDROID_LIBRARY || library.type == JAVA_LIBRARY) {
+              addAttachment(
+                  currentModulePath = current.path,
+                  identity = "android|$key",
+                  binaries = androidLibraryBinaryFiles(library),
+                  sources = listOfNotNull(library.srcJar) + library.srcJars,
+                  javadoc = listOfNotNull(library.docJar),
+              )
+            }
+            library.dependencies.sorted().forEach(::visit)
+          }
+          current.libraries.sorted().forEach(::visit)
+        }
+        is JavaModule -> current.dependencies.filterIsInstance<JavaModuleExternalDependency>().forEach { dependency ->
+          val binary = dependency.jarFile ?: return@forEach
+          addAttachment(
+              currentModulePath = current.path,
+              identity = "java|${binary.snapshotPath()}",
+              binaries = listOf(binary),
+              sources = listOfNotNull(dependency.sources),
+              javadoc = listOfNotNull(dependency.javadoc),
+          )
+        }
+      }
+      current.getCompileModuleProjects().sortedBy { it.path }.forEach(::collect)
+    }
+
+    collect(module)
+    return result.distinct().sortedWith(compareBy({ it.libraryIdentity }, { it.binaryPaths.joinToString("|") }))
+  }
+
+  private fun androidLibraryBinaryFiles(library: DefaultLibrary): List<File> = when (library.type) {
+    ANDROID_LIBRARY -> buildList {
+      library.artifact?.let { artifact ->
+        if (artifact.extension.equals("aar", ignoreCase = true)) {
+          add(File(artifact.parentFile, "${artifact.nameWithoutExtension}-acs-extracted/classes.jar"))
+        } else {
+          add(artifact)
+        }
+      }
+      addAll(library.androidLibraryData?.compileJarFiles.orEmpty())
+    }
+    JAVA_LIBRARY -> listOfNotNull(library.artifact)
+    else -> emptyList()
+  }
+
+  private fun libraryArchives(files: Collection<File>): List<ProjectLibraryArchiveDescriptor> =
+      files.map { it.snapshotPath() }.distinct().sortedBy(Path::toString).map { path ->
+        val file = path.toFile()
+        ProjectLibraryArchiveDescriptor(
+            path = path,
+            exists = file.exists(),
+            size = file.takeIf(File::isFile)?.length(),
+            lastModifiedMillis = file.takeIf(File::exists)?.lastModified(),
+        )
+      }
 
   private fun bootBinaryDescriptors(module: ModuleProject): List<ProjectBinaryDescriptor> = when (module) {
     is AndroidModule -> module.bootClassPaths.map {

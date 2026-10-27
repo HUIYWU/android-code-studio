@@ -76,6 +76,21 @@ public data class ProjectBinaryDescriptor(
     val lastModifiedMillis: Long? = null,
 )
 
+public data class ProjectLibraryArchiveDescriptor(
+    val path: Path,
+    val exists: Boolean,
+    val size: Long?,
+    val lastModifiedMillis: Long?,
+)
+
+public data class ProjectLibraryAttachmentDescriptor(
+    val libraryIdentity: String,
+    val binaryPaths: List<Path>,
+    val sourceArchives: List<ProjectLibraryArchiveDescriptor>,
+    val javadocArchives: List<ProjectLibraryArchiveDescriptor>,
+    val ownerModulePath: String,
+)
+
 public data class ProjectVariantSelectionSnapshot(
     val projectPath: String,
     val selectedVariant: String,
@@ -106,6 +121,7 @@ public data class ProjectModuleInputSnapshot(
     val moduleOutputs: List<ProjectBinaryDescriptor>,
     val externalBinaries: List<ProjectBinaryDescriptor>,
     val bootBinaries: List<ProjectBinaryDescriptor>,
+    val libraryAttachments: List<ProjectLibraryAttachmentDescriptor>,
     val compileModulePaths: List<String>,
     val externalDependencyIdentities: List<String>,
     val variantSelection: ProjectVariantSelectionSnapshot?,

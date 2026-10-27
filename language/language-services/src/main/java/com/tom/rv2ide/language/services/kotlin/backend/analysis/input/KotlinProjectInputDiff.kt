@@ -201,7 +201,9 @@ internal object KotlinProjectInputDiff {
             old.generatedSourceRoots != new.generatedSourceRoots ||
             old.javaSourceRoots != new.javaSourceRoots
     KotlinProjectInputDimension.BINARIES ->
-        old.moduleOutputs != new.moduleOutputs || old.externalBinaries != new.externalBinaries
+        old.moduleOutputs != new.moduleOutputs ||
+            old.externalBinaries != new.externalBinaries ||
+            old.libraryAttachments != new.libraryAttachments
     KotlinProjectInputDimension.BOOT -> old.bootBinaries != new.bootBinaries
     KotlinProjectInputDimension.DEPENDENCY_GRAPH ->
         old.compileModulePaths != new.compileModulePaths ||

@@ -27,6 +27,14 @@ internal data class KotlinAnalysisBinaryRootContext(
     val exists: Boolean,
 )
 
+internal data class KotlinAnalysisLibraryAttachmentContext(
+    val libraryIdentity: String,
+    val binaryPaths: List<Path>,
+    val sourcePaths: List<Path>,
+    val javadocPaths: List<Path>,
+    val ownerModulePath: String,
+)
+
 internal data class KotlinAnalysisModuleContext(
     val modulePath: String,
     val sourceRootDescriptors: List<ProjectRootDescriptor>,
@@ -38,6 +46,7 @@ internal data class KotlinAnalysisModuleContext(
     val binaryRoots: List<Path>,
     val bootClasspaths: List<Path>,
     val binaryRootContexts: List<KotlinAnalysisBinaryRootContext>,
+    val libraryAttachments: List<KotlinAnalysisLibraryAttachmentContext>,
     val javaSourceVersion: String,
     val javaBytecodeVersion: String,
 )
@@ -89,7 +98,7 @@ internal data class KotlinAnalysisProjectContext(
               .filter { it.toFile().exists() }
               .distinct()
               .sortedBy(Path::toString),
-bootClasspaths = snapshot.bootBinaries.map { it.path }
+          bootClasspaths = snapshot.bootBinaries.map { it.path }
               .filter { it.toFile().exists() }
               .distinct()
               .sortedBy(Path::toString),
@@ -106,6 +115,15 @@ bootClasspaths = snapshot.bootBinaries.map { it.path }
               }
               .distinctBy { it.path to it.role to it.origin to it.ownerModulePath to it.variantName }
               .sortedWith(compareBy({ it.path.toString() }, { it.role.name }, { it.origin.name })),
+          libraryAttachments = snapshot.libraryAttachments.map { attachment ->
+            KotlinAnalysisLibraryAttachmentContext(
+                libraryIdentity = attachment.libraryIdentity,
+                binaryPaths = attachment.binaryPaths.map { it.toAbsolutePath().normalize() },
+                sourcePaths = attachment.sourceArchives.map { it.path.toAbsolutePath().normalize() },
+                javadocPaths = attachment.javadocArchives.map { it.path.toAbsolutePath().normalize() },
+                ownerModulePath = attachment.ownerModulePath,
+            )
+          }.sortedBy { it.libraryIdentity },
           javaSourceVersion = snapshot.compilerSettings.javaSourceVersion,
           javaBytecodeVersion = snapshot.compilerSettings.javaBytecodeVersion,
       )

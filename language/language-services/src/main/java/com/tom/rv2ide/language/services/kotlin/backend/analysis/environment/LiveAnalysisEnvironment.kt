@@ -40,7 +40,6 @@ import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.analysis.api.standalone.StandaloneAnalysisAPISession
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.ApplicationServiceRegistration
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.StandaloneProjectFactory
-import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtLibraryModule
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
 import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCliJavaFileManagerImpl
@@ -70,7 +69,9 @@ import org.jetbrains.kotlin.config.languageVersionSettings
 import org.jetbrains.kotlin.platform.jvm.JvmPlatforms
 import org.jetbrains.kotlin.psi.KtPsiFactory
 import java.nio.file.Path
+import java.util.Comparator
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.ZipFile
 import kotlin.streams.asSequence
 
 @OptIn(KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class)
@@ -81,6 +82,7 @@ internal class LiveAnalysisEnvironment(
   private val disposable = Disposer.newDisposable("acs-kotlin-live-analysis")
   private val closed = AtomicBoolean(false)
   private val platform = JvmPlatforms.defaultJvmPlatform
+  private val temporaryLibrarySourceRoots = mutableListOf<Path>()
 
   @Volatile
   var startFailure: Throwable? = null
@@ -152,11 +154,11 @@ internal class LiveAnalysisEnvironment(
       val scriptModels = workspace.getGradleKotlinDslModel()
       val scriptDefinitionProvider = LiveGradleScriptDefinitionProvider(scriptModels)
       val scriptConfigurationsProvider = LiveGradleScriptConfigurationsProvider(project, scriptDefinitionProvider)
-      val annotationsResolverFactory = LiveAnnotationsResolverFactory()
-      val declarationFactory = LiveDeclarationProviderFactory()
-      val declarationMerger = LiveDeclarationProviderMerger(project)
-      val packageFactory = LivePackageProviderFactory()
-      val packageMerger = LivePackageProviderMerger(project)
+       val annotationsResolverFactory = LiveAnnotationsResolverFactory()
+       val declarationFactory = LiveDeclarationProviderFactory()
+       val declarationMerger = LiveDeclarationProviderMerger(declarationFactory)
+       val packageFactory = LivePackageProviderFactory()
+       val packageMerger = LivePackageProviderMerger(packageFactory)
       val moduleDependents = LiveModuleDependentsProvider()
       val packagePartFactory = AnalysisPackagePartProviderFactory()
       val provisionalStructure = LiveProjectStructureProvider()
@@ -178,27 +180,35 @@ internal class LiveAnalysisEnvironment(
         registrar.registerApplicationServices(application)
       }
 
-      runtimeGraph = LiveAnalysisModuleGraph.build(projectContext.modules)
-      logMissingRoots(runtimeGraph)
+runtimeGraph = LiveAnalysisModuleGraph.build(projectContext.modules)
+       logMissingRoots(runtimeGraph)
 
-      val libraryModules = linkedMapOf<String, KaLibraryModule>()
-      val sourceModules = linkedMapOf<String, LiveSourceModule>()
+       val libraryModules = linkedMapOf<String, KaLibraryModule>()
+       val librarySourceModules = linkedMapOf<String, KaLibrarySourceModule>()
+       val librarySourceFiles = mutableListOf<org.jetbrains.kotlin.psi.KtFile>()
+       val sourceModules = linkedMapOf<String, LiveSourceModule>()
 
-      fun library(group: LiveAnalysisLibraryGroup): KaLibraryModule =
-          libraryModules.getOrPut(group.identity) {
-            val builder = org.jetbrains.kotlin.analysis.project.structure.builder.KtModuleProviderBuilder(
-                projectEnvironment.environment,
-                project,
-            )
-            builder.platform = platform
-            builder.run {
-              buildKtLibraryModule {
-                libraryName = group.identity
-                this.platform = this@LiveAnalysisEnvironment.platform
-                addBinaryRoots(group.rootKeys.map { it.path })
+       fun library(group: LiveAnalysisLibraryGroup): KaLibraryModule =
+           libraryModules.getOrPut(group.identity) {
+val sourceVirtualFiles = librarySourceVirtualFiles(group.sourcePaths)
+              val sourceFiles = sourceVirtualFiles.mapNotNull { virtualFile ->
+                runCatching {
+                  org.jetbrains.kotlin.com.intellij.psi.PsiManager.getInstance(project).findFile(virtualFile)
+                      as? org.jetbrains.kotlin.psi.KtFile
+                }.getOrNull()
               }
-            }
-          }
+              librarySourceFiles += sourceFiles
+              val pair = createLiveLibraryModulePair(
+                  coreApplicationEnvironment = projectEnvironment.environment,
+                  project = project,
+                  platform = platform,
+                  libraryName = group.identity,
+                  binaryRoots = group.rootKeys.map { it.path },
+                  sourceFiles = sourceVirtualFiles,
+              )
+             pair.source?.let { librarySourceModules[group.identity] = it }
+             pair.binary
+           }
 
       val building = mutableSetOf<String>()
       fun source(context: KotlinAnalysisModuleContext): LiveSourceModule {
@@ -281,8 +291,11 @@ internal class LiveAnalysisEnvironment(
               scriptDependencies[path] = listOf(dependency)
             }
       }
-      val allModules = modules + libraryModules.values.sortedBy { moduleIdentity(it) } + scriptLibraries + scriptSourceLibraries
-      val scriptRegistry = LiveScriptModuleRegistry(
+val allModules = modules +
+           libraryModules.values.sortedBy { moduleIdentity(it) } +
+           librarySourceModules.values.sortedBy { moduleIdentity(it) } +
+           scriptLibraries + scriptSourceLibraries
+       val scriptRegistry = LiveScriptModuleRegistry(
           projectEnvironment.environment,
           project,
           sourceRegistry,
@@ -309,8 +322,15 @@ internal class LiveAnalysisEnvironment(
       projectStructure.setup(project, allModules, sourceRegistry)
       directInheritorsProvider.setup(project, liveIndex, metadataIndex)
       annotationsResolverFactory.setup(project, liveIndex, metadataIndex)
-      declarationFactory.setup(project, liveIndex, sourceRegistry, metadataIndex)
-      packageFactory.setup(project, metadataIndex)
+declarationFactory.setup(
+           project = project,
+           liveIndex = liveIndex,
+           registry = sourceRegistry,
+           metadataIndex = metadataIndex,
+           coreApplicationEnvironment = projectEnvironment.environment,
+           librarySourceFiles = librarySourceFiles,
+       )
+       packageFactory.setup(project, metadataIndex, librarySourceFiles)
       moduleDependents.setup(allModules, runtimeGraph.dependentsByIdentity)
       val parser = KtPsiFactory(project, eventSystemEnabled = true)
       liveIndex.parser = parser
@@ -352,6 +372,8 @@ internal class LiveAnalysisEnvironment(
       return
     }
     if (::liveIndex.isInitialized) liveIndex.close()
+    temporaryLibrarySourceRoots.toList().forEach(::deleteTemporarySourceRoot)
+    temporaryLibrarySourceRoots.clear()
     Disposer.dispose(disposable)
   }
 
@@ -371,6 +393,7 @@ internal class LiveAnalysisEnvironment(
   private fun moduleIdentity(module: KaModule): String = when (module) {
     is KaSourceModule -> module.name
     is KaLibraryModule -> module.libraryName
+    is KaLibrarySourceModule -> module.libraryName
     else -> module.stableModuleName ?: module.javaClass.name
   }
 
@@ -439,7 +462,6 @@ internal class LiveAnalysisEnvironment(
           .toList()
     }
   }.getOrDefault(emptyList())
-
   private fun scriptSourceVirtualFiles(paths: Collection<String>): List<VirtualFile> = buildList {
     paths.map { Path.of(it).toAbsolutePath().normalize() }.forEach { path ->
       if (java.nio.file.Files.isDirectory(path)) {
@@ -461,6 +483,54 @@ internal class LiveAnalysisEnvironment(
       }
     }
   }.distinct()
+
+  private fun librarySourceVirtualFiles(paths: Collection<Path>): List<VirtualFile> = buildList {
+    paths.map { it.toAbsolutePath().normalize() }.forEach { archive ->
+      if (!java.nio.file.Files.isRegularFile(archive)) return@forEach
+      if (archive.toString().endsWith(".jar", ignoreCase = true)) {
+        val root = extractKotlinSources(archive) ?: return@forEach
+        addAll(sourcePaths(root).mapNotNull { VirtualFileManager.getInstance().findFileByNioPath(it) })
+      } else if (archive.toString().endsWith(".kt", ignoreCase = true) || archive.toString().endsWith(".kts", ignoreCase = true)) {
+        VirtualFileManager.getInstance().findFileByNioPath(archive)?.let(::add)
+      }
+    }
+  }.distinct()
+
+  private fun extractKotlinSources(archive: Path): Path? {
+    val outputRoot = java.nio.file.Files.createTempDirectory("acs-kotlin-library-sources-")
+    try {
+      ZipFile(archive.toFile()).use { zip ->
+        val root = outputRoot.toAbsolutePath().normalize()
+        zip.entries().asSequence()
+            .filter { !it.isDirectory && (it.name.endsWith(".kt") || it.name.endsWith(".kts")) }
+            .forEach { entry ->
+              val output = root.resolve(entry.name).normalize()
+              if (!output.startsWith(root)) return@forEach
+              java.nio.file.Files.createDirectories(output.parent)
+              zip.getInputStream(entry).use { input ->
+                java.nio.file.Files.newOutputStream(output).use { outputStream -> input.copyTo(outputStream) }
+              }
+            }
+      }
+      if (sourcePaths(outputRoot).isEmpty()) {
+        deleteTemporarySourceRoot(outputRoot)
+        return null
+      }
+      temporaryLibrarySourceRoots.add(outputRoot)
+      return outputRoot
+    } catch (_: Throwable) {
+      deleteTemporarySourceRoot(outputRoot)
+      return null
+    }
+  }
+
+  private fun deleteTemporarySourceRoot(root: Path) {
+    runCatching {
+      if (java.nio.file.Files.exists(root)) {
+        java.nio.file.Files.walk(root).sorted(Comparator.reverseOrder()).forEach { java.nio.file.Files.deleteIfExists(it) }
+      }
+    }
+  }
 
   private fun resolveJdkRelease(jdkHome: java.io.File): Int =
       Regex("java-(\\d+)").find(jdkHome.name)?.groupValues?.get(1)?.toIntOrNull() ?: 17

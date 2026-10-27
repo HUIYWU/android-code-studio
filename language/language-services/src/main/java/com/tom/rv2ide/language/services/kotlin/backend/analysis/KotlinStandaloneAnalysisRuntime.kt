@@ -24,7 +24,9 @@ import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaContextParameterApi
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
+import org.jetbrains.kotlin.analysis.api.KaNonPublicApi
 import org.jetbrains.kotlin.analysis.api.KaSession
+import org.jetbrains.kotlin.analysis.api.components.findKDoc
 import org.jetbrains.kotlin.analysis.api.components.render
 import org.jetbrains.kotlin.analysis.api.components.resolveToCall
 import org.jetbrains.kotlin.analysis.api.components.resolveToSymbol
@@ -44,6 +46,7 @@ import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedDeclaration
+import org.jetbrains.kotlin.psi.KtNonPublicApi
 import org.jetbrains.kotlin.psi.KtReferenceExpression
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
@@ -51,7 +54,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicBoolean
 
-@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class)
+@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class)
 internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
@@ -150,8 +153,22 @@ internal class KotlinStandaloneAnalysisRuntime(
   override fun hover(request: KotlinSemanticRequest): MarkupContent? =
       withSemanticLiveFile(request) { file ->
         val symbol = symbolAt(file, requestOffset(request)) as? KaDeclarationSymbol ?: return@withSemanticLiveFile null
-        val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
-        if (declaration.isEmpty()) null else MarkupContent("```kotlin\n$declaration\n```", MarkupKind.MARKDOWN)
+val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
+         val documentation = runCatching {
+           symbol.findKDoc()?.primaryTag?.getContent()?.trim().orEmpty()
+         }.getOrDefault("")
+         if (declaration.isEmpty()) null else MarkupContent(
+             buildString {
+               append("```kotlin\n")
+               append(declaration)
+               append("\n```")
+               if (documentation.isNotEmpty()) {
+                 append("\n\n")
+                 append(documentation)
+               }
+             },
+             MarkupKind.MARKDOWN,
+         )
       }
 
   override fun findDefinition(request: KotlinSemanticRequest): DefinitionResult? =
