@@ -2,6 +2,8 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler
 
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -150,6 +152,55 @@ class AnalysisRequestSchedulerTest {
     } finally {
       scheduler.close()
     }
+  }
+
+  @Test
+  fun platformExceptionCompletesFutureExceptionallyAndJoinPreservesCause() {
+    val scheduler = AnalysisRequestScheduler("acs-kotlin-analysis-platform-exception-test")
+    val failure = indexNotReadyException()
+    try {
+      val future = scheduler.submit(
+          kind = AnalysisRequestKind.SEMANTIC,
+          cancelChecker = ICancelChecker.NOOP,
+          action = { throw failure },
+      )
+      try {
+        future.join()
+        error("expected platform exception")
+      } catch (error: CompletionException) {
+        assertEquals(failure, error.cause)
+      }
+
+      val uncancelled = scheduler.submit(
+          kind = AnalysisRequestKind.SEMANTIC,
+          cancelChecker = ICancelChecker.NOOP,
+          action = { throw CancellationException() },
+      )
+      try {
+        uncancelled.join()
+        error("expected uncancelled cancellation to propagate")
+      } catch (error: CancellationException) {
+        assertTrue(uncancelled.isCompletedExceptionally)
+      }
+
+      val cancelled = ICancelChecker.Default()
+      cancelled.cancel()
+      val request = scheduler.submit(
+          kind = AnalysisRequestKind.SEMANTIC,
+          cancelChecker = cancelled,
+          action = { throw CancellationException() },
+      )
+      assertNull(request.get(2, TimeUnit.SECONDS))
+    } finally {
+      scheduler.close()
+    }
+  }
+
+  private fun indexNotReadyException(): RuntimeException {
+    val constructor = org.jetbrains.kotlin.com.intellij.openapi.project.IndexNotReadyException::class.java
+        .getDeclaredConstructor(Throwable::class.java, Throwable::class.java)
+        .apply { isAccessible = true }
+    return constructor.newInstance(null, null)
   }
 
   @Test

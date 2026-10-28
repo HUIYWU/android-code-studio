@@ -200,6 +200,32 @@ class KotlinAnalysisBackendConnectionTest {
   }
 
   @Test
+  fun platformCancellationIsNotConvertedToEmptySemanticResult() = runBlocking {
+    val platformFailure = org.jetbrains.kotlin.com.intellij.openapi.progress.ProcessCanceledException()
+    val runtime = FakeRuntime(true).apply { hoverFailure = platformFailure }
+    val connection = KotlinAnalysisBackendConnection(
+        KotlinAnalysisRuntimeFactory { runtime },
+        activeDocuments = { emptyList() },
+    )
+    val file = Paths.get("/project/Main.kt")
+    val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
+    try {
+      connection.startBackend(KotlinProjectClasspathProvider())
+      connection.initialize(com.google.gson.JsonObject()) {}
+      val validator = KotlinSemanticRequestValidator(connection, snapshotProvider = { snapshot })
+      val request = validator.capture(file, Position(0, 0), 1, 10L, ICancelChecker.Default())!!
+      try {
+        connection.hover(request, validator::isCurrent)
+        error("expected platform cancellation")
+      } catch (error: Throwable) {
+        assertTrue(error === platformFailure)
+      }
+    } finally {
+      connection.close()
+    }
+  }
+
+  @Test
   fun snapshotChangeDuringRuntimeExecutionRejectsResult() = runBlocking {
     val entered = CountDownLatch(1)
     val release = CountDownLatch(1)

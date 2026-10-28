@@ -29,9 +29,14 @@ import org.jetbrains.kotlin.analysis.api.symbols.name
 import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
 import org.jetbrains.kotlin.analysis.api.components.render
 import org.jetbrains.kotlin.types.Variance
+import org.jetbrains.kotlin.psi.KtClassOrObject
+import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
 import java.nio.file.Path
+import java.nio.file.Paths
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 
 internal fun symbolName(symbol: KaSymbol): String? = symbol.name?.asString()
 
@@ -92,11 +97,34 @@ internal fun KaSession.completionItemFor(symbol: KaSymbol, prefix: String): Comp
   )
 }
 
-internal fun locationForElement(path: Path, file: KtFile, element: PsiElement): Location? {
-  val range = runCatching { element.textRange }.getOrNull() ?: return null
-  val text = runCatching { file.text }.getOrNull() ?: return null
+internal fun definitionTargetPsi(psi: PsiElement): PsiElement {
+  if (psi is KtConstructor<*>) {
+    var parent: PsiElement? = psi.parent
+    while (parent != null && parent !is KtClassOrObject) parent = parent.parent
+    if (parent is KtClassOrObject) return parent.getNameIdentifier() ?: psi
+  }
+  return if (psi is PsiNameIdentifierOwner) psi.nameIdentifier ?: psi else psi
+}
+
+internal fun locationForElement(path: Path, file: KtFile, element: PsiElement): Location? =
+    locationForPsi(path, file, element)
+
+internal fun locationForPsi(requestPath: Path, sourceFile: KtFile, psi: PsiElement): Location? {
+  val containingFile = runCatching { psi.containingFile }.getOrNull() ?: return null
+  val targetPath = if (containingFile == sourceFile) {
+    requestPath
+  } else {
+    (containingFile as? KtFile)?.liveBackingPath
+        ?: containingFile.virtualFile
+            ?.takeIf { it.isInLocalFileSystem }
+            ?.path
+            ?.let(Paths::get)
+        ?: return null
+  }
+  val range = runCatching { psi.textRange }.getOrNull() ?: return null
+  val text = runCatching { containingFile.text }.getOrNull() ?: return null
   val start = range.startOffset.coerceIn(0, text.length)
   val end = range.endOffset.coerceIn(start, text.length)
   val index = LineIndex.from(text)
-  return Location(path, Range(index.indexToPosition(start), index.indexToPosition(end)))
+  return Location(targetPath, Range(index.indexToPosition(start), index.indexToPosition(end)))
 }

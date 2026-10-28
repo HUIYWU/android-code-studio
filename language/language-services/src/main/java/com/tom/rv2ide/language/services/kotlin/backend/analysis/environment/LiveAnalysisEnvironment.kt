@@ -4,6 +4,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.environment
 
 
 import com.tom.rv2ide.javac.config.JavacConfigProvider
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisModuleContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceKind
@@ -29,6 +30,9 @@ import org.jetbrains.kotlin.K1Deprecation
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.KaPlatformInterface
+import org.jetbrains.kotlin.analysis.api.KaSession
+import org.jetbrains.kotlin.analysis.api.components.containingModule
+import org.jetbrains.kotlin.analysis.api.platform.declarations.createDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.java.KotlinJavaModuleAccessibilityChecker
 import org.jetbrains.kotlin.analysis.api.platform.java.KotlinJavaModuleAnnotationsProvider
 import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KotlinModuleDependentsProvider
@@ -67,7 +71,13 @@ import org.jetbrains.kotlin.config.LanguageVersionSettings
 import org.jetbrains.kotlin.config.LanguageVersionSettingsImpl
 import org.jetbrains.kotlin.config.languageVersionSettings
 import org.jetbrains.kotlin.platform.jvm.JvmPlatforms
+import org.jetbrains.kotlin.psi.KtCallableDeclaration
+import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtPsiFactory
+import org.jetbrains.kotlin.analysis.api.symbols.KaCallableSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaClassLikeSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaConstructorSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import java.nio.file.Path
 import java.util.Comparator
 import java.util.concurrent.atomic.AtomicBoolean
@@ -83,6 +93,7 @@ internal class LiveAnalysisEnvironment(
   private val closed = AtomicBoolean(false)
   private val platform = JvmPlatforms.defaultJvmPlatform
   private val temporaryLibrarySourceRoots = mutableListOf<Path>()
+  private val librarySourcesByBinary = java.util.IdentityHashMap<KaLibraryModule, KaLibrarySourceModule>()
 
   @Volatile
   var startFailure: Throwable? = null
@@ -206,9 +217,12 @@ val sourceVirtualFiles = librarySourceVirtualFiles(group.sourcePaths)
                   binaryRoots = group.rootKeys.map { it.path },
                   sourceFiles = sourceVirtualFiles,
               )
-             pair.source?.let { librarySourceModules[group.identity] = it }
-             pair.binary
-           }
+              pair.source?.let {
+                librarySourceModules[group.identity] = it
+                librarySourcesByBinary[pair.binary] = it
+              }
+              pair.binary
+            }
 
       val building = mutableSetOf<String>()
       fun source(context: KotlinAnalysisModuleContext): LiveSourceModule {
@@ -285,10 +299,14 @@ val sourceVirtualFiles = librarySourceVirtualFiles(group.sourcePaths)
                   binaryRoots = existingRoots,
                   sourceFiles = sourceFiles,
               )
-              val dependency = pair.binary
-              pair.source?.let(scriptSourceLibraries::add)
-              scriptLibraries.add(dependency)
-              scriptDependencies[path] = listOf(dependency)
+               val dependency = pair.binary
+               pair.source?.let {
+                 scriptSourceLibraries.add(it)
+                 librarySourcesByBinary[dependency] = it
+               }
+               scriptLibraries.add(dependency)
+               scriptDependencies[path] = listOf(dependency)
+
             }
       }
 val allModules = modules +
@@ -375,6 +393,41 @@ declarationFactory.setup(
     temporaryLibrarySourceRoots.toList().forEach(::deleteTemporarySourceRoot)
     temporaryLibrarySourceRoots.clear()
     Disposer.dispose(disposable)
+  }
+
+  internal fun attachedSourceDeclaration(session: KaSession, symbol: KaDeclarationSymbol): KtDeclaration? {
+    val binaryModule = analysisBestEffort(null, com.tom.rv2ide.progress.ICancelChecker.NOOP) {
+      with(session) { symbol.containingModule as? KaLibraryModule }
+   } ?: return null
+    val sourceModule = librarySourcesByBinary[binaryModule] ?: return null
+    val provider = sourceModule.project.createDeclarationProvider(sourceModule.contentScope, sourceModule)
+
+    return when (symbol) {
+      is KaConstructorSymbol -> symbol.containingClassId?.let { classId ->
+        (provider.getAllClassesByClassId(classId) + provider.getAllTypeAliasesByClassId(classId)).singleOrNull()
+      }
+      is KaClassLikeSymbol -> symbol.classId?.let { classId ->
+        (provider.getAllClassesByClassId(classId) + provider.getAllTypeAliasesByClassId(classId)).singleOrNull()
+      }
+      is KaCallableSymbol -> {
+        val callableId = symbol.callableId ?: return null
+        val classId = callableId.classId
+        if (classId == null) {
+          val functions = provider.getTopLevelFunctions(callableId)
+          val properties = provider.getTopLevelProperties(callableId)
+          (functions + properties).singleOrNull()
+        } else {
+          val classes = provider.getAllClassesByClassId(classId)
+          val declarations = classes.flatMap { klass ->
+            klass.declarations
+                .filterIsInstance<KtCallableDeclaration>()
+                .filter { it.nameAsName == callableId.callableName }
+          }
+          declarations.singleOrNull()
+        }
+      }
+      else -> null
+    }
   }
 
   internal fun modulePathFor(path: Path): String? {

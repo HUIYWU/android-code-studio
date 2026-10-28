@@ -22,7 +22,7 @@ import org.robolectric.annotation.Config
 class KotlinLibraryAttachmentWorkspaceTest {
 
   @Test
-  fun injectedToolingAttachmentsAreCopiedAndReachSnapshotAndContext() {
+  fun toolingAttachmentModelPropagation() {
     LspWorkspaceTestSupport.withWorkspace(FileProvider.kotlinAnalysisProjectRoot()) {
       val appModule = workspace.androidProjects().single { it.path == ":app" }
       val binary = appModule.getCompileClasspaths().single { it.name == "kotlin-stdlib-2.3.21.jar" }.canonicalFile

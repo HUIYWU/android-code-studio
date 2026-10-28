@@ -38,9 +38,9 @@ android {
   }
 }
 
-
 tasks.withType<Test>().configureEach {
   // Workspace integration tests launch this standalone Tooling API artifact in a child process.
+
   dependsOn(":tooling:impl:jar")
   
   val home = System.getenv("HOME")

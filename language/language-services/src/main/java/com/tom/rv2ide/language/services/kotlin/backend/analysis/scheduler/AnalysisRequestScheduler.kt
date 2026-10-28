@@ -1,5 +1,7 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisExceptionToPropagate
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.isRequestCancellation
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.progress.ICancelChecker
 import java.util.concurrent.CompletableFuture
@@ -89,10 +91,16 @@ internal class AnalysisRequestScheduler(
           } else {
             try {
               (cancellableAction?.invoke(requestCancellation) ?: action()).also { future.complete(it) }
-            } catch (e: CancellationException) {
-              future.complete(null)
-              throw e
             } catch (t: Throwable) {
+              val propagated = analysisExceptionToPropagate(t, requestCancellation)
+              if (propagated != null) {
+                future.completeExceptionally(propagated)
+                throw propagated
+              }
+              if (isRequestCancellation(t, requestCancellation)) {
+                future.complete(null)
+                throw t
+              }
               future.completeExceptionally(t)
               null
             }
@@ -212,7 +220,14 @@ internal class AnalysisRequestScheduler(
   ): T? {
     if (Thread.currentThread() === worker) {
       if (closed.get() || cancelChecker.isCancelled()) return null
-      return runCatching { cancellableAction?.invoke(cancelChecker) ?: action() }.getOrNull()
+      return try {
+        cancellableAction?.invoke(cancelChecker) ?: action()
+      } catch (t: Throwable) {
+        val propagated = analysisExceptionToPropagate(t, cancelChecker)
+        if (propagated != null) throw propagated
+        if (isRequestCancellation(t, cancelChecker)) return null
+        null
+      }
     }
     return try {
       submit(
@@ -228,6 +243,9 @@ internal class AnalysisRequestScheduler(
           cancellableAction = cancellableAction,
       ).join()
     } catch (t: Throwable) {
+      val propagated = analysisExceptionToPropagate(t, cancelChecker)
+      if (propagated != null) throw propagated
+      if (isRequestCancellation(t, cancelChecker)) return null
       KlsLogs.warn("Kotlin Analysis request execution failed", t)
       null
     }

@@ -1,5 +1,7 @@
 package com.tom.rv2ide.language.services.kotlin.semantic
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisExceptionToPropagate
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.isRequestCancellation
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.CompletionParams
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -77,11 +79,20 @@ internal class KotlinSemanticService(
       val result = action(request)
       coroutineContext.ensureActive()
       if (validator.isCurrent(request)) result else empty()
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      KlsLogs.warn("Kotlin semantic request failed for: {}", request.file, e)
-      empty()
+    } catch (error: Throwable) {
+      val propagated = analysisExceptionToPropagate(error, requestCancellation)
+      if (propagated != null) throw propagated
+      if (isRequestCancellation(error, requestCancellation)) {
+        if (coroutineContext.isActive && cancelChecker.isCancelled()) return empty()
+        throw error
+      }
+      if (error is CancellationException) throw error
+      if (error is Exception) {
+        KlsLogs.warn("Kotlin semantic request failed for: {}", request.file, error)
+        empty()
+      } else {
+        throw error
+      }
     }
   }
 }

@@ -11,6 +11,9 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendState
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisExceptionToPropagate
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.isRequestCancellation
+
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendFileChange
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputDiff
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.input.KotlinProjectInputSnapshotState
@@ -514,8 +517,15 @@ internal suspend fun signatureHelp(
         reportInteractiveCompletion()
         if (!continuation.isActive) return@whenComplete
         if (error != null) {
-          KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
-          continuation.resume(null)
+          val propagated = analysisExceptionToPropagate(error, request.cancelChecker)
+          if (propagated != null) {
+            continuation.resumeWith(Result.failure(propagated))
+          } else if (isRequestCancellation(error, request.cancelChecker)) {
+            continuation.resume(null)
+          } else {
+            KlsLogs.warn("Kotlin Analysis semantic request failed for: {}", request.file, error)
+            continuation.resume(null)
+          }
         } else {
           continuation.resume(result)
         }
@@ -526,8 +536,15 @@ internal suspend fun signatureHelp(
       }
     } catch (t: Throwable) {
       reportInteractiveCompletion()
-      KlsLogs.warn("Kotlin Analysis semantic request submission failed for: {}", request.file, t)
-      if (continuation.isActive) continuation.resume(null)
+      val propagated = analysisExceptionToPropagate(t, request.cancelChecker)
+      if (propagated != null && continuation.isActive) {
+        continuation.resumeWith(Result.failure(propagated))
+      } else if (isRequestCancellation(t, request.cancelChecker)) {
+        if (continuation.isActive) continuation.resume(null)
+      } else {
+        KlsLogs.warn("Kotlin Analysis semantic request submission failed for: {}", request.file, t)
+        if (continuation.isActive) continuation.resume(null)
+      }
     }
   }
 

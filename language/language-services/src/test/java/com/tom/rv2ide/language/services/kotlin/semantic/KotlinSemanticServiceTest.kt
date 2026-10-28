@@ -129,6 +129,31 @@ class KotlinSemanticServiceTest {
   }
 
   @Test
+  fun platformIndexFailureIsNotConvertedToEmptyResult() = runBlocking {
+    val failure = indexNotReadyException()
+    val backend = object : KotlinSemanticBackend by EmptyKotlinSemanticBackend {
+      override suspend fun hover(request: KotlinSemanticRequest): MarkupContent {
+        throw failure
+      }
+    }
+    val service = KotlinSemanticService(backend, validator())
+    val params = com.tom.rv2ide.lsp.models.DefinitionParams(file, Position(0, 5), ICancelChecker.Default())
+    try {
+      service.hover(params)
+      error("expected index failure")
+    } catch (error: Throwable) {
+      assertTrue(error === failure)
+    }
+  }
+
+  private fun indexNotReadyException(): RuntimeException {
+    val constructor = org.jetbrains.kotlin.com.intellij.openapi.project.IndexNotReadyException::class.java
+        .getDeclaredConstructor(Throwable::class.java, Throwable::class.java)
+        .apply { isAccessible = true }
+    return constructor.newInstance(null, null)
+  }
+
+  @Test
   fun serviceCloseInvalidatesInFlightAndNewRequests() = runBlocking {
     val started = CompletableDeferred<Unit>()
     val release = CompletableDeferred<Unit>()

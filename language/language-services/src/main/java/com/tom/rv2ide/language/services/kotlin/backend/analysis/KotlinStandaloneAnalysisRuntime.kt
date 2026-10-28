@@ -1,9 +1,14 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.KotlinSemanticTargetResolution
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.definitionTargetPsi
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForElement
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForPsi
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveOrdinaryTargetAt
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSignatureFunctionCalls
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -19,7 +24,6 @@ import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.lsp.models.SignatureInformation
 import com.tom.rv2ide.models.Location
-import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaContextParameterApi
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
@@ -28,11 +32,7 @@ import org.jetbrains.kotlin.analysis.api.KaNonPublicApi
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.findKDoc
 import org.jetbrains.kotlin.analysis.api.components.render
-import org.jetbrains.kotlin.analysis.api.components.resolveToCall
-import org.jetbrains.kotlin.analysis.api.components.resolveToSymbol
 import org.jetbrains.kotlin.analysis.api.components.resolveToSymbols
-import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
-import org.jetbrains.kotlin.analysis.api.resolution.calls
 import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
@@ -42,16 +42,12 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.psi.KtCallElement
-import org.jetbrains.kotlin.psi.KtClassOrObject
-import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedDeclaration
 import org.jetbrains.kotlin.psi.KtNonPublicApi
-import org.jetbrains.kotlin.psi.KtReferenceExpression
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.util.concurrent.atomic.AtomicBoolean
 
 @OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class)
@@ -152,11 +148,17 @@ internal class KotlinStandaloneAnalysisRuntime(
 
   override fun hover(request: KotlinSemanticRequest): MarkupContent? =
       withSemanticLiveFile(request) { file ->
-        val symbol = symbolAt(file, requestOffset(request)) as? KaDeclarationSymbol ?: return@withSemanticLiveFile null
-val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
-         val documentation = runCatching {
-           symbol.findKDoc()?.primaryTag?.getContent()?.trim().orEmpty()
-         }.getOrDefault("")
+        val symbol = (resolveOrdinaryTargetAt(file, requestOffset(request)) as? KotlinSemanticTargetResolution.Unique)?.symbol as? KaDeclarationSymbol
+            ?: return@withSemanticLiveFile null
+          val sourceDeclaration = analysisBestEffort(null, request.cancelChecker) {
+            environment?.attachedSourceDeclaration(this, symbol)
+          }
+          val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.declarations.impl.KaDeclarationRendererForSource.WITH_SHORT_NAMES).trim()
+          val documentation = analysisBestEffort("", request.cancelChecker) {
+            sourceDeclaration?.findKDoc()?.primaryTag?.getContent()?.trim()
+                ?: symbol.findKDoc()?.primaryTag?.getContent()?.trim()
+                ?: ""
+          }
          if (declaration.isEmpty()) null else MarkupContent(
              buildString {
                append("```kotlin\n")
@@ -173,21 +175,25 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
 
   override fun findDefinition(request: KotlinSemanticRequest): DefinitionResult? =
       withSemanticLiveFile(request) { file ->
-        val symbol = symbolAt(file, requestOffset(request)) ?: return@withSemanticLiveFile DefinitionResult(emptyList())
-        val psi = runCatching { symbol.psi?.navigationElement }.getOrNull()
-            ?: return@withSemanticLiveFile DefinitionResult(emptyList())
-        val target = definitionTargetPsi(psi)
-        val location = locationForPsi(request, file, target)
+val symbol = when (val resolution = resolveOrdinaryTargetAt(file, requestOffset(request))) {
+          is KotlinSemanticTargetResolution.Unique -> resolution.symbol
+          else -> return@withSemanticLiveFile DefinitionResult(emptyList())
+        }
+        val psi = analysisBestEffort(null, request.cancelChecker) {
+          (symbol as? KaDeclarationSymbol)?.let { declaration ->
+            environment?.attachedSourceDeclaration(this, declaration)
+          } ?: symbol.psi?.navigationElement
+        } ?: return@withSemanticLiveFile DefinitionResult(emptyList())
+         val target = definitionTargetPsi(psi)
+        val location = locationForPsi(request.file, file, target)
         DefinitionResult(if (location == null) emptyList() else listOf(location))
       }
 
   override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? {
     val env = environment ?: return null
     val target = withSemanticLiveFile(request) { file ->
-      val element = elementAt(file, requestOffset(request)) ?: return@withSemanticLiveFile null
-      val reference = nearestReference(element) ?: return@withSemanticLiveFile null
-      val symbols = runCatching { reference.resolveToSymbols() }.getOrDefault(emptyList())
-      val symbol = symbols.firstOrNull() ?: return@withSemanticLiveFile null
+      val resolution = resolveOrdinaryTargetAt(file, requestOffset(request))
+      val symbol = (resolution as? KotlinSemanticTargetResolution.Unique)?.symbol ?: return@withSemanticLiveFile null
       if (symbol.origin != org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin.SOURCE) return@withSemanticLiveFile null
       SearchTarget(symbol.createPointer(), request.file)
     } ?: return ReferenceResult(emptyList())
@@ -204,9 +210,9 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
               request.cancelChecker.abortIfCancelled()
               if (request.includeDeclaration && element is KtNamedDeclaration) {
                 val nameIdentifier = element.nameIdentifier
-                if (nameIdentifier != null && runCatching {
+                if (nameIdentifier != null && analysisBestEffort(false, request.cancelChecker) {
                       element.symbol.createPointer().pointsToTheSameSymbolAs(target.pointer)
-                    }.getOrDefault(false)) {
+                    }) {
                   val location = locationForElement(path, file, nameIdentifier)
                   if (location != null) {
                     locations += location
@@ -220,8 +226,9 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
             override fun visitSimpleNameExpression(expression: org.jetbrains.kotlin.psi.KtSimpleNameExpression) {
               request.cancelChecker.abortIfCancelled()
               val reference = expression.reference as? KtReference
-              if (reference != null && runCatching { reference.resolveToSymbols() }.getOrDefault(emptyList())
-                      .any { it.createPointer().pointsToTheSameSymbolAs(target.pointer) }) {
+              if (reference != null && analysisBestEffort(false, request.cancelChecker) {
+                    reference.resolveToSymbols().any { it.createPointer().pointsToTheSameSymbolAs(target.pointer) }
+                  }) {
                 val location = locationForElement(path, file, expression)
                 if (location != null && (request.includeDeclaration || path != target.path || expression.parent !is KtNamedDeclaration)) {
                   locations += location
@@ -243,10 +250,12 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
       withSemanticLiveFile(request) { file ->
         val offset = requestOffset(request)
         val callElement = callElementAt(file, offset) ?: return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
-        val callInfo = runCatching { callElement.resolveToCall() }.getOrNull()
-            ?: return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
+        val calls = analysisBestEffort(emptyList(), request.cancelChecker) {
+          resolveSignatureFunctionCalls(callElement)
+        }
+        if (calls.isEmpty()) return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
         val functionName = callElement.calleeExpression?.text?.takeIf { it.isNotBlank() } ?: "invoke"
-        val entries = callInfo.calls.filterIsInstance<KaFunctionCall<*>>().mapNotNull { call ->
+        val entries = calls.mapNotNull { call ->
           val signature = call.signature as? KaFunctionSignature<*> ?: return@mapNotNull null
           val parameters = signature.valueParameters.map { parameter ->
             val name = parameter.name.asString()
@@ -256,7 +265,6 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
             )
             ParameterInformation(if (name.isEmpty()) type else "$name: $type", MarkupContent())
           }
-          if (parameters.isEmpty()) return@mapNotNull null
           SignatureInformation(
               label = "$functionName(${parameters.joinToString(", ") { it.label }})",
               documentation = MarkupContent(),
@@ -289,49 +297,13 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
 
   private fun requestOffset(request: KotlinSemanticRequest): Int =
       LineIndex.from(request.snapshot.content).lineColumnToIndex(request.line, request.column)
-
-  private fun extractCompletionPrefix(text: String, offset: Int): String {
+private fun extractCompletionPrefix(text: String, offset: Int): String {
     val end = offset.coerceIn(0, text.length)
     var start = end
     while (start > 0 && (text[start - 1].isLetterOrDigit() || text[start - 1] == '_')) start--
     return text.substring(start, end)
   }
 
-  private fun nearestReference(element: PsiElement): KtReference? {
-    var current: PsiElement? = element
-    while (current != null && current !is PsiFile) {
-      val reference = (current as? KtSimpleNameExpression)?.reference as? KtReference
-      if (reference != null) return reference
-      current = current.parent
-    }
-    return null
-  }
-
-  private fun KaSession.symbolAt(file: KtFile, offset: Int): KaSymbol? {
-    var element: PsiElement? = elementAt(file, offset)
-    while (element != null && element !is PsiFile) {
-      val reference = when (element) {
-        is KtSimpleNameExpression -> element.reference as? KtReference
-        is KtReferenceExpression -> element.reference as? KtReference
-        else -> null
-      }
-      if (reference != null) runCatching { reference.resolveToSymbol() }.getOrNull()?.let { return it }
-      if (element is KtNamedDeclaration && element.nameIdentifier?.textRange?.contains(offset) == true) {
-        runCatching { element.symbol }.getOrNull()?.let { return it }
-      }
-      element = element.parent
-    }
-    return null
-  }
-
-  private fun definitionTargetPsi(psi: PsiElement): PsiElement {
-    if (psi is KtConstructor<*>) {
-      var parent: PsiElement? = psi.parent
-      while (parent != null && parent !is KtClassOrObject) parent = parent.parent
-      if (parent is KtClassOrObject) return parent.getNameIdentifier() ?: psi
-    }
-    return if (psi is KtNamedDeclaration) psi.getNameIdentifier() ?: psi else psi
-  }
 
   private fun elementAt(file: KtFile, offset: Int): PsiElement? {
     val safe = offset.coerceIn(0, file.textLength)
@@ -345,20 +317,6 @@ val declaration = symbol.render(org.jetbrains.kotlin.analysis.api.renderer.decla
       element = element.parent
     }
     return null
-  }
-
-  private fun locationForPsi(request: KotlinSemanticRequest, sourceFile: KtFile, psi: PsiElement): Location? {
-    val containingFile = runCatching { psi.containingFile }.getOrNull() ?: return null
-    val targetPath = if (containingFile == sourceFile) request.file
-    else (containingFile as? KtFile)?.liveBackingPath
-        ?: containingFile.virtualFile?.path?.let(Paths::get)
-        ?: return null
-    val range = runCatching { psi.textRange }.getOrNull() ?: return null
-    val text = runCatching { containingFile.text }.getOrNull() ?: return null
-    val index = LineIndex.from(text)
-    val start = range.startOffset.coerceIn(0, text.length)
-    val end = range.endOffset.coerceIn(start, text.length)
-    return Location(targetPath, Range(index.indexToPosition(start), index.indexToPosition(end)))
   }
 
   override fun close() {
