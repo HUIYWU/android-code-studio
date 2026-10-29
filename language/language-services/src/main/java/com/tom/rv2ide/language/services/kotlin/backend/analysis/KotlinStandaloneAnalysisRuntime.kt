@@ -1,5 +1,6 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
+import android.util.Log
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.KotlinSemanticTargetResolution
@@ -10,6 +11,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locatio
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveOrdinaryTargetAt
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSignatureFunctionCalls
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.projects.models.OneHopDocumentEdit
@@ -49,6 +51,7 @@ import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+private const val ANDROID_DIAGNOSTIC_TAG = "ACS-KotlinAnalysis"
 
 @OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class)
 internal class KotlinStandaloneAnalysisRuntime(
@@ -120,24 +123,36 @@ internal class KotlinStandaloneAnalysisRuntime(
   ): DiagnosticResult? {
     val env = environment ?: return null
     val normalized = path.normalize()
+    Log.i(
+        ANDROID_DIAGNOSTIC_TAG,
+        "runtime_diagnostics_begin runtime=${System.identityHashCode(this)} environment=${System.identityHashCode(env)} " +
+            "path=$normalized revision=${snapshot?.revision} thread=${Thread.currentThread().name}",
+    )
+    env.diagnosticInternalState("diagnostics_before revision=${snapshot?.revision}")
     return env.liveIndex.withLiveKtFile(normalized, cancelChecker, action = { live ->
       cancelChecker.abortIfCancelled()
       if (live.isStale) return@withLiveKtFile null
       val diagnostics = live.analyzing(cancelChecker) { file ->
           KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
         }
+        Log.i(
+            ANDROID_DIAGNOSTIC_TAG,
+            "runtime_diagnostics_analyzed runtime=${System.identityHashCode(this)} path=$normalized " +
+                "revision=${snapshot?.revision} diagnosticItems=${diagnostics.size} thread=${Thread.currentThread().name}",
+        )
+        env.diagnosticInternalState("diagnostics_after revision=${snapshot?.revision}")
         DiagnosticResult(
            normalized,
            diagnostics,
-          DiagnosticResult.CHANNEL_KOTLIN,
-          snapshot?.version ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION,
-          snapshot?.revision ?: DiagnosticResult.UNKNOWN_DOCUMENT_REVISION,
-      )
+           DiagnosticResult.CHANNEL_KOTLIN,
+           snapshot?.version ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION,
+           snapshot?.revision ?: DiagnosticResult.UNKNOWN_DOCUMENT_REVISION,
+       )
     })
   }
 
-  override fun complete(request: KotlinSemanticRequest): CompletionResult? =
-      withSemanticLiveFile(request) { file ->
+  override fun complete(request: KotlinSemanticRequest): CompletionResult? {
+    return withSemanticLiveFile(request) { file ->
         val offset = requestOffset(request)
         val element = elementAt(file, offset) as? org.jetbrains.kotlin.psi.KtElement
             ?: file.findElementAt(offset)?.parent as? org.jetbrains.kotlin.psi.KtElement
@@ -145,6 +160,7 @@ internal class KotlinStandaloneAnalysisRuntime(
         val prefix = request.prefix ?: extractCompletionPrefix(file.text, offset)
         CompletionResult(completionItemsFor(prefix, element))
       }
+  }
 
   override fun hover(request: KotlinSemanticRequest): MarkupContent? =
       withSemanticLiveFile(request) { file ->
@@ -303,7 +319,6 @@ private fun extractCompletionPrefix(text: String, offset: Int): String {
     while (start > 0 && (text[start - 1].isLetterOrDigit() || text[start - 1] == '_')) start--
     return text.substring(start, end)
   }
-
 
   private fun elementAt(file: KtFile, offset: Int): PsiElement? {
     val safe = offset.coerceIn(0, file.textLength)

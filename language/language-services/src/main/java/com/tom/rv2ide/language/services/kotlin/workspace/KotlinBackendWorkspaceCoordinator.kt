@@ -211,12 +211,7 @@ class KotlinBackendWorkspaceCoordinator(
                       },
                   )
                 }
-                KlsLogs.info(
-                    "Build changes detected: events={}, paths={}, attempting incremental Kotlin update",
-                    batch.size,
-                    batch.map(BuildWatchEvent::path).distinct().sorted().joinToString(","),
-                )
-                val incrementallyHandled = connection.notifyFileChanges(fileChanges)
+val incrementallyHandled = connection.notifyFileChanges(fileChanges)
                 if (incrementallyHandled) {
                   resyncDocuments()
                   KlsLogs.infoThrottled(
@@ -260,22 +255,15 @@ class KotlinBackendWorkspaceCoordinator(
   private suspend fun refreshBackendEnvironment(connection: KotlinBackendConnection) {
     withContext(Dispatchers.IO) {
       try {
-        KlsLogs.infoThrottled("kls:reload-start", 3000L, "=== REFRESHING KOTLIN BACKEND ENVIRONMENT ===")
         classpathProvider.invalidateCache()
 
         val refreshed = connection.refreshEnvironment(classpathProvider)
         if (!refreshed) {
-          KlsLogs.error("Kotlin backend environment refresh failed")
           return@withContext
         }
 
         backendConfigurator.onEnvironmentRefreshed(connection)
         resyncDocuments()
-        KlsLogs.infoThrottled(
-            "kls:reload-success",
-            3000L,
-            "Kotlin backend environment refreshed successfully",
-        )
       } catch (e: Exception) {
         KlsLogs.error("Failed to refresh Kotlin backend environment", e)
       }

@@ -1,5 +1,6 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisStageCounters
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceDeclarationRecord
@@ -60,6 +61,7 @@ internal class LiveDeclarationProviderFactory : KotlinDeclarationProviderFactory
         sourceKtFiles = librarySourceFiles,
         postponeIndexing = true,
     )
+    KotlinAnalysisStageCounters.standaloneSourceIndexState = { declarationIndexState() }
   }
 
   internal fun createLiveProvider(scope: GlobalSearchScope): LiveDeclarationProvider =
@@ -69,12 +71,38 @@ internal class LiveDeclarationProviderFactory : KotlinDeclarationProviderFactory
       scope: GlobalSearchScope,
       contextualModule: KaModule?,
   ): KotlinDeclarationProvider {
+    KotlinAnalysisStageCounters.declarationProviderCreations.incrementAndGet()
     val live = createLiveProvider(scope)
     val standalone = standaloneFactory?.createDeclarationProvider(scope, contextualModule)
         ?: return live
     return KotlinCompositeDeclarationProvider.create(listOf(live, standalone))
   }
+
+  private fun declarationIndexState(): String = runCatching {
+    val factory = standaloneFactory ?: return@runCatching "unavailable"
+    val indexData = readDeclaredField(factory, "indexData") ?: return@runCatching "unavailable"
+    val index = indexData.javaClass.methods
+        .firstOrNull { method -> method.name == "getIndex" && method.parameterCount == 0 }
+        ?.invoke(indexData)
+        ?: return@runCatching "unavailable"
+    val lazyIndex = readDeclaredField(index, "lazyIndex") ?: return@runCatching "not-postponed"
+    val lazyDelegate = lazyIndex as? Lazy<*> ?: return@runCatching "not-postponed"
+    if (lazyDelegate.isInitialized()) "built" else "pending"
+  }.getOrDefault("unavailable")
 }
+
+private fun readDeclaredField(target: Any, name: String): Any? = runCatching {
+  var type: Class<*>? = target.javaClass
+  while (type != null) {
+    val field = type.declaredFields.firstOrNull { it.name == name }
+    if (field != null) {
+      field.isAccessible = true
+      return@runCatching field.get(target)
+    }
+    type = type.superclass
+  }
+  null
+}.getOrNull()
 
 internal class LiveDeclarationProviderMerger(
     private val factory: LiveDeclarationProviderFactory,

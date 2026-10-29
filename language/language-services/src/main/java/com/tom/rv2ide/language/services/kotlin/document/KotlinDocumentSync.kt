@@ -17,6 +17,7 @@
 
 package com.tom.rv2ide.language.services.kotlin.document
 
+import android.util.Log
 import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
@@ -81,6 +82,11 @@ class KotlinDocumentSync(
       revision?.let { documentRevisions[uri] = it }
       documentVersions[uri] = version
       openedDocuments.add(uri)
+      Log.i(
+          "ACS-KotlinAnalysis",
+          "document_did_open path=$file uri=$uri version=$version revision=$revision " +
+              "textLength=${text.length} thread=${Thread.currentThread().name}",
+      )
 
       true
     } catch (e: Exception) {
@@ -188,7 +194,12 @@ class KotlinDocumentSync(
 
   @Synchronized
   fun clear() {
-    openedDocuments.toList().map { java.nio.file.Paths.get(java.net.URI(it)) }.forEach(::closeDocument)
+    val paths = openedDocuments.toList().map { java.nio.file.Paths.get(java.net.URI(it)) }
+    Log.i(
+        "ACS-KotlinAnalysis",
+        "documents_clear count=${paths.size} paths=$paths thread=${Thread.currentThread().name}",
+    )
+    paths.forEach(::closeDocument)
     openedDocuments.clear()
     documentVersions.clear()
     documentRevisions.clear()
@@ -196,12 +207,20 @@ class KotlinDocumentSync(
 
   @Synchronized
   fun resyncActiveDocuments() {
-    clear()
-    FileManager.getActiveDocumentFiles()
+    val activeFiles = FileManager.getActiveDocumentFiles()
         .filter(Path::isKotlinLanguageDocument)
-        .forEach { file ->
-          val snapshot = FileManager.getActiveDocumentSnapshot(file)
-          ensureDocumentOpen(file, snapshot?.content, snapshot?.version)
-        }
+    Log.i(
+        "ACS-KotlinAnalysis",
+        "documents_resync_begin activeCount=${activeFiles.size} activeFiles=$activeFiles thread=${Thread.currentThread().name}",
+    )
+    clear()
+    activeFiles.forEach { file ->
+      val snapshot = FileManager.getActiveDocumentSnapshot(file)
+      ensureDocumentOpen(file, snapshot?.content, snapshot?.version)
+    }
+    Log.i(
+        "ACS-KotlinAnalysis",
+        "documents_resync_end openedCount=${openedDocuments.size} thread=${Thread.currentThread().name}",
+    )
   }
 }

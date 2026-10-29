@@ -251,13 +251,13 @@ internal class LiveSourceFileIndex(
       refreshCurrentKtFile(normalized)
       return
     }
-    logIncrementalTrace(
-        "edit-received",
-        normalized,
-        identity = edit.targetIdentity(),
-        detail = "base=${edit.baseIdentity()}; target=${edit.targetIdentity()}; range=${edit.baseStartIndex}..${edit.baseEndIndex}; kind=${edit.kind}",
-    )
-    if (!applyDocumentEditLocked(normalized, edit)) {
+     logIncrementalTrace(
+         "edit-received",
+         normalized,
+         identity = edit.targetIdentity(),
+         detail = "base=${edit.baseIdentity()}; target=${edit.targetIdentity()}; range=${edit.baseStartIndex}..${edit.baseEndIndex}; kind=${edit.kind}",
+     )
+     if (!applyDocumentEditLocked(normalized, edit)) {
       logLive("edit-fallback", normalized, identity = edit.targetIdentity(), detail = "reason=incremental-apply-rejected; full-refresh-disabled")
       // Temporarily disable the full-file refresh fallback so PSI reparse failures remain observable.
       // refreshCurrentKtFile(normalized)
@@ -376,9 +376,9 @@ internal class LiveSourceFileIndex(
                   else -> "NONE"
                 }
                 logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity(), "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}")
-                val modificationService = KaSourceModificationService.getInstance(project)
-                stage = "modification-service"
-                // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
+val modificationService = KaSourceModificationService.getInstance(project)
+                  stage = "modification-service"
+                 // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
                 // When the declaration PSI was replaced, the file event target forces FIR to classify removal as out-of-block and invalidate the source module.
                 // TODO(ACS-ANALYSIS-EXPERIMENT): Verify additional declaration-with-body transitions.
                 val modificationEvent = when {
@@ -408,12 +408,12 @@ internal class LiveSourceFileIndex(
                       detail
                     }
                  }
-                 logIncrementalTrace("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
-                  // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
-                  stage = "fir-flush"
-                  logIncrementalTrace("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
-                  val flushService = flushFirModifications()
-                  logIncrementalTrace("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
+logIncrementalTrace("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
+                    // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
+                    stage = "fir-flush"
+                    logIncrementalTrace("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
+                    val flushService = flushFirModifications()
+                    logIncrementalTrace("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
                   project.analysisRead {
                     metadataIndex.replace(
                         path = path,
@@ -422,9 +422,9 @@ internal class LiveSourceFileIndex(
                         sourceRoot = sourceRegistry.sourceRootForPath(path),
                     )
                   }
-                  currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
-                  logIncrementalTrace("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
-                  applied = true
+currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
+                    logIncrementalTrace("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
+                   applied = true
                 }
               }
             }

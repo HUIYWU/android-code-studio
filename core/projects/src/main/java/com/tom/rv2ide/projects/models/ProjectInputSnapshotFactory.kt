@@ -13,8 +13,14 @@ import com.tom.rv2ide.tooling.api.models.JavaModuleExternalDependency
 import com.tom.rv2ide.tooling.api.models.JavaModuleProjectDependency
 import java.io.File
 import java.nio.file.Path
-
 public object ProjectInputSnapshotFactory {
+  // TEMPORARILY ENABLED FOR A CONTROLLED DIAGNOSTIC RUN ONLY.
+  // WARNING: ENABLING LIBRARY SOURCE ATTACHMENTS CAN TRIGGER A NATIVE SIGABRT IN THE
+  // ART JIT/SCUDO PATH AND CRASH THE PROCESS UNDER ANALYSIS LOAD.
+  // DO NOT KEEP ENABLED UNTIL THE LIBRARY SOURCE LIFECYCLE AND NATIVE MEMORY FAILURE ARE FIXED.
+  private const val LIBRARY_SOURCE_ATTACHMENTS_ENABLED = true
+
+
   private val SYNTHETIC_MISSING_JAR_NAMES = setOf(
       "does-not-exist.jar",
       "module-jar-does-not-exist.jar",
@@ -60,7 +66,11 @@ public object ProjectInputSnapshotFactory {
     val moduleOutputs = moduleOutputDescriptors(module, variant)
     val externalBinaries = externalBinaryDescriptors(module, allOutputPaths, allBootPaths)
     val bootBinaries = bootBinaryDescriptors(module)
-    val libraryAttachments = libraryAttachmentDescriptors(module, externalBinaries.map { it.path }.toSet())
+    val libraryAttachments = if (LIBRARY_SOURCE_ATTACHMENTS_ENABLED) {
+      libraryAttachmentDescriptors(module, externalBinaries.map { it.path }.toSet())
+    } else {
+      emptyList()
+    }
 
     return ProjectModuleInputSnapshot(
         identity = identity,
