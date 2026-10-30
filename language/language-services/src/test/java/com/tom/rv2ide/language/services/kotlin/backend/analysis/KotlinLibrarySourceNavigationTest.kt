@@ -7,10 +7,12 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTe
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withRuntime
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withWorkspace
 import com.tom.rv2ide.lsp.models.LineIndex
+import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import java.nio.file.Files
 import kotlin.io.path.readText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -22,6 +24,7 @@ class KotlinLibrarySourceNavigationTest {
 
   @Test
   fun matchedExternalLibrarySourceNavigationAndKDoc() {
+    assumeTrue(ProjectInputSnapshotFactory.LIBRARY_SOURCE_ATTACHMENTS_ENABLED)
     withWorkspace {
       val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/AppConsumer.kt")
       val content = file.readText()

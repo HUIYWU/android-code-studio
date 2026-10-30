@@ -12,6 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -23,6 +24,7 @@ class KotlinLibraryAttachmentWorkspaceTest {
 
   @Test
   fun toolingAttachmentModelPropagation() {
+    assumeTrue(ProjectInputSnapshotFactory.LIBRARY_SOURCE_ATTACHMENTS_ENABLED)
     LspWorkspaceTestSupport.withWorkspace(FileProvider.kotlinAnalysisProjectRoot()) {
       val appModule = workspace.androidProjects().single { it.path == ":app" }
       val binary = appModule.getCompileClasspaths().single { it.name == "kotlin-stdlib-2.3.21.jar" }.canonicalFile

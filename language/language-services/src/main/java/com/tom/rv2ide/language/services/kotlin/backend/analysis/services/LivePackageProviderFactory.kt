@@ -1,7 +1,5 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
-import android.util.Log
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisStageCounters
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import org.jetbrains.kotlin.analysis.api.platform.mergeSpecificProviders
 import org.jetbrains.kotlin.analysis.api.platform.packages.KotlinCompositePackageProvider
@@ -16,9 +14,6 @@ import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.KtFile
-
-private const val ANDROID_DIAGNOSTIC_TAG = "ACS-KotlinAnalysis"
-private const val SLOW_PACKAGE_PROVIDER_MS = 20L
 
 internal class LivePackageProviderFactory : KotlinPackageProviderFactory {
   private lateinit var project: Project
@@ -39,18 +34,8 @@ internal class LivePackageProviderFactory : KotlinPackageProviderFactory {
       LivePackageProvider(project, searchScope, metadataIndex)
 
   override fun createPackageProvider(searchScope: GlobalSearchScope): KotlinPackageProvider {
-    KotlinAnalysisStageCounters.packageProviderCreations.incrementAndGet()
-    val beginNanos = System.nanoTime()
     val live = createLiveProvider(searchScope)
     val standalone = standaloneFactory?.createPackageProvider(searchScope) ?: return live
-    val elapsedMs = (System.nanoTime() - beginNanos) / 1_000_000
-    if (elapsedMs >= SLOW_PACKAGE_PROVIDER_MS) {
-      Log.i(
-          ANDROID_DIAGNOSTIC_TAG,
-          "diagnostics_stage package_provider_slow elapsedMs=$elapsedMs " +
-              "created=${KotlinAnalysisStageCounters.packageProviderCreations.get()}",
-      )
-    }
     return org.jetbrains.kotlin.analysis.api.platform.packages.KotlinCompositePackageProvider.create(listOf(live, standalone))
   }
 }

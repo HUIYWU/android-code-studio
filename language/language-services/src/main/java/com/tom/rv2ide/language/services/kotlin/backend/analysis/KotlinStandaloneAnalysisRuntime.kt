@@ -1,6 +1,5 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
-import android.util.Log
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.KotlinSemanticTargetResolution
@@ -51,7 +50,6 @@ import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
-private const val ANDROID_DIAGNOSTIC_TAG = "ACS-KotlinAnalysis"
 
 @OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class)
 internal class KotlinStandaloneAnalysisRuntime(
@@ -123,24 +121,12 @@ internal class KotlinStandaloneAnalysisRuntime(
   ): DiagnosticResult? {
     val env = environment ?: return null
     val normalized = path.normalize()
-    Log.i(
-        ANDROID_DIAGNOSTIC_TAG,
-        "runtime_diagnostics_begin runtime=${System.identityHashCode(this)} environment=${System.identityHashCode(env)} " +
-            "path=$normalized revision=${snapshot?.revision} thread=${Thread.currentThread().name}",
-    )
-    env.diagnosticInternalState("diagnostics_before revision=${snapshot?.revision}")
     return env.liveIndex.withLiveKtFile(normalized, cancelChecker, action = { live ->
       cancelChecker.abortIfCancelled()
       if (live.isStale) return@withLiveKtFile null
       val diagnostics = live.analyzing(cancelChecker) { file ->
           KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
         }
-        Log.i(
-            ANDROID_DIAGNOSTIC_TAG,
-            "runtime_diagnostics_analyzed runtime=${System.identityHashCode(this)} path=$normalized " +
-                "revision=${snapshot?.revision} diagnosticItems=${diagnostics.size} thread=${Thread.currentThread().name}",
-        )
-        env.diagnosticInternalState("diagnostics_after revision=${snapshot?.revision}")
         DiagnosticResult(
            normalized,
            diagnostics,

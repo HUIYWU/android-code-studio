@@ -2,7 +2,6 @@
 
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.environment
 
-import android.util.Log
 import com.tom.rv2ide.javac.config.JavacConfigProvider
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisModuleContext
@@ -83,7 +82,6 @@ import java.util.Comparator
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipFile
 import kotlin.streams.asSequence
-private const val ANDROID_DIAGNOSTIC_TAG = "ACS-KotlinAnalysis"
 
 @OptIn(KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class)
 internal class LiveAnalysisEnvironment(
@@ -374,16 +372,7 @@ librarySourceFiles = librarySourceFiles,
 
        session = StandaloneAnalysisAPISession(projectEnvironment) {
           sourceModules.values.associateWith { module -> liveIndex.currentPsiFilesFor(module) }
-        }
-       Log.i(
-           ANDROID_DIAGNOSTIC_TAG,
-           "runtime graph=${System.identityHashCode(this)} project=${System.identityHashCode(project)} " +
-               "libraryModules=${libraryModules.size} librarySourceModules=${librarySourceModules.size} " +
-               "librarySourceFiles=${librarySourceFiles.size} tempSourceRoots=${temporaryLibrarySourceRoots.size} " +
-               "declarationFactory=${System.identityHashCode(declarationFactory)} " +
-               "packageFactory=${System.identityHashCode(packageFactory)} session=${System.identityHashCode(session)}",
-       )
-       diagnosticInternalState("runtime_start")
+       }
          true
 } catch (t: Throwable) {
         startFailure = t
@@ -403,90 +392,6 @@ override fun close() {
      temporaryLibrarySourceRoots.clear()
 Disposer.dispose(disposable)
    }
-
-  internal fun diagnosticInternalState(label: String): String {
-    // TODO(ACS-ANALYSIS-EXPERIMENT): Remove reflective runtime-state diagnostics after the Scudo failure is localized.
-    fun readProperty(target: Any, name: String): Any? = runCatching {
-      val getter = target.javaClass.methods.firstOrNull { method ->
-        method.name == "get" + name.replaceFirstChar { it.uppercase() } && method.parameterCount == 0
-      }
-      getter?.invoke(target) ?: run {
-        var type: Class<*>? = target.javaClass
-        while (type != null) {
-          val field = type.declaredFields.firstOrNull { it.name == name }
-          if (field != null) {
-            field.isAccessible = true
-            return@run field.get(target)
-          }
-          type = type.superclass
-        }
-        null
-      }
-    }.getOrNull()
-    fun companionInstance(className: String): Any? = runCatching {
-      val targetClass = Class.forName(className)
-      val companion = targetClass.getField("Companion").get(null)
-      companion.javaClass.methods
-          .first { method -> method.name == "getInstance" && method.parameterCount == 1 }
-          .invoke(companion, project)
-    }.getOrNull()
-
-    fun cacheSize(cache: Any?): String = runCatching {
-      cache?.javaClass?.methods
-          ?.first { method -> method.name == "getSize" && method.parameterCount == 0 }
-          ?.invoke(cache)
-          ?.toString()
-          ?: "unavailable"
-    }.getOrDefault("unavailable")
-
-    fun service(className: String): Any? = runCatching {
-      @Suppress("UNCHECKED_CAST")
-      project.getService(Class.forName(className) as Class<Any>)
-    }.getOrNull()
-
-    val sessionCache = companionInstance("org.jetbrains.kotlin.analysis.low.level.api.fir.sessions.LLFirSessionCache")
-    val storage = sessionCache?.let { readProperty(it, "storage") }
-    val sourceCache = storage?.let { readProperty(it, "sourceCache") }
-    val binaryCache = storage?.let { readProperty(it, "binaryCache") }
-    val fallbackCache = storage?.let { readProperty(it, "libraryFallbackDependenciesCache") }
-    val danglingCache = storage?.let { readProperty(it, "danglingFileSessionCache") }
-    val unstableDanglingCache = storage?.let { readProperty(it, "unstableDanglingFileSessionCache") }
-
-    val firSessionProvider = service("org.jetbrains.kotlin.analysis.api.fir.KaFirSessionProvider")
-    val firProviderCacheSize = runCatching {
-      if (firSessionProvider == null) {
-        "unavailable"
-      } else {
-        val accessor = firSessionProvider.javaClass.methods
-            .firstOrNull { method -> method.name == "access\$getCache\$p" && method.parameterCount == 1 }
-            ?: return@runCatching "unavailable"
-        cacheSize(accessor.invoke(null, firSessionProvider))
-      }
-    }.getOrDefault("unavailable")
-
-    val psiModificationCount = runCatching {
-      val trackerClass = Class.forName("org.jetbrains.kotlin.com.intellij.psi.util.PsiModificationTracker")
-      val tracker = trackerClass.getMethod("getInstance", Class.forName("org.jetbrains.kotlin.com.intellij.openapi.project.Project"))
-          .invoke(null, project)
-      tracker.javaClass.getMethod("getModificationCount").invoke(tracker).toString()
-    }.getOrDefault("unavailable")
-
-    val firInBlockModificationCount = runCatching {
-      val tracker = companionInstance("org.jetbrains.kotlin.analysis.low.level.api.fir.file.structure.LLFirInBlockModificationTracker")
-          ?: return@runCatching "unavailable"
-      tracker.javaClass.getMethod("getModificationCount").invoke(tracker).toString()
-    }.getOrDefault("unavailable")
-
-
-    val state = "label=$label project=${System.identityHashCode(project)} " +
-        "source=${cacheSize(sourceCache)} binary=${cacheSize(binaryCache)} " +
-        "fallback=${cacheSize(fallbackCache)} dangling=${cacheSize(danglingCache)} " +
-        "unstableDangling=${cacheSize(unstableDanglingCache)} " +
-        "kaFirProvider=$firProviderCacheSize psiModification=$psiModificationCount " +
-        "firInBlockModification=$firInBlockModificationCount"
-    Log.i(ANDROID_DIAGNOSTIC_TAG, "analysis_internal_state $state")
-    return state
-  }
 
   internal fun attachedSourceDeclaration(session: KaSession, symbol: KaDeclarationSymbol): KtDeclaration? {
     val binaryModule = analysisBestEffort(null, com.tom.rv2ide.progress.ICancelChecker.NOOP) {
