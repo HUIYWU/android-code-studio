@@ -149,20 +149,24 @@ internal class KotlinStandaloneAnalysisRuntime(
   override fun complete(request: KotlinSemanticRequest): CompletionResult? {
     return withSemanticLiveFile(request) { file ->
         val offset = requestOffset(request)
+        // Keep the raw leaf for target resolution; end-of-line whitespace is handled there.
         val caretElement = elementAt(file, offset) ?: return@withSemanticLiveFile CompletionResult.EMPTY
         val element = caretElement as? org.jetbrains.kotlin.psi.KtElement
             ?: caretElement.parent as? org.jetbrains.kotlin.psi.KtElement
             ?: return@withSemanticLiveFile CompletionResult.EMPTY
-        val prefix = request.prefix ?: extractCompletionPrefix(file.text, offset)
+        val clientPrefix = request.prefix ?: extractCompletionPrefix(file.text, offset)
         when (val target = resolveCompletionTarget(offset, caretElement)) {
           is CompletionTarget.Receiver -> {
-            val items = analysisBestEffort(emptyList(), request.cancelChecker) {
-              receiverCompletionItems(prefix, target, request.cancelChecker)
-            }
-            CompletionResult(items)
+            // Client prefix includes '.', so member completion filters by the text after the dot.
+            val memberPrefix = clientPrefix.substringAfterLast('.')
+            CompletionResult(
+                analysisBestEffort(emptyList(), request.cancelChecker) {
+                  receiverCompletionItems(memberPrefix, target, request.cancelChecker)
+                }
+            )
           }
           CompletionTarget.None -> CompletionResult.EMPTY
-          else -> CompletionResult(completionItemsFor(prefix, element))
+          else -> CompletionResult(completionItemsFor(clientPrefix, element))
         }
       }
   }

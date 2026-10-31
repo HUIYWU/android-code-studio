@@ -85,6 +85,25 @@ class EditorCompletionWindow(val editor: IDEEditor) : EditorAutoCompletion(edito
     setEnabledAnimation(true)
   }
 
+  // Sora treats a missing span as "no completion". At end of line the caret is outside the last
+  // character's span and the spans are commonly stale right after inserting '.', so dot
+  // completion was hidden. Only relax that exact case; other spans keep their default check.
+  override fun checkNoCompletion(): Boolean {
+    if (!super.checkNoCompletion()) return false
+    val text = editor.text
+    val cursor = text.cursor.left()
+    val line = text.getLine(cursor.line)
+    if (cursor.column <= 0 || cursor.column != line.length) return true
+    if (line[cursor.column - 1] != '.') return true
+    val spans =
+        runCatching { editor.styles?.spans?.read()?.getSpansOnLine(cursor.line) }.getOrNull()
+            ?: return true
+    if (spans.isEmpty()) return false
+    val currentIndex = spans.indexOfLast { it.column <= cursor.column }
+    if (currentIndex != spans.lastIndex) return true
+    return false
+  }
+
   override fun isShowing(): Boolean {
     @Suppress("UNNECESSARY_SAFE_CALL", "USELESS_ELVIS")
     return popup?.isShowing ?: false

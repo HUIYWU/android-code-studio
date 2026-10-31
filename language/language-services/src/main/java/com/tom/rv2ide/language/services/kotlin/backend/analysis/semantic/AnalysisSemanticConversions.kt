@@ -6,7 +6,9 @@
 
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
+import com.tom.rv2ide.lsp.api.describeSnippet
 import com.tom.rv2ide.lsp.models.CompletionItem
+import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import com.tom.rv2ide.lsp.models.MatchLevel
@@ -88,18 +90,25 @@ internal fun KaSession.completionItemFor(
     name.lowercase().startsWith(prefix.lowercase()) -> MatchLevel.CASE_INSENSITIVE_PREFIX
     else -> MatchLevel.NO_MATCH
   }
-  return CompletionItem(
+  val functionSymbol = symbol as? KaNamedFunctionSymbol
+  val callableLike = functionSymbol != null || symbol is KaConstructorSymbol
+  val insertText = if (callableLike) "$name(\$0)" else name
+  val item = CompletionItem(
       ideLabel = name,
       detail = detail,
-      insertText = if (symbol is KaNamedFunctionSymbol && symbol.valueParameters.isNotEmpty()) "$name(\$0)" else name,
-      insertTextFormat = if (symbol is KaNamedFunctionSymbol && symbol.valueParameters.isNotEmpty()) InsertTextFormat.SNIPPET else InsertTextFormat.PLAIN_TEXT,
+      insertText = insertText,
+      insertTextFormat = if (callableLike) InsertTextFormat.SNIPPET else InsertTextFormat.PLAIN_TEXT,
       sortText = name,
-      command = null,
+      command = if (callableLike) Command("Trigger Parameter Hints", Command.TRIGGER_PARAMETER_HINTS) else null,
       completionKind = kind,
       matchLevel = match,
       additionalTextEdits = emptyList(),
       data = null,
   )
+  if (callableLike) {
+    item.snippetDescription = describeSnippet(prefix = prefix, allowCommandExecution = true)
+  }
+  return item
 }
 
 internal fun definitionTargetPsi(psi: PsiElement): PsiElement {

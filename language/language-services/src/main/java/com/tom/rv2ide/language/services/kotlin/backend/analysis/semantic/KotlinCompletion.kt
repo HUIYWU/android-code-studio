@@ -11,14 +11,22 @@ import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.expressionType
 import org.jetbrains.kotlin.analysis.api.components.isMarkedNullable
+import org.jetbrains.kotlin.analysis.api.components.isSubtypeOf
 import org.jetbrains.kotlin.analysis.api.components.render
 import org.jetbrains.kotlin.analysis.api.components.scope
+import org.jetbrains.kotlin.analysis.api.components.scopeContext
+import org.jetbrains.kotlin.analysis.api.components.compositeScope
+import org.jetbrains.kotlin.analysis.api.components.defaultTypeWithStarProjections
 import org.jetbrains.kotlin.analysis.api.components.withNullability
+import org.jetbrains.kotlin.analysis.api.symbols.KaCallableSymbol
+import org.jetbrains.kotlin.analysis.api.types.KaFlexibleType
+import org.jetbrains.kotlin.analysis.api.types.KaTypeParameterType
 import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
 import org.jetbrains.kotlin.analysis.api.signatures.KaCallableSignature
 import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
 import org.jetbrains.kotlin.analysis.api.symbols.KaClassSymbol
 import org.jetbrains.kotlin.analysis.api.types.KaClassType
+import org.jetbrains.kotlin.analysis.api.types.KaType
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
@@ -46,7 +54,12 @@ internal sealed interface CompletionTarget {
 
 internal fun resolveCompletionTarget(offset: Int, element: PsiElement?): CompletionTarget {
   var node: PsiElement? = element
-  if (node is PsiWhiteSpace) node = node.prevSibling ?: node
+  if (node is PsiWhiteSpace) {
+    // A whitespace's sibling may be the enclosing declaration, which would skip the initializer
+    // subtree that holds the qualified expression. Start from the previous character leaf instead.
+    val previousLeaf = node.containingFile?.findElementAt(offset - 1)
+    node = previousLeaf ?: node.prevSibling ?: node
+  }
   while (node != null && node !is PsiFile) {
     when (node) {
       is KtImportDirective, is KtPackageDirective -> return CompletionTarget.PackageOrImport
@@ -55,26 +68,33 @@ internal fun resolveCompletionTarget(offset: Int, element: PsiElement?): Complet
       is KtQualifiedExpression -> {
         val tokenNode = node.node.findChildByType(node.operationSign)
         val tokenRange = tokenNode?.psi?.textRange
-        if (tokenRange != null && offset > tokenRange.startOffset) {
-          val selectorEnd = node.selectorExpression?.textRange?.endOffset ?: (tokenRange.endOffset + 1)
-          if (offset <= selectorEnd) {
-            return CompletionTarget.Receiver(node.receiverExpression, node is KtSafeQualifiedExpression)
-          }
+        val selectorEnd = node.selectorExpression?.textRange?.endOffset ?: (tokenRange?.endOffset ?: -1) + 1
+        if (tokenRange != null && offset > tokenRange.startOffset && offset <= selectorEnd) {
+          return CompletionTarget.Receiver(node.receiverExpression, node is KtSafeQualifiedExpression)
         }
       }
     }
     node = node.parent
   }
+  // Fallback for incomplete code where the parser exposes no usable qualified expression.
   return adjacentDotReceiver(offset, element) ?: CompletionTarget.Lexical
 }
 
+// Handles both a bare trailing dot and a dot followed by a partially typed selector.
 private fun adjacentDotReceiver(offset: Int, element: PsiElement?): CompletionTarget.Receiver? {
   val file = element?.containingFile ?: return null
   val text = file.text
   if (offset <= 1 || offset > text.length) return null
-  if (text[offset - 1] != '.') return null
-  val safe = offset >= 2 && text[offset - 2] == '?'
-  val receiverEnd = if (safe) offset - 2 else offset - 1
+  var selectorStart = offset
+  while (selectorStart > 0) {
+    val ch = text[selectorStart - 1]
+    if (ch.isLetterOrDigit() || ch == '_') selectorStart-- else break
+  }
+  if (selectorStart <= 0) return null
+  val dotIndex = selectorStart - 1
+  if (text[dotIndex] != '.') return null
+  val safe = dotIndex >= 1 && text[dotIndex - 1] == '?'
+  val receiverEnd = if (safe) dotIndex - 1 else dotIndex
   if (receiverEnd <= 0) return null
   val anchor = file.findElementAt(receiverEnd - 1) ?: return null
   val receiver = generateSequence(anchor) { it.parent }
@@ -94,7 +114,7 @@ internal fun KaSession.receiverCompletionItems(
 ): List<CompletionItem> {
   val type = runCatching { target.receiver.expressionType }.getOrNull() ?: return emptyList()
   val effectiveType = if (target.safe && type.isMarkedNullable) type.withNullability(false) else type
-  if (!target.safe && effectiveType.isMarkedNullable) return emptyList()
+  val nullableDot = !target.safe && effectiveType.isMarkedNullable
   val nameFilter: (Name) -> Boolean = { it.asString().startsWith(prefix, ignoreCase = true) }
   val items = ArrayList<CompletionItem>(64)
   var remaining = RECEIVER_CANDIDATE_BUDGET
@@ -105,37 +125,51 @@ internal fun KaSession.receiverCompletionItems(
     remaining--
   }
 
-  val typeScope = effectiveType.scope
-  if (typeScope != null) {
-    for (signature in typeScope.getCallableSignatures(nameFilter)) {
-      cancelChecker.abortIfCancelled()
-      if (remaining <= 0) break
-      add(completionItemFor(signature, prefix))
-    }
-    if (remaining > 0) {
-      for (classifier in typeScope.getClassifierSymbols(nameFilter)) {
+  if (!nullableDot) {
+    val typeScope = effectiveType.scope
+    if (typeScope != null) {
+      for (signature in typeScope.getCallableSignatures(nameFilter)) {
         cancelChecker.abortIfCancelled()
         if (remaining <= 0) break
-        add(completionItemFor(classifier, prefix))
+        add(completionItemFor(signature, prefix))
       }
-    }
-  } else {
-    val classSymbol = (effectiveType as? KaClassType)?.symbol as? KaClassSymbol ?: return emptyList()
-    val memberScope = classSymbol.memberScope
-    for (symbol in memberScope.callables(nameFilter)) {
-      cancelChecker.abortIfCancelled()
-      if (remaining <= 0) break
-      add(completionItemFor(symbol, prefix))
-    }
-    if (remaining > 0) {
-      for (classifier in memberScope.classifiers(nameFilter)) {
+      if (remaining > 0) {
+        for (classifier in typeScope.getClassifierSymbols(nameFilter)) {
+          cancelChecker.abortIfCancelled()
+          if (remaining <= 0) break
+          add(completionItemFor(classifier, prefix))
+        }
+      }
+    } else {
+      val classSymbol = (effectiveType as? KaClassType)?.symbol as? KaClassSymbol ?: return emptyList()
+      val memberScope = classSymbol.memberScope
+      for (symbol in memberScope.callables(nameFilter)) {
         cancelChecker.abortIfCancelled()
         if (remaining <= 0) break
-        add(completionItemFor(classifier, prefix))
+        add(completionItemFor(symbol, prefix))
+      }
+      if (remaining > 0) {
+        for (classifier in memberScope.classifiers(nameFilter)) {
+          cancelChecker.abortIfCancelled()
+          if (remaining <= 0) break
+          add(completionItemFor(classifier, prefix))
+        }
       }
     }
   }
-  return items.distinctBy { it.ideLabel }.take(COMPLETION_BUDGET)
+  if (remaining > 0) {
+    val compositeScope = target.receiver.containingKtFile.scopeContext(target.receiver).compositeScope()
+    for (symbol in compositeScope.callables(nameFilter)) {
+      cancelChecker.abortIfCancelled()
+      if (remaining <= 0) break
+      val callable = symbol as? KaCallableSymbol ?: continue
+      if (!callable.isExtension) continue
+      val extensionReceiverType = callable.receiverParameter?.returnType ?: continue
+      if (!isExtensionReceiverApplicable(effectiveType, extensionReceiverType)) continue
+      add(completionItemFor(symbol, prefix))
+    }
+  }
+  return items.distinctBy { it.ideLabel to it.completionKind }.take(COMPLETION_BUDGET)
 }
 
 private fun KaSession.completionItemFor(signature: KaCallableSignature<*>, prefix: String): CompletionItem? {
@@ -149,4 +183,25 @@ private fun KaSession.completionItemFor(signature: KaCallableSignature<*>, prefi
     else -> signature.returnType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)
   }
   return completionItemFor(signature.symbol, prefix, detail)
+}
+
+private fun KaSession.isExtensionReceiverApplicable(
+    receiverType: KaType,
+    extensionReceiverType: KaType,
+): Boolean {
+  val exact = runCatching { receiverType.isSubtypeOf(extensionReceiverType) }.getOrDefault(false)
+  if (exact) return true
+  if (!extensionReceiverType.containsTypeParameter()) return false
+  val classifier = (extensionReceiverType as? KaClassType)?.symbol ?: return false
+  val starProjected = runCatching {
+    classifier.defaultTypeWithStarProjections.withNullability(extensionReceiverType.isMarkedNullable)
+  }.getOrNull() ?: return false
+  return runCatching { receiverType.isSubtypeOf(starProjected) }.getOrDefault(false)
+}
+
+private fun KaType.containsTypeParameter(): Boolean = when (this) {
+  is KaTypeParameterType -> true
+  is KaFlexibleType -> lowerBound.containsTypeParameter() || upperBound.containsTypeParameter()
+  is KaClassType -> typeArguments.any { projection -> projection.type?.containsTypeParameter() == true }
+  else -> false
 }
