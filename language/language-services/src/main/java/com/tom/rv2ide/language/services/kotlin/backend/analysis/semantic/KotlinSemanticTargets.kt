@@ -37,6 +37,7 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtForExpression
 import org.jetbrains.kotlin.psi.KtNamedDeclaration
 import org.jetbrains.kotlin.psi.KtOperationReferenceExpression
+import org.jetbrains.kotlin.psi.KtPropertyAccessor
 import org.jetbrains.kotlin.psi.KtPropertyDelegate
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 
@@ -89,6 +90,12 @@ internal fun KaSession.resolveOrdinaryTargetAt(
       val reference = element.reference as? KtPropertyDelegationMethodsReference
       if (reference != null && reference.isCaretInReferencedName(offset)) {
         return reference.resolveToSymbols().toTargetResolution()
+      }
+    }
+    if (element is KtPropertyAccessor) {
+      val keywordRange = element.namePlaceholder.textRange
+      if (offset >= keywordRange.startOffset && offset < keywordRange.endOffset) {
+        return KotlinSemanticTargetResolution.Unique(element.symbol)
       }
     }
     if (element is KtSimpleNameExpression) {

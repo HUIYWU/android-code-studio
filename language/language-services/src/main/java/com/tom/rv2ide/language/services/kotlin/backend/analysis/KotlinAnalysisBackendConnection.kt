@@ -8,7 +8,6 @@
  */
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
-import android.util.Log
 import com.google.gson.JsonObject
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendState
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendConnection
@@ -47,7 +46,6 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
-private const val ANDROID_DIAGNOSTIC_TAG = "ACS-KotlinAnalysis"
 
 /** In-process Kotlin Analysis backend and its replaceable standalone runtime. */
 class KotlinAnalysisBackendConnection internal constructor(
@@ -359,13 +357,8 @@ class KotlinAnalysisBackendConnection internal constructor(
       if (!isReady || !initialized) return
       val normalizedPath = path.normalize()
       val sequence = diagnosticSequenceCounter.incrementAndGet()
-diagnosticSequences[normalizedPath] = sequence
-       Log.i(
-           ANDROID_DIAGNOSTIC_TAG,
-           "diagnostics_schedule path=$normalizedPath sequence=$sequence generation=$generation " +
-               "preserveRescheduleState=$preserveRescheduleState thread=${Thread.currentThread().name}",
-       )
-       if (!preserveRescheduleState) {
+      diagnosticSequences[normalizedPath] = sequence
+      if (!preserveRescheduleState) {
         diagnosticRescheduledSequences.remove(normalizedPath)
         interruptedDiagnostics.remove(normalizedPath)
       }
@@ -407,15 +400,8 @@ diagnosticSequences[normalizedPath] = sequence
     val requestGeneration = generation
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
-    Log.i(
-        ANDROID_DIAGNOSTIC_TAG,
-        "diagnostics_begin kind=DIAGNOSTICS path=$normalizedPath version=${snapshot.version} " +
-            "revision=${snapshot.revision} generation=$requestGeneration runtime=${System.identityHashCode(activeRuntime)} " +
-            "thread=${Thread.currentThread().name}",
-    )
     try {
       val result = activeRuntime.analyze(normalizedPath, snapshot, cancelChecker) ?: run {
-        Log.i(ANDROID_DIAGNOSTIC_TAG, "diagnostics_null path=$normalizedPath revision=${snapshot.revision}")
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
         return
       }
@@ -433,17 +419,9 @@ diagnosticSequences[normalizedPath] = sequence
           backendGeneration = requestGeneration,
       )
       callback.invoke(published)
-      Log.i(
-          ANDROID_DIAGNOSTIC_TAG,
-          "diagnostics_end path=$normalizedPath revision=${snapshot.revision} generation=$requestGeneration " +
-              "runtime=${System.identityHashCode(activeRuntime)} resultItems=${result.diagnostics.size} thread=${Thread.currentThread().name}",
-      )
     } catch (e: CancellationException) {
-      Log.i(ANDROID_DIAGNOSTIC_TAG, "diagnostics_cancelled path=$normalizedPath revision=${snapshot.revision} thread=${Thread.currentThread().name}")
       KlsLogs.debug("Kotlin Analysis diagnostics cancelled: file={}", normalizedPath)
     } catch (t: Throwable) {
-      Log.w(ANDROID_DIAGNOSTIC_TAG, "diagnostics_error path=$normalizedPath revision=${snapshot.revision} error=${t.javaClass.simpleName}")
-
       KlsLogs.error("Kotlin Analysis API diagnostics failed for: $normalizedPath", t)
     }
   }
@@ -508,11 +486,6 @@ internal suspend fun signatureHelp(
     }
 
     cancelDiagnosticsForInteractiveRequest()
-    Log.i(
-        ANDROID_DIAGNOSTIC_TAG,
-        "semantic_begin kind=$kind path=${request.file} version=${request.snapshot.version} " +
-            "revision=${request.snapshot.revision} generation=${request.backendGeneration} thread=${Thread.currentThread().name}",
-    )
     val completionReported = AtomicBoolean(false)
 
     fun reportInteractiveCompletion() {
@@ -532,23 +505,12 @@ internal suspend fun signatureHelp(
           requiredMutationPaths = setOf(request.file),
            action = {
              val currentRuntime = runtime
-             Log.i(
-                 ANDROID_DIAGNOSTIC_TAG,
-                 "semantic_execute kind=$kind path=${request.file} revision=${request.snapshot.revision} " +
-                     "runtime=${currentRuntime?.let { System.identityHashCode(it) }} thread=${Thread.currentThread().name}",
-             )
              val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
              val currentAfterExecution = canExecute()
              if (currentAfterExecution) result else null
            },
       )
        task.whenComplete { result, error ->
-         Log.i(
-             ANDROID_DIAGNOSTIC_TAG,
-             "semantic_end kind=$kind path=${request.file} revision=${request.snapshot.revision} " +
-                 "cancelled=${request.cancelChecker.isCancelled()} error=${error?.javaClass?.simpleName ?: "none"} " +
-                 "thread=${Thread.currentThread().name}",
-         )
          reportInteractiveCompletion()
          if (!continuation.isActive) return@whenComplete
         if (error != null) {

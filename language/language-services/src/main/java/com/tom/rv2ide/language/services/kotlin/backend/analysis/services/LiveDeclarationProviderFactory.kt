@@ -7,6 +7,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourc
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
+import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinCompositeDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProvider
 import org.jetbrains.kotlin.analysis.api.platform.declarations.KotlinDeclarationProviderFactory
@@ -54,12 +55,14 @@ internal class LiveDeclarationProviderFactory : KotlinDeclarationProviderFactory
     this.liveIndex = liveIndex
     this.registry = registry
     this.metadataIndex = metadataIndex
-    standaloneFactory = KotlinStandaloneDeclarationProviderFactory(
-        project = project,
-        environment = coreApplicationEnvironment,
-        sourceKtFiles = librarySourceFiles,
-        postponeIndexing = true,
-    )
+    if (ProjectInputSnapshotFactory.LIBRARY_SOURCE_ATTACHMENTS_ENABLED) {
+      standaloneFactory = KotlinStandaloneDeclarationProviderFactory(
+          project = project,
+          environment = coreApplicationEnvironment,
+          sourceKtFiles = librarySourceFiles,
+          postponeIndexing = true,
+      )
+    }
   }
 
   internal fun createLiveProvider(scope: GlobalSearchScope): LiveDeclarationProvider =

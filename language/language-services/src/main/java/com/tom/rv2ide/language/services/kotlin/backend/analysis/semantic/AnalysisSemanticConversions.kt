@@ -32,6 +32,7 @@ import org.jetbrains.kotlin.types.Variance
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtConstructor
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtPropertyAccessor
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
 import java.nio.file.Path
@@ -54,7 +55,11 @@ internal fun KaSession.completionItemsFor(prefix: String, element: org.jetbrains
 
 }
 
-internal fun KaSession.completionItemFor(symbol: KaSymbol, prefix: String): CompletionItem? {
+internal fun KaSession.completionItemFor(
+    symbol: KaSymbol,
+    prefix: String,
+    detailOverride: String? = null,
+): CompletionItem? {
   val name = symbolName(symbol) ?: return null
   val kind = when (symbol) {
     is KaClassSymbol -> when (symbol.classKind) {
@@ -69,7 +74,7 @@ internal fun KaSession.completionItemFor(symbol: KaSymbol, prefix: String): Comp
     is KaClassifierSymbol -> CompletionItemKind.CLASS
     else -> CompletionItemKind.NONE
   }
-  val detail = when (symbol) {
+  val detail = detailOverride ?: when (symbol) {
     is KaNamedFunctionSymbol -> symbol.valueParameters.joinToString(", ", prefix = "$name(", postfix = ")") {
       "${it.name.asString()}: ${it.returnType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)}"
     }
@@ -98,12 +103,13 @@ internal fun KaSession.completionItemFor(symbol: KaSymbol, prefix: String): Comp
 }
 
 internal fun definitionTargetPsi(psi: PsiElement): PsiElement {
-  if (psi is KtConstructor<*>) {
-    var parent: PsiElement? = psi.parent
+  val declaration = if (psi is KtPropertyAccessor) psi.property else psi
+  if (declaration is KtConstructor<*>) {
+    var parent: PsiElement? = declaration.parent
     while (parent != null && parent !is KtClassOrObject) parent = parent.parent
-    if (parent is KtClassOrObject) return parent.getNameIdentifier() ?: psi
+    if (parent is KtClassOrObject) return parent.getNameIdentifier() ?: declaration
   }
-  return if (psi is PsiNameIdentifierOwner) psi.nameIdentifier ?: psi else psi
+  return if (declaration is PsiNameIdentifierOwner) declaration.nameIdentifier ?: declaration else declaration
 }
 
 internal fun locationForElement(path: Path, file: KtFile, element: PsiElement): Location? =

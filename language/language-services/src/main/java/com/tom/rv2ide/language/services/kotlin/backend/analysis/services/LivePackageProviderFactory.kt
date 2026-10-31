@@ -1,6 +1,7 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.services
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
+import com.tom.rv2ide.projects.models.ProjectInputSnapshotFactory
 import org.jetbrains.kotlin.analysis.api.platform.mergeSpecificProviders
 import org.jetbrains.kotlin.analysis.api.platform.packages.KotlinCompositePackageProvider
 import org.jetbrains.kotlin.analysis.api.platform.packages.KotlinPackageProvider
@@ -27,7 +28,9 @@ internal class LivePackageProviderFactory : KotlinPackageProviderFactory {
   ) {
     this.project = project
     this.metadataIndex = metadataIndex
-    standaloneFactory = KotlinStandalonePackageProviderFactory(project, librarySourceFiles)
+    if (ProjectInputSnapshotFactory.LIBRARY_SOURCE_ATTACHMENTS_ENABLED) {
+      standaloneFactory = KotlinStandalonePackageProviderFactory(project, librarySourceFiles)
+    }
   }
 
   internal fun createLiveProvider(searchScope: GlobalSearchScope): LivePackageProvider =

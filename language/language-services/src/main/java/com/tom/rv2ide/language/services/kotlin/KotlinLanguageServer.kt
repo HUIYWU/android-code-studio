@@ -17,7 +17,6 @@
 package com.tom.rv2ide.language.services.kotlin
 
 import android.content.Context
-import android.util.Log
 import com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent
 import com.tom.rv2ide.language.services.kotlin.actions.KotlinCodeActionsMenu
 import com.tom.rv2ide.language.services.kotlin.backend.KotlinBackendContext
@@ -55,6 +54,7 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
 
   companion object {
     const val SERVER_ID = "kotlin"
+    private const val COMPLETION_TIMEOUT_MS = 3000L
   }
 
   private var selectedFile: java.nio.file.Path? = null
@@ -97,12 +97,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
         val resultGeneration = diagnostics.backendGeneration
         val receivedSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
         val receivedRevision = receivedSnapshot?.revision
-        Log.i(
-            "ACS-KotlinAnalysis",
-            "diagnostics_publish_received path=${diagnostics.file} revision=$receivedRevision " +
-                "generation=$resultGeneration items=${diagnostics.diagnostics.size} epoch=$epoch " +
-                "thread=${Thread.currentThread().name}",
-        )
         _client?.publishDiagnostics(diagnostics) {
           val currentSnapshot = FileManager.getActiveDocumentSnapshot(diagnostics.file)
           val current = epoch == diagnosticsEpoch.get() && connection.isReady && backendReady &&
@@ -111,13 +105,6 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
               receivedRevision != null &&
               currentSnapshot?.revision == receivedRevision &&
               diagnostics.file.isKotlinLanguageDocument()
-          Log.i(
-              "ACS-KotlinAnalysis",
-              "diagnostics_publish_filter path=${diagnostics.file} accepted=$current " +
-                  "receivedRevision=$receivedRevision currentRevision=${currentSnapshot?.revision} " +
-                  "epoch=$epoch currentEpoch=${diagnosticsEpoch.get()} generation=$resultGeneration " +
-                  "currentGeneration=${connection.generation}",
-          )
           current
         }
 
@@ -175,6 +162,11 @@ class KotlinLanguageServer(private val context: Context) : ILanguageServer {
       KlsLogs.info("Skipping Kotlin language server setup because KLS is disabled by preference")
       finishWorkspaceSetup(workspace, null)
       return
+    }
+
+    disabledByPreference = false
+    if (!EventBus.getDefault().isRegistered(documentEventBridge)) {
+      EventBus.getDefault().register(documentEventBridge)
     }
 
     workspaceCoordinator?.cleanup()
@@ -259,12 +251,10 @@ if (replacingWorkspace && connection.isReady && connection.isInitialized) {
     }
 
     return if (backendReady && connection.isReady && params != null && connection.supportsDocument(params.file)) {
-      // Use async instead of blocking
       runBlocking {
-        withTimeout(3000) {
-          val result = async(Dispatchers.Default) { semanticService?.complete(params) ?: CompletionResult(emptyList()) }
-          result.await()
-        }
+        withTimeoutOrNull(COMPLETION_TIMEOUT_MS) {
+          semanticService?.complete(params) ?: CompletionResult(emptyList())
+        } ?: CompletionResult(emptyList())
       }
     } else {
       CompletionResult(emptyList())
@@ -404,12 +394,7 @@ if (replacingWorkspace && connection.isReady && connection.isInitialized) {
     KlsLogs.info("Kotlin Language Server shutdown complete")
   }
   private fun clearKotlinDiagnostics() {
-    val epoch = diagnosticsEpoch.incrementAndGet()
-    Log.i(
-        "ACS-KotlinAnalysis",
-        "diagnostics_clear epoch=$epoch generation=${connection.generation} " +
-            "backendReady=$backendReady connectionReady=${connection.isReady} thread=${Thread.currentThread().name}",
-    )
+    diagnosticsEpoch.incrementAndGet()
     _client?.clearDiagnostics(connection.diagnosticChannel)
   }
 

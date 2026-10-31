@@ -101,10 +101,10 @@ internal class LiveSourceFileIndex(
       path: Path,
       file: KtFile? = null,
       identity: LiveFileIdentity? = null,
-      detail: String = "",
+      detail: () -> String = { "" },
   ) {
     if (!ENABLE_INCREMENTAL_EDIT_TRACE) return
-    logLive(action, path, file, identity, detail)
+    logLive(action, path, file, identity, detail())
   }
 
   private fun trackerState(): String {
@@ -255,11 +255,12 @@ internal class LiveSourceFileIndex(
          "edit-received",
          normalized,
          identity = edit.targetIdentity(),
-         detail = "base=${edit.baseIdentity()}; target=${edit.targetIdentity()}; range=${edit.baseStartIndex}..${edit.baseEndIndex}; kind=${edit.kind}",
+         detail = { "base=${edit.baseIdentity()}; target=${edit.targetIdentity()}; range=${edit.baseStartIndex}..${edit.baseEndIndex}; kind=${edit.kind}" },
      )
      if (!applyDocumentEditLocked(normalized, edit)) {
       logLive("edit-fallback", normalized, identity = edit.targetIdentity(), detail = "reason=incremental-apply-rejected; full-refresh-disabled")
-      // Temporarily disable the full-file refresh fallback so PSI reparse failures remain observable.
+      // Disable the full-file refresh fallback so PSI reparse failures remain observable.
+      // Do not enable this until the reparse is stable.
       // refreshCurrentKtFile(normalized)
     }
   }
@@ -309,14 +310,14 @@ internal class LiveSourceFileIndex(
             } else if (start < 0 || end < start || end > document.textLength) {
               logLive("edit-fallback", path, current.file, edit.targetIdentity(), "reason=range-invalid; range=${start}..${end}; documentLength=${document.textLength}")
             } else {
-              logIncrementalTrace("edit-apply", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}; kind=${edit.kind}")
+              logIncrementalTrace("edit-apply", path, current.file, edit.baseIdentity()) { "range=${start}..${end}; replacementLength=${edit.replacementText.length}; kind=${edit.kind}" }
               stage = "replace"
-              logIncrementalTrace("edit-replace-start", path, current.file, edit.baseIdentity(), "range=${start}..${end}; replacementLength=${edit.replacementText.length}")
+              logIncrementalTrace("edit-replace-start", path, current.file, edit.baseIdentity()) { "range=${start}..${end}; replacementLength=${edit.replacementText.length}" }
               val oldText = current.file.text
               val functionBefore = functionAt(current.file, start)
               val declarationAnchor = functionAnchor(functionBefore)
               val bodyBefore = functionBefore?.bodyBlockExpression
-              logIncrementalTrace("edit-body-before", path, current.file, edit.targetIdentity(), "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}")
+              logIncrementalTrace("edit-body-before", path, current.file, edit.targetIdentity()) { "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}" }
               document.replaceString(start, end, edit.replacementText)
               val targetText = document.text
               val changedRange = TextRange(start, start + edit.replacementText.length)
@@ -326,8 +327,7 @@ internal class LiveSourceFileIndex(
                   path,
                   current.file,
                   edit.targetIdentity(),
-                  "oldLength=${oldText.length}; targetLength=${targetText.length}; range=${changedRange.startOffset}..${changedRange.endOffset}",
-              )
+              ) { "oldLength=${oldText.length}; targetLength=${targetText.length}; range=${changedRange.startOffset}..${changedRange.endOffset}" }
               val oldNode = current.file.node as? FileASTNode
                   ?: error("Canonical PSI file node is not a FileASTNode")
               // Apply the AST diff to the existing canonical KtFile; commitDocument() alone leaves it stale in Standalone.
@@ -346,8 +346,7 @@ internal class LiveSourceFileIndex(
                   path,
                   current.file,
                   edit.targetIdentity(),
-                  "documentLength=${document.textLength}; psiLength=${current.file.textLength}",
-              )
+              ) { "documentLength=${document.textLength}; psiLength=${current.file.textLength}" }
               if (document.text != targetText || current.file.text != targetText) {
                 logLive(
                     "edit-fallback",
@@ -375,7 +374,7 @@ internal class LiveSourceFileIndex(
                   bodyBefore != null && bodyAfter == null -> "REMOVED"
                   else -> "NONE"
                 }
-                logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity(), "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}")
+                logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity()) { "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}" }
 val modificationService = KaSourceModificationService.getInstance(project)
                   stage = "modification-service"
                  // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
@@ -384,7 +383,7 @@ val modificationService = KaSourceModificationService.getInstance(project)
                 val modificationEvent = when {
                     sameDeclaration && bodyBefore == null && bodyAfter != null -> {
                       val detail = "event=ElementAdded; element=${bodyAfter.javaClass.simpleName}; eventElement=${bodyAfter.javaClass.simpleName}"
-                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity()) { "$detail; ${trackerState()}" }
                       modificationService.handleElementModification(bodyAfter, KaElementModificationType.ElementAdded)
                       detail
                     }
@@ -392,28 +391,30 @@ val modificationService = KaSourceModificationService.getInstance(project)
                       // A body-less reparsed function has no FIR body marker; use the valid file target to avoid the deferred in-block queue dropping this change.
                       val removalEventElement = if (reparsedSameDeclaration) current.file else functionAfter
                       val detail = "event=ElementRemoved; element=${bodyBefore.javaClass.simpleName}; eventElement=${removalEventElement.javaClass.simpleName}; moduleInvalidation=${reparsedSameDeclaration}"
-                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity()) { "$detail; ${trackerState()}" }
                       modificationService.handleElementModification(removalEventElement, KaElementModificationType.ElementRemoved(bodyBefore))
                       detail
                     }
                     else -> {
                       val changed = modificationAnchor(current.file, edit, start)
-                      val inBlockAncestor = runCatching {
-                        modificationService.ancestorAffectedByInBlockModification(changed)
-                      }.getOrNull()
-                      val shape = modificationShape(changed, inBlockAncestor)
+                      val inBlockAncestor = if (ENABLE_INCREMENTAL_EDIT_TRACE) {
+                        runCatching {
+                          modificationService.ancestorAffectedByInBlockModification(changed)
+                        }.getOrNull()
+                      } else null
+                      val shape = if (ENABLE_INCREMENTAL_EDIT_TRACE) modificationShape(changed, inBlockAncestor) else ""
                       val detail = "event=Unknown; $shape"
-                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity(), "$detail; ${trackerState()}")
+                      logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity()) { "$detail; ${trackerState()}" }
                       modificationService.handleElementModification(changed, KaElementModificationType.Unknown)
                       detail
                     }
                  }
-logIncrementalTrace("edit-modification-success", path, current.file, edit.targetIdentity(), "$modificationEvent; ${trackerState()}")
+logIncrementalTrace("edit-modification-success", path, current.file, edit.targetIdentity()) { "$modificationEvent; ${trackerState()}" }
                     // Standalone MockApplication does not dispatch writeActionFinished; the deferred FIR queue must be flushed explicitly before committing the new identity.
                     stage = "fir-flush"
-                    logIncrementalTrace("edit-fir-flush-start", path, current.file, edit.targetIdentity(), trackerState())
+                    logIncrementalTrace("edit-fir-flush-start", path, current.file, edit.targetIdentity()) { trackerState() }
                     val flushService = flushFirModifications()
-                    logIncrementalTrace("edit-fir-flush-success", path, current.file, edit.targetIdentity(), "service=$flushService; ${trackerState()}")
+                    logIncrementalTrace("edit-fir-flush-success", path, current.file, edit.targetIdentity()) { "service=$flushService; ${trackerState()}" }
                   project.analysisRead {
                     metadataIndex.replace(
                         path = path,
@@ -423,7 +424,7 @@ logIncrementalTrace("edit-modification-success", path, current.file, edit.target
                     )
                   }
 currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
-                    logIncrementalTrace("incremental", path, current.file, edit.targetIdentity(), modificationEvent)
+                    logIncrementalTrace("incremental", path, current.file, edit.targetIdentity()) { modificationEvent }
                    applied = true
                 }
               }
