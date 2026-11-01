@@ -7,11 +7,14 @@ import com.tom.rv2ide.lsp.models.InsertTextFormat
 import com.tom.rv2ide.lsp.models.MatchLevel
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
+import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.KtBlockExpression
 import org.jetbrains.kotlin.psi.KtCallableDeclaration
 import org.jetbrains.kotlin.psi.KtClassBody
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtFunction
+import org.jetbrains.kotlin.psi.KtProperty
 
 private val MODIFIER_KEYWORDS =
     listOf(
@@ -127,11 +130,27 @@ private val EXPRESSION_PREFIX_WORDS =
 
 private val DELEGATION_PATTERN = Regex("""\b(val|var)\s+\w+(\s*:\s*[^=]+)?\s*$""")
 
+private val WHITESPACE = Regex("\\s+")
+
+private val KEYWORD_NAMES: Set<String> =
+    (
+        MEMBER_DECLARATIONS +
+            STATEMENT_KEYWORDS +
+            EXPRESSION_KEYWORDS +
+            AFTER_BLOCK_KEYWORDS +
+            INFIX_KEYWORDS +
+            TYPE_ARGUMENT_KEYWORDS +
+            DELEGATION_KEYWORDS +
+            WHERE_KEYWORDS)
+        .toSet()
+
 private enum class KeywordSlot {
   TOP_LEVEL,
   MEMBER,
   STATEMENT,
 }
+
+private class KeywordContext(val slot: KeywordSlot, val bodyStart: Int)
 
 internal fun keywordCompletionItems(
     prefix: String,
@@ -140,22 +159,28 @@ internal fun keywordCompletionItems(
     element: PsiElement?,
     typePosition: Boolean,
 ): List<CompletionItem>? {
-  val text = file.text
-  val lineStart = text.lastIndexOf('\n', (offset - 1).coerceAtLeast(0)).let { it + 1 }
-  if (lineStart > offset) return null
-  val before = text.substring(lineStart, offset).trimEnd()
-  val lineEnd = text.indexOf('\n', offset).let { if (it < 0) text.length else it }
-  val after = text.substring(offset, lineEnd).trimStart()
-  val slot = keywordSlot(element)
-  if (prefix.isEmpty() || slot == null) {
+  val context = keywordContext(element)
+  if (prefix.isEmpty() || context == null) {
     KlsLogs.warn("keyword_completion_skip reason=empty_prefix_or_no_slot prefix='{}'", prefix)
     return null
   }
-  val beforeWords = before.split(Regex("\\s+")).filter { it.isNotEmpty() }
+  val slot = context.slot
+  val text = file.text
+  val lineStart = text.lastIndexOf('\n', (offset - 1).coerceAtLeast(0)) + 1
+  if (lineStart > offset) return null
+  // A single-line body keeps its opening brace on the caret line, so the analysis must start after
+  // that brace instead of at the line start.
+  val from = if (context.bodyStart in lineStart..offset) context.bodyStart else lineStart
+  val before = text.substring(from, offset).trimEnd()
+  val lineEnd = text.indexOf('\n', offset).let { if (it < 0) text.length else it }
+  val after = text.substring(offset, lineEnd).trimStart()
+  val beforeWords = before.split(WHITESPACE).filter { it.isNotEmpty() }
   val prefixWord = beforeWords.lastOrNull().orEmpty()
   val completed = before.removeSuffix(prefixWord).trimEnd()
   val previousChar = completed.lastOrNull()
-  val previousWord = completed.split(Regex("\\s+")).filter { it.isNotEmpty() }.lastOrNull()
+  val previousWord =
+      if (completed.isEmpty()) null
+      else completed.split(WHITESPACE).lastOrNull { it.isNotEmpty() }
   val leadingWords = beforeWords.dropLast(1)
   val declarationPosition = leadingWords.all { it in MODIFIER_KEYWORDS }
   val expressionStart =
@@ -175,10 +200,7 @@ internal fun keywordCompletionItems(
               previousChar == '\'') &&
           !declarationPosition
   val delegation = DELEGATION_PATTERN.matches(completed)
-  val whereClause =
-      slot != KeywordSlot.STATEMENT &&
-          (completed.endsWith(")") || completed.endsWith(">")) &&
-          !declarationPosition
+  val whereClause = isWherePosition(element, offset)
   val typeArgument = typePosition && (previousChar == '<' || previousChar == ',')
   KlsLogs.warn(
       "keyword_completion_probe prefix='{}' slot={} decl={} expr={} afterBlock={} infix={} delegate={} where={} typeArg={} before='{}' after='{}'",
@@ -194,21 +216,23 @@ internal fun keywordCompletionItems(
       before.take(40),
       after.take(40),
   )
+  // A declaration starter typed after the caret only narrows the modifiers. The text after the
+  // caret never gates the candidates: in single-line bodies it holds a closing brace or a comment.
   val starter = DECLARATION_STARTERS.firstOrNull { keyword ->
     after.startsWith(keyword) &&
         (after.length == keyword.length || !after[keyword.length].isLetterOrDigit())
   }
-  if (after.isNotEmpty() && starter == null) {
-    KlsLogs.warn("keyword_completion_skip reason=after_not_declaration after='{}'", after.take(40))
-    return null
-  }
   val candidates = LinkedHashSet<String>()
+  val afterStartsIdentifier =
+      after.isNotEmpty() && (after[0].isLetter() || after[0] == '_')
   if (declarationPosition) {
-    if (starter != null) {
-      candidates += modifiersFor(starter).filter { it in allowedModifiers(slot) }
-    } else {
-      candidates += declarationsFor(slot)
-      candidates += allowedModifiers(slot)
+    when {
+      starter != null -> candidates += modifiersFor(starter).filter { it in allowedModifiers(slot) }
+      afterStartsIdentifier -> candidates += allowedModifiers(slot)
+      else -> {
+        candidates += declarationsFor(slot)
+        candidates += allowedModifiers(slot)
+      }
     }
     if (statementStart) candidates += STATEMENT_KEYWORDS
   }
@@ -222,17 +246,6 @@ internal fun keywordCompletionItems(
   if (delegation) candidates += DELEGATION_KEYWORDS
   if (whereClause) candidates += WHERE_KEYWORDS
   val existing = leadingWords.toSet()
-  val keywordNames =
-      (
-          declarationsFor(slot) +
-              STATEMENT_KEYWORDS +
-              EXPRESSION_KEYWORDS +
-              AFTER_BLOCK_KEYWORDS +
-              INFIX_KEYWORDS +
-              TYPE_ARGUMENT_KEYWORDS +
-              DELEGATION_KEYWORDS +
-              WHERE_KEYWORDS)
-          .toSet()
   val items =
       candidates
           .filterNot { it in existing }
@@ -240,7 +253,7 @@ internal fun keywordCompletionItems(
           .map { name ->
             CompletionItem(
                 ideLabel = name,
-                detail = if (name in keywordNames) "keyword" else "modifier",
+                detail = if (name in KEYWORD_NAMES) "keyword" else "modifier",
                 insertText = name,
                 insertTextFormat = InsertTextFormat.PLAIN_TEXT,
                 sortText = name,
@@ -266,16 +279,21 @@ internal fun keywordCompletionItems(
   return items.takeIf { it.isNotEmpty() }
 }
 
-private fun keywordSlot(element: PsiElement?): KeywordSlot? {
+private fun keywordContext(element: PsiElement?): KeywordContext? {
   var node: PsiElement? = element
   while (node != null && node !is PsiFile) {
     when (node) {
-      is KtBlockExpression -> return KeywordSlot.STATEMENT
-      is KtClassBody -> return KeywordSlot.MEMBER
+      is KtBlockExpression -> return KeywordContext(KeywordSlot.STATEMENT, bodyStart(node))
+      is KtClassBody -> return KeywordContext(KeywordSlot.MEMBER, bodyStart(node))
     }
     node = node.parent
   }
-  return if (element?.containingFile is KtFile) KeywordSlot.TOP_LEVEL else null
+  return if (element?.containingFile is KtFile) KeywordContext(KeywordSlot.TOP_LEVEL, 0) else null
+}
+
+private fun bodyStart(node: PsiElement): Int {
+  val brace = node.node?.findChildByType(KtTokens.LBRACE)
+  return if (brace != null) brace.startOffset + 1 else node.textRange?.startOffset ?: 0
 }
 
 private fun hasReceiverContext(element: PsiElement?): Boolean {
@@ -283,6 +301,36 @@ private fun hasReceiverContext(element: PsiElement?): Boolean {
   while (node != null && node !is PsiFile) {
     if (node is KtClassOrObject) return true
     if (node is KtCallableDeclaration && node.receiverTypeReference != null) return true
+    node = node.parent
+  }
+  return false
+}
+
+/** `where` only follows the type parameter and value parameter lists of a declaration. */
+private fun isWherePosition(element: PsiElement?, offset: Int): Boolean {
+  var node: PsiElement? = element
+  while (node != null && node !is PsiFile) {
+    when (node) {
+      is KtFunction -> {
+        if (node.typeParameterList == null) return false
+        val paramsEnd = node.valueParameterList?.textRange?.endOffset ?: return false
+        if (offset < paramsEnd) return false
+        val body = node.bodyExpression
+        return body == null || (body.textRange?.startOffset ?: Int.MAX_VALUE) >= offset
+      }
+      is KtClassOrObject -> {
+        if (node.typeParameterList == null) return false
+        val headerEnd =
+            node.primaryConstructor?.textRange?.endOffset
+                ?: node.typeParameterList?.textRange?.endOffset
+                ?: return false
+        if (offset < headerEnd) return false
+        val body = node.body
+        return body == null || (body.textRange?.startOffset ?: Int.MAX_VALUE) >= offset
+      }
+      is KtProperty -> return false
+      else -> Unit
+    }
     node = node.parent
   }
   return false
