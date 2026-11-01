@@ -10,7 +10,6 @@ import androidx.appcompat.widget.LinearLayoutCompat
 import androidx.core.view.isVisible
 import com.blankj.utilcode.util.SizeUtils
 import com.tom.rv2ide.R
-import com.tom.rv2ide.activities.editor.BaseEditorActivity
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.editor.databinding.LayoutCodeEditorBinding
@@ -197,15 +196,7 @@ class CodeEditorView(context: Context, file: File, selection: Range) :
 
   private fun ensureSearchLayout(): EditorSearchLayout {
     _binding ?: error("Binding has been destroyed")
-    return _searchLayout ?: EditorSearchLayout(context, binding.editor).apply {
-      setImeRouteProvider {
-        (context as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
-      }
-      setOnSearchVisibilityChangeListener { isVisible ->
-        val activity = context as? BaseEditorActivity ?: return@setOnSearchVisibilityChangeListener
-        activity.onEditorSearchVisibilityChanged(isVisible)
-      }
-    }.also { layout ->
+    return _searchLayout ?: EditorSearchLayout(context, binding.editor).also { layout ->
       _searchLayout = layout
       addView(layout, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
     }

@@ -25,9 +25,6 @@ import android.os.Looper
 import android.util.AttributeSet
 import android.view.inputmethod.EditorInfo
 import androidx.annotation.StringRes
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsCompat
 import com.blankj.utilcode.util.FileUtils
 import com.blankj.utilcode.util.SizeUtils
 import com.tom.rv2ide.common.logging.IdeLogConfig
@@ -128,9 +125,6 @@ constructor(
   private var _signatureHelpWindow: SignatureHelpWindow? = null
   private var _diagnosticWindow: DiagnosticWindow? = null
   private var _hoverWindow: HoverWindow? = null
-  internal var imeBottomInset: Int = 0
-    private set
-  private var imePopupRefreshPosted = false
   private var fileVersion = 0
   val currentDocumentVersion: Int
     get() = fileVersion
@@ -227,69 +221,11 @@ constructor(
   }
 
   init {
-    ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
-      updateImeBottomInset(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
-      insets
-    }
-    ViewCompat.setWindowInsetsAnimationCallback(
-        this,
-        object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
-        ) {
-          override fun onProgress(
-              insets: WindowInsetsCompat,
-              runningAnimations: MutableList<WindowInsetsAnimationCompat>,
-          ): WindowInsetsCompat {
-            updateImeBottomInset(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
-            return insets
-          }
-        },
-    )
-
-    ViewCompat.requestApplyInsets(this)
-
     run {
       editorFeatures.editor = this
       eventDispatcher.editor = this
       eventDispatcher.init(editorScope)
       initEditor()
-    }
-  }
-
-  internal fun updateImeBottomInset(bottom: Int) {
-    val normalizedBottom = bottom.coerceAtLeast(0)
-    if (imeBottomInset == normalizedBottom) {
-      return
-    }
-    imeBottomInset = normalizedBottom
-    if (!isAttachedToWindow || imePopupRefreshPosted) {
-      return
-    }
-    imePopupRefreshPosted = true
-
-    post {
-      imePopupRefreshPosted = false
-      if (isReleased) {
-        return@post
-      }
-      if (_hoverWindow?.isShowing == true) {
-        _hoverWindow?.displayWindow()
-      }
-      if (_signatureHelpWindow?.isShowing == true) {
-        _signatureHelpWindow?.displayWindow()
-      }
-      if (_diagnosticWindow?.isShowing == true) {
-        _diagnosticWindow?.displayWindow()
-      }
-      if (_actionsMenu?.isShowing == true) {
-        _actionsMenu?.displayWindow()
-      }
-      runCatching {
-        val completion = getComponent(EditorAutoCompletion::class.java)
-        if (completion.isShowing) {
-          (completion as? EditorCompletionWindow)?.updateCompletionWindowPosition(false)
-        }
-      }
     }
   }
 
@@ -526,7 +462,6 @@ constructor(
   }
 
   override fun release() {
-    imePopupRefreshPosted = false
     ensureWindowsDismissed()
     cleanupHoverTooltips()
 

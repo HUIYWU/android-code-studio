@@ -72,7 +72,6 @@ import java.util.stream.Collectors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import android.view.WindowManager
-import com.google.android.material.bottomsheet.BottomSheetBehavior
 
 /** @author Akash Yadav
  * Modifications by
@@ -116,7 +115,6 @@ abstract class ProjectHandlerActivity : BaseEditorActivity() {
 
     /** Stores [wasInitializing]. The string value is kept unchanged for state-bundle compatibility. */
     const val STATE_KEY_WAS_INITIALIZING = "ide.editor.isInitializing"
-    private const val BOTTOM_SHEET_HIDE_REASON_FIND_DIALOG = "find_in_project_dialog"
   }
 
   abstract fun doCloseAll(runAfter: () -> Unit)
@@ -846,14 +844,6 @@ fun initializeProject(buildVariants: Map<String, String>) {
     builder.setNegativeButton(android.R.string.cancel) { dialog, _ -> dialog.dismiss() }
     
     mFindInProjectDialog = builder.create()
-
-    mFindInProjectDialog?.setOnShowListener {
-      requestBottomSheetHeaderHide(BOTTOM_SHEET_HIDE_REASON_FIND_DIALOG)
-    }
-
-    mFindInProjectDialog?.setOnDismissListener {
-      releaseBottomSheetHeaderHide(BOTTOM_SHEET_HIDE_REASON_FIND_DIALOG)
-    }
 
     return mFindInProjectDialog
   }

@@ -6,6 +6,10 @@
 
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
+import com.tom.rv2ide.lsp.models.MarkupContent
+import com.tom.rv2ide.lsp.models.ParameterInformation
+import com.tom.rv2ide.lsp.models.SignatureHelp
+import com.tom.rv2ide.lsp.models.SignatureInformation
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.render
 import org.jetbrains.kotlin.analysis.api.components.resolveToCall
@@ -15,9 +19,14 @@ import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
 import org.jetbrains.kotlin.analysis.api.resolution.successfulFunctionCallOrNull
 import org.jetbrains.kotlin.analysis.api.signatures.KaVariableSignature
 import org.jetbrains.kotlin.analysis.api.symbols.KaValueParameterSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaVariableSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.name
 import org.jetbrains.kotlin.analysis.api.types.KaClassType
+import org.jetbrains.kotlin.analysis.api.types.KaFunctionType
 import org.jetbrains.kotlin.psi.KtCallElement
+import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtQualifiedExpression
+import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
 
 internal data class SignatureCallCandidate(
@@ -34,6 +43,45 @@ internal fun KaSession.resolveSignatureCallCandidates(callElement: KtCallElement
 
 internal fun KaSession.resolveSingleSignatureCall(callElement: KtCallElement): KaFunctionCall<*>? =
     callElement.resolveToCall()?.successfulFunctionCallOrNull()
+
+internal fun KaSession.extensionFunctionValueSignature(
+    file: KtFile,
+    callElement: KtCallElement,
+    offset: Int,
+): SignatureHelp? {
+  val qualified = callElement.parent as? KtQualifiedExpression ?: return null
+  if (qualified.selectorExpression != callElement) return null
+  val callee = callElement.calleeExpression as? KtSimpleNameExpression ?: return null
+  val calleeOffset = callee.textRange?.startOffset ?: return null
+  val symbol = (resolveOrdinaryTargetAt(file, calleeOffset) as? KotlinSemanticTargetResolution.Unique)?.symbol
+      ?: return null
+  val variable = symbol as? KaVariableSymbol ?: return null
+  val functionType = runCatching { variable.returnType as? KaFunctionType }.getOrNull() ?: return null
+  if (!functionType.hasReceiver) return null
+  val receiverType = functionType.receiverType ?: return null
+  val receiverLabel =
+      runCatching { receiverType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT) }
+          .getOrNull()
+  val labels =
+      functionType.parameters.mapIndexed { index, parameter ->
+        val name = parameter.name?.asString() ?: "p${index + 1}"
+        val type =
+            runCatching { parameter.type.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT) }
+                .getOrNull() ?: "?"
+        "$name: $type"
+      }
+  val name = callee.getReferencedName() ?: callee.text
+  val prefix = if (receiverLabel.isNullOrEmpty()) "" else "$receiverLabel."
+  val signature =
+      SignatureInformation(
+          "$prefix$name(${labels.joinToString(", ")})",
+          MarkupContent(),
+          labels.map { ParameterInformation(it, MarkupContent()) },
+      )
+  val argumentIndex = signatureArgumentIndex(callElement, offset)
+  val activeParameter = if (labels.isEmpty()) 0 else argumentIndex.coerceIn(0, labels.lastIndex)
+  return SignatureHelp(listOf(signature), 0, activeParameter)
+}
 
 internal fun KaSession.signatureDisplayName(callElement: KtCallElement, call: KaFunctionCall<*>): String {
   val symbol = call.signature.symbol

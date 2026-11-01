@@ -33,10 +33,8 @@ import android.text.method.LinkMovementMethod
 import android.text.style.ClickableSpan
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.view.ViewTreeObserver.OnGlobalLayoutListener
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import com.tom.rv2ide.common.logging.IdeLogConfig
@@ -50,8 +48,6 @@ import androidx.collection.MutableIntObjectMap
 import androidx.core.graphics.Insets
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.core.view.GravityCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
@@ -74,12 +70,7 @@ import com.google.android.material.tabs.TabLayout
 import com.google.android.material.tabs.TabLayout.Tab
 import com.tom.rv2ide.R
 import com.tom.rv2ide.R.string
-import com.tom.rv2ide.actions.ActionData
 import com.tom.rv2ide.actions.ActionItem.Location.EDITOR_FILE_TABS
-import com.tom.rv2ide.actions.ActionItem.Location.EDITOR_TOOLBAR
-import com.tom.rv2ide.actions.ActionsRegistry
-import com.tom.rv2ide.actions.etc.TextActionMenuAction
-import com.tom.rv2ide.actions.internal.DefaultActionsRegistry
 import com.tom.rv2ide.adapters.DiagnosticsAdapter
 import com.tom.rv2ide.adapters.SearchListAdapter
 import com.tom.rv2ide.app.EdgeToEdgeIDEActivity
@@ -108,7 +99,6 @@ import com.tom.rv2ide.tasks.cancelIfActive
 import com.tom.rv2ide.templates.android.etc.NativeCpp.Check
 import com.tom.rv2ide.ui.CodeEditorView
 import com.tom.rv2ide.ui.ContentTranslatingDrawerLayout
-import com.tom.rv2ide.ui.EditorQuickInputOverlayController
 import com.tom.rv2ide.ui.MemoryUsageLineChartRenderer
 import com.tom.rv2ide.ui.SwipeRevealLayout
 import com.tom.rv2ide.uidesigner.UIDesignerActivity
@@ -163,9 +153,6 @@ abstract class BaseEditorActivity :
   protected var editorBottomSheet: BottomSheetBehavior<out View?>? = null
   protected val memoryUsageWatcher = MemoryUsageWatcher()
   private val pidToDatasetMap = MutableIntObjectMap<LineDataSet>()
-  private val bottomSheetHeaderHideReasons = mutableSetOf<String>()
-  private var bottomSheetCardVisibilitySnapshot: Int = View.VISIBLE
-  private var bottomSheetHeaderVisibilitySnapshot: Int = View.VISIBLE
 
   private var autoSaveCoroutineJob: Job? = null
   private val autoSaveMutex = Mutex()
@@ -197,15 +184,9 @@ abstract class BaseEditorActivity :
   override val subscribeToEvents: Boolean
     get() = true
 
-  private var quickInputOverlayController: EditorQuickInputOverlayController? = null
-
   private val onBackPressedCallback: OnBackPressedCallback =
       object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
-          if (quickInputOverlayController?.handleBackPress() == true) {
-            content.bottomSheet.setQuickInputOverlayActive(false)
-            return
-          }
           if (binding.root.isDrawerOpen(GravityCompat.START)) {
             binding.root.closeDrawer(GravityCompat.START)
           } else if (editorBottomSheet?.state != BottomSheetBehavior.STATE_COLLAPSED) {
@@ -314,11 +295,7 @@ abstract class BaseEditorActivity :
         }
   }
 
-  private var isBottomSheetImeVisible = false
-  // While the sidebar owns the current IME session, the bottom sheet must not be notified about
-  // it; only a session that starts after the route is released may drive the sheet again.
-  private var sidebarImeSession = false
-  private var sidebarWasFocused = false
+  private var isImeVisible = false
   private var contentCardRealHeight: Int? = null
 
   private val editorSurfaceContainerBackground by lazy { resolveAttr(R.attr.colorSurfaceDim) }
@@ -342,8 +319,7 @@ abstract class BaseEditorActivity :
     const val EDITOR_CONTAINER_SCALE_FACTOR = 0.87f
     const val KEY_BOTTOM_SHEET_SHOWN = "editor_bottomSheetShown"
     const val KEY_STRING_EXT_HELPER = "editor_stringExtHelper"
-    const val KEY_PROJECT_PATH = "saved_projectPath"
-    private const val BOTTOM_SHEET_HIDE_REASON_EDITOR_SEARCH = "editor_search_overlay"
+    private const val KEY_PROJECT_PATH = "saved_projectPath"
   }
 
   protected abstract fun provideCurrentEditor(): CodeEditorView?
@@ -683,79 +659,38 @@ abstract class BaseEditorActivity :
   }
   override fun onApplyWindowInsets(insets: WindowInsetsCompat) {
     super.onApplyWindowInsets(insets)
-    if (contentCardRealHeight == null) {
-      return
-    }
-    updateImeState(insets, currentFocus)
-  }
+    val height = contentCardRealHeight ?: return
+    val imeInsets = insets.getInsets(WindowInsetsCompat.Type.ime())
 
-  private fun updateImeState(insets: WindowInsetsCompat, focusedView: View?) {
-    val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-    val imeVisible = imeBottom > 0
-    val sidebarInputFocused = isSidebarInputFocused(focusedView)
-    if (sidebarInputFocused && imeVisible) {
-      sidebarImeSession = true
+    _binding?.content?.bottomSheet?.setImeVisible(imeInsets.bottom > 0)
+    _binding?.contentCard?.updateLayoutParams<ViewGroup.LayoutParams> {
+      this.height = height - imeInsets.bottom
     }
-    if (!imeVisible) {
-      sidebarImeSession = false
-    }
-    val sidebarImeOwner = sidebarInputFocused || sidebarImeSession
 
-    // Decide the sidebar route release on a focus edge instead of per-frame inset values: the
-    // IME exit animation keeps sidebarImeSession alive until the final imeBottom=0 frame, which
-    // is indistinguishable from an already-closed IME by that frame. The focus edge carries the
-    // actual IME state at the moment the sidebar lost focus.
-    if (sidebarInputFocused && !sidebarWasFocused) {
-      _binding?.content?.bottomSheet?.onSidebarFocusGained()
-    } else if (!sidebarInputFocused && sidebarWasFocused) {
-      _binding?.content?.bottomSheet?.onSidebarFocusLost(imeVisible)
-    }
-    sidebarWasFocused = sidebarInputFocused
-    val bottomSheetImeVisible = imeVisible && !sidebarImeOwner
-    val bottomSheetImeStateChanged =
-        !sidebarImeOwner && this.isBottomSheetImeVisible != bottomSheetImeVisible
-
-    // Keep the editor window stable while each actual bottom slot consumes the IME animation in
-    // its own host. The route is confirmed per frame here, but never released here; release is
-    // decided by the focus edge above and the bottom sheet's IME exit onEnd.
-    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-    _binding?.content?.bottomSheet?.setImeRoutedToSidebar(sidebarImeOwner)
-
-    if (bottomSheetImeStateChanged) {
-      this.isBottomSheetImeVisible = bottomSheetImeVisible
-      _binding?.content?.bottomSheet?.setImeVisible(bottomSheetImeVisible)
-      onSoftInputChanged(bottomSheetImeVisible)
+    val isImeVisible = imeInsets.bottom > 0
+    if (this.isImeVisible != isImeVisible) {
+      this.isImeVisible = isImeVisible
+      onSoftInputChanged()
     }
   }
 
-  /** Returns whether [focusedView] belongs to the editor activity's sidebar. */
-  private fun isSidebarInputFocused(focusedView: View?): Boolean {
-    val sidebar = _binding?.drawerSidebar ?: return false
-    var view = focusedView
-    while (view != null) {
-      if (view === sidebar) {
-        return true
-      }
-      view = view.parent as? View
-    }
-    return false
-  }
-
-
-override fun onApplySystemBarInsets(insets: Insets) {
+  override fun onApplySystemBarInsets(insets: Insets) {
     super.onApplySystemBarInsets(insets)
     this._binding?.apply {
-      drawerSidebar.getFragment<EditorSidebarFragment>().onApplyWindowInsets(insets)
+      drawerSidebar.getFragment<EditorSidebarFragment>()
+        .onApplyWindowInsets(insets)
 
       content.apply {
-        // editorAppBarLayout.updatePadding(top = insets.top)  // THIS IS THE PROBLEM!
+        editorAppBarLayout.updatePadding(
+          top = insets.top
+        )
         editorToolbar.updatePaddingRelative(
-            start = insets.left,
-            end = insets.right,
+          start = editorToolbar.paddingStart + insets.left,
+          end = editorToolbar.paddingEnd + insets.right
         )
       }
     }
-}
+  }
 
   @Subscribe(threadMode = MAIN)
   open fun onInstallationResult(event: InstallationResultEvent) {
@@ -779,12 +714,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    // The editor window must never be resized by the IME; each bottom slot (sheet / terminal /
-    // editor search) consumes the IME inset itself.
-    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-    enableEdgeToEdge()
-    WindowCompat.setDecorFitsSystemWindows(window, false)
-
     this.optionsMenuInvalidator = Runnable { super.invalidateOptionsMenu() }
 
     registerLanguageServers(this)
@@ -807,29 +736,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
     setupContainers()
     setupDiagnosticInfo()
 
-    binding.root.viewTreeObserver.addOnGlobalFocusChangeListener { _, newFocus ->
-      // This listener can still fire while the Activity is tearing down (e.g. a theme-driven
-      // relaunch clears the focused fragment view during destroy); guard the binding instead
-      // of using the non-null getter, which would throw here.
-      val root = _binding?.root ?: return@addOnGlobalFocusChangeListener
-      if (contentCardRealHeight == null) {
-        return@addOnGlobalFocusChangeListener
-      }
-      val rootInsets = root.rootWindowInsets ?: return@addOnGlobalFocusChangeListener
-      updateImeState(WindowInsetsCompat.toWindowInsetsCompat(rootInsets), newFocus)
-    }
-
-    ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, windowInsets ->
-        val systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-
-        binding.content.editorToolbar.updatePaddingRelative(
-            start = systemBars.left,
-            end = systemBars.right,
-        )
-        windowInsets
-    }
-    
-    
     uiDesignerResultLauncher =
         registerForActivityResult(StartActivityForResult(), this::handleUiDesignerResult)
 
@@ -1247,48 +1153,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
     content.bottomSheet.refreshSymbolInput(editor)
   }
 
-  protected fun requestBottomSheetHeaderHide(reason: String) {
-    runOnUiThread {
-      if (_binding == null) {
-        return@runOnUiThread
-      }
-      val wasAdded = bottomSheetHeaderHideReasons.add(reason)
-      if (!wasAdded || bottomSheetHeaderHideReasons.size > 1) {
-        return@runOnUiThread
-      }
-      val bottomSheetBinding = content.bottomSheet.binding
-      bottomSheetCardVisibilitySnapshot = bottomSheetBinding.cardView.visibility
-      bottomSheetHeaderVisibilitySnapshot = bottomSheetBinding.headerContainer.visibility
-      bottomSheetBinding.cardView.visibility = View.INVISIBLE
-      bottomSheetBinding.headerContainer.visibility = View.INVISIBLE
-      content.bottomSheet.setExternallyHeaderHidden(true)
-    }
-  }
-
-  protected fun releaseBottomSheetHeaderHide(reason: String) {
-    runOnUiThread {
-      if (_binding == null) {
-        return@runOnUiThread
-      }
-      val wasRemoved = bottomSheetHeaderHideReasons.remove(reason)
-      if (!wasRemoved || bottomSheetHeaderHideReasons.isNotEmpty()) {
-        return@runOnUiThread
-      }
-      val bottomSheetBinding = content.bottomSheet.binding
-      bottomSheetBinding.cardView.visibility = bottomSheetCardVisibilitySnapshot
-      bottomSheetBinding.headerContainer.visibility = bottomSheetHeaderVisibilitySnapshot
-      content.bottomSheet.setExternallyHeaderHidden(false)
-    }
-  }
-
-  fun onEditorSearchVisibilityChanged(isVisible: Boolean) {
-    if (isVisible) {
-      requestBottomSheetHeaderHide(BOTTOM_SHEET_HIDE_REASON_EDITOR_SEARCH)
-    } else {
-      releaseBottomSheetHeaderHide(BOTTOM_SHEET_HIDE_REASON_EDITOR_SEARCH)
-    }
-  }
-
   private fun checkIsDestroying() {
     if (!isDestroying && isFinishing) {
       isDestroying = true
@@ -1384,13 +1248,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
 
     setupNoEditorView()
     setupBottomSheet()
-    ViewCompat.setOnApplyWindowInsetsListener(content.bottomSheet) { v, windowInsets ->
-      val systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-
-      v.updatePadding(bottom = systemBars.bottom)
-
-      windowInsets
-    }
     if (
         !app.prefManager.getBoolean(KEY_BOTTOM_SHEET_SHOWN) &&
             editorBottomSheet?.state != BottomSheetBehavior.STATE_EXPANDED
@@ -1457,59 +1314,12 @@ override fun onApplySystemBarInsets(insets: Insets) {
     sb.append('\n')
   }
 
-  /** Executes a quick-panel action through the existing Edit-menu action instance. */
-  private fun executeQuickInputAction(actionId: String) {
-    val editorView = provideCurrentEditor() ?: return
-    val registry = ActionsRegistry.getInstance()
-    val textMenu =
-        registry.findAction(EDITOR_TOOLBAR, "ide.editor.text.actions") as? TextActionMenuAction
-            ?: return
-    val action = textMenu.findAction(actionId) ?: return
-    val data = ActionData().apply {
-      put(Context::class.java, this@BaseEditorActivity)
-      put(CodeEditorView::class.java, editorView)
-      put(IDEEditor::class.java, editorView.editor)
-      put(File::class.java, editorView.file)
-    }
-
-    action.prepare(data)
-    if (!action.visible || !action.enabled) {
-      return
-    }
-    (registry as? DefaultActionsRegistry)?.executeAction(action, data)
-  }
-
   private fun setupBottomSheet() {
-    quickInputOverlayController = EditorQuickInputOverlayController(content.quickInputOverlayHost).apply {
-      onHandoffProgress = { progress ->
-        content.bottomSheet.setQuickInputOverlayHandoffProgress(progress)
-      }
-      onHidden = {
-        content.bottomSheet.setQuickInputOverlayActive(false)
-      }
-      onQuickInputActionClick = ::executeQuickInputAction
-    }
-    content.bottomSheet.onQuickInputActionClick = ::executeQuickInputAction
-    // The bottom sheet decides which path is active.
-    // This layer connects the UP path to the overlay controller so the in-container path and the overlay path
-    // remain separate and can evolve independently.
-    content.bottomSheet.requestHideQuickInputOverlay = {
-      quickInputOverlayController?.hide(true)
-    }
-    content.bottomSheet.requestShowQuickInputOverlay = request@{
-      val editor = content.bottomSheet.getCurrentQuickInputEditor() ?: provideCurrentEditor() ?: return@request
-      content.bottomSheet.setQuickInputOverlayHandoffProgress(0f)
-      quickInputOverlayController?.showFrom(content.bottomSheet.getQuickInputAnchorView(), editor)
-      content.bottomSheet.setQuickInputOverlayActive(true)
-    }
-
     editorBottomSheet = BottomSheetBehavior.from<View>(content.bottomSheet)
     editorBottomSheet?.addBottomSheetCallback(
         object : BottomSheetCallback() {
           override fun onStateChanged(bottomSheet: View, newState: Int) {
-            content.bottomSheet.onStateChanged(newState)
             if (newState == BottomSheetBehavior.STATE_EXPANDED) {
-              quickInputOverlayController?.hide(false)
               val editor = provideCurrentEditor()
               editor?.editor?.ensureWindowsDismissed()
             }
@@ -1518,9 +1328,6 @@ override fun onApplySystemBarInsets(insets: Insets) {
           override fun onSlide(bottomSheet: View, slideOffset: Float) {
             content.apply {
               val editorScale = 1 - slideOffset * (1 - EDITOR_CONTAINER_SCALE_FACTOR)
-              if (quickInputOverlayController?.isVisible() == true) {
-                quickInputOverlayController?.hide(false)
-              }
               this.bottomSheet.onSlide(slideOffset)
               this.viewContainer.scaleX = editorScale
               this.viewContainer.scaleY = editorScale
@@ -1544,7 +1351,7 @@ override fun onApplySystemBarInsets(insets: Insets) {
         }
 
     content.apply {
-      bottomSheet.setOffsetAnchor(editorAppBarLayout, excludedChild = tabs)
+      bottomSheet.setOffsetAnchor(editorAppBarLayout)
       viewContainer.viewTreeObserver.addOnGlobalLayoutListener(observer)
     }
   }
@@ -1564,13 +1371,10 @@ override fun onApplySystemBarInsets(insets: Insets) {
     handleSearchResultVisibility(true)
   }
 
-  private fun onSoftInputChanged(editorImeVisible: Boolean) {
+  private fun onSoftInputChanged() {
     if (!isDestroying) {
       invalidateOptionsMenu()
-      if (!editorImeVisible) {
-        quickInputOverlayController?.hide(false)
-      }
-      content.bottomSheet.onSoftInputChanged(editorImeVisible)
+      content.bottomSheet.onSoftInputChanged()
     }
   }
 

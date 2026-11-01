@@ -150,6 +150,38 @@ class KotlinAnalysisSignatureHelpTest {
   }
 
   @Test
+  fun signatureHelpForExtensionFunctionTypeValue() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/SignatureValue.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useSignatureValue() {
+            val sum: Int.(Int) -> Int = { other -> this + other }
+            5.sum()
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val callOffset = content.indexOf("sum(")
+          assertTrue(callOffset >= 0)
+          val help = requireNotNull(runAnalysis {
+            runtime.signatureHelp(diskRequest(file, content, "sum(", offset = callOffset))
+          })
+          val signature = help.signatures.single()
+          assertEquals("Int.sum(p1: Int)", signature.label)
+          assertEquals("p1: Int", signature.parameters.single().label)
+          assertEquals(0, help.activeParameter)
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun extensionReceiverPrefixesSignatureLabel() {
     withWorkspace {
       val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/SignatureExtension.kt")

@@ -19,12 +19,17 @@ import org.jetbrains.kotlin.analysis.api.components.compositeScope
 import org.jetbrains.kotlin.analysis.api.components.defaultTypeWithStarProjections
 import org.jetbrains.kotlin.analysis.api.components.withNullability
 import org.jetbrains.kotlin.analysis.api.symbols.KaCallableSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaLocalVariableSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaNamedClassSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaPropertySymbol
 import org.jetbrains.kotlin.analysis.api.types.KaFlexibleType
+import org.jetbrains.kotlin.analysis.api.types.KaFunctionType
 import org.jetbrains.kotlin.analysis.api.types.KaTypeParameterType
 import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
 import org.jetbrains.kotlin.analysis.api.signatures.KaCallableSignature
 import org.jetbrains.kotlin.analysis.api.signatures.KaFunctionSignature
 import org.jetbrains.kotlin.analysis.api.symbols.KaClassSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaClassKind
 import org.jetbrains.kotlin.analysis.api.types.KaClassType
 import org.jetbrains.kotlin.analysis.api.types.KaType
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
@@ -53,6 +58,18 @@ internal sealed interface CompletionTarget {
 }
 
 internal fun resolveCompletionTarget(offset: Int, element: PsiElement?): CompletionTarget {
+  val primary = resolveCompletionTargetFrom(offset, element)
+  if (primary !is CompletionTarget.Lexical) return primary
+  // At a closing delimiter the caret leaf is outside the preceding type/expression subtree.
+  val previousLeaf = element?.containingFile?.findElementAt(offset - 1) ?: return primary
+  val secondary = resolveCompletionTargetFrom(offset, previousLeaf)
+  return if (secondary is CompletionTarget.Lexical) primary else secondary
+}
+
+private fun resolveCompletionTargetFrom(offset: Int, element: PsiElement?): CompletionTarget {
+  if (element != null && isInsideImportOrPackageDirective(element)) {
+    return CompletionTarget.PackageOrImport
+  }
   var node: PsiElement? = element
   if (node is PsiWhiteSpace) {
     // A whitespace's sibling may be the enclosing declaration, which would skip the initializer
@@ -61,6 +78,7 @@ internal fun resolveCompletionTarget(offset: Int, element: PsiElement?): Complet
     node = previousLeaf ?: node.prevSibling ?: node
   }
   while (node != null && node !is PsiFile) {
+    if (isInsideImportOrPackageDirective(node)) return CompletionTarget.PackageOrImport
     when (node) {
       is KtImportDirective, is KtPackageDirective -> return CompletionTarget.PackageOrImport
       is KtFunctionLiteral -> return adjacentDotReceiver(offset, node) ?: CompletionTarget.Lexical
@@ -78,6 +96,15 @@ internal fun resolveCompletionTarget(offset: Int, element: PsiElement?): Complet
   }
   // Fallback for incomplete code where the parser exposes no usable qualified expression.
   return adjacentDotReceiver(offset, element) ?: CompletionTarget.Lexical
+}
+
+private fun isInsideImportOrPackageDirective(element: PsiElement): Boolean {
+  var parent: PsiElement? = element.parent
+  while (parent != null && parent !is PsiFile) {
+    if (parent is KtImportDirective || parent is KtPackageDirective) return true
+    parent = parent.parent
+  }
+  return false
 }
 
 // Handles both a bare trailing dot and a dot followed by a partially typed selector.
@@ -158,15 +185,63 @@ internal fun KaSession.receiverCompletionItems(
     }
   }
   if (remaining > 0) {
+    val receiverStart = target.receiver.textRange?.startOffset
+    val receiverResolution = receiverStart?.let {
+      resolveOrdinaryTargetAt(target.receiver.containingKtFile, it)
+    }
+    val receiverClass = (receiverResolution as? KotlinSemanticTargetResolution.Unique)?.symbol as? KaClassSymbol
+    if (receiverClass != null) {
+      if (receiverClass.classKind == KaClassKind.ENUM_CLASS) {
+        val staticScope = receiverClass.staticMemberScope
+        for (symbol in staticScope.callables(nameFilter)) {
+          cancelChecker.abortIfCancelled()
+          if (remaining <= 0) break
+          add(completionItemFor(symbol, prefix))
+        }
+        if (remaining > 0) {
+          for (classifier in staticScope.classifiers(nameFilter)) {
+            cancelChecker.abortIfCancelled()
+            if (remaining <= 0) break
+            add(completionItemFor(classifier, prefix))
+          }
+        }
+      }
+      val companion = (receiverClass as? KaNamedClassSymbol)?.companionObject
+      if (companion != null && remaining > 0) {
+        val companionScope = companion.memberScope
+        for (symbol in companionScope.callables(nameFilter)) {
+          cancelChecker.abortIfCancelled()
+          if (remaining <= 0) break
+          add(completionItemFor(symbol, prefix))
+        }
+        if (remaining > 0) {
+          for (classifier in companionScope.classifiers(nameFilter)) {
+            cancelChecker.abortIfCancelled()
+            if (remaining <= 0) break
+            add(completionItemFor(classifier, prefix))
+          }
+        }
+      }
+    }
+  }
+  if (remaining > 0) {
     val compositeScope = target.receiver.containingKtFile.scopeContext(target.receiver).compositeScope()
     for (symbol in compositeScope.callables(nameFilter)) {
       cancelChecker.abortIfCancelled()
       if (remaining <= 0) break
       val callable = symbol as? KaCallableSymbol ?: continue
-      if (!callable.isExtension) continue
-      val extensionReceiverType = callable.receiverParameter?.returnType ?: continue
-      if (!isExtensionReceiverApplicable(effectiveType, extensionReceiverType)) continue
-      add(completionItemFor(symbol, prefix))
+      if (callable.isExtension) {
+        val extensionReceiverType = callable.receiverParameter?.returnType ?: continue
+        if (!isExtensionReceiverApplicable(effectiveType, extensionReceiverType)) continue
+        add(completionItemFor(symbol, prefix))
+        continue
+      }
+      if (callable !is KaPropertySymbol && callable !is KaLocalVariableSymbol) continue
+      val functionType = runCatching { callable.returnType as? KaFunctionType }.getOrNull() ?: continue
+      if (!functionType.hasReceiver) continue
+      val functionReceiverType = functionType.receiverType ?: continue
+      if (!isExtensionReceiverApplicable(effectiveType, functionReceiverType)) continue
+      add(completionItemFor(symbol, prefix, forceCallSnippet = true))
     }
   }
   return items.distinctBy { it.ideLabel to it.completionKind }.take(COMPLETION_BUDGET)

@@ -27,19 +27,13 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.tom.rv2ide.R;
 import com.tom.rv2ide.databinding.LayoutSymbolItemBinding;
 import com.tom.rv2ide.editor.ui.IDEEditor;
-import com.tom.rv2ide.models.ActionQuickItem;
-import com.tom.rv2ide.models.EditorQuickItem;
-import com.tom.rv2ide.models.SymbolQuickItem;
+import com.tom.rv2ide.models.Symbol;
 import io.github.rosemoe.sora.widget.SelectionMovement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.VH> {
-
-  public interface ActionClickListener {
-    void onActionClick(String actionId);
-  }
 
   private static final List<Character> pairs;
 
@@ -54,45 +48,38 @@ public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.
   }
 
   private IDEEditor editor;
-  private final List<EditorQuickItem> items;
-  private final ActionClickListener actionClickListener;
+  private final List<Symbol> symbols;
 
   public SymbolInputAdapter(IDEEditor editor) {
-    this(editor, null, null);
+    this(editor, null);
   }
 
-  public SymbolInputAdapter(IDEEditor editor, List<EditorQuickItem> items) {
-    this(editor, items, null);
-  }
-
-  public SymbolInputAdapter(
-      IDEEditor editor, List<EditorQuickItem> items, ActionClickListener actionClickListener) {
+  public SymbolInputAdapter(IDEEditor editor, List<Symbol> symbols) {
     this.editor = editor;
-    this.items = new ArrayList<>();
-    this.actionClickListener = actionClickListener;
-    this.updateItems(items);
+    this.symbols = new ArrayList<>();
+    this.updateItems(symbols);
   }
 
-  private void updateItems(List<EditorQuickItem> items) {
-    if (items == null) {
+  private void updateItems(List<Symbol> symbols) {
+    if (symbols == null) {
       return;
     }
 
-    this.items.clear();
-    this.items.addAll(items);
-    this.items.removeIf(Objects::isNull);
+    this.symbols.clear();
+    this.symbols.addAll(symbols);
+    this.symbols.removeIf(Objects::isNull);
   }
 
   @SuppressLint("NotifyDataSetChanged")
-  public void refresh(IDEEditor editor, List<EditorQuickItem> newItems) {
+  public void refresh(IDEEditor editor, List<Symbol> newSymbols) {
     this.editor = Objects.requireNonNull(editor);
 
-    if (this.items.equals(newItems)) {
-      // no need to update items
+    if (this.symbols.equals(newSymbols)) {
+      // no need to update symbols
       return;
     }
 
-    updateItems(newItems);
+    updateItems(newSymbols);
     notifyDataSetChanged();
   }
 
@@ -105,24 +92,17 @@ public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.
 
   @Override
   public void onBindViewHolder(@NonNull VH holder, int position) {
-    final EditorQuickItem item = items.get(position);
-    holder.binding.symbol.setText(item.getLabel());
+    final Symbol symbol = symbols.get(position);
+    holder.binding.symbol.setText(symbol.getLabel());
     holder.binding.symbol.setTextColor(
         resolveAttr(holder.binding.symbol.getContext(), R.attr.colorOnSurface));
     holder.binding.symbol.setOnClickListener(
-        __ -> {
-          if (item instanceof SymbolQuickItem) {
-            final var symbol = (SymbolQuickItem) item;
-            insertSymbol(symbol.getCommit(), symbol.getOffset());
-          } else if (item instanceof ActionQuickItem && actionClickListener != null) {
-            actionClickListener.onActionClick(((ActionQuickItem) item).getActionId());
-          }
-        });
+        __ -> insertSymbol(symbol.getCommit(), symbol.getOffset()));
   }
 
   @Override
   public int getItemCount() {
-    return items.size();
+    return symbols.size();
   }
 
   void insertSymbol(String text, int selectionOffset) {

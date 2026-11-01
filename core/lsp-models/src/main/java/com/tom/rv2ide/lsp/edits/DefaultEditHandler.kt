@@ -172,6 +172,17 @@ open class DefaultEditHandler : IEditHandler {
     }
     editor.snippetController.startSnippet(actionIndex, snippet, selectedText)
 
+    text.beginBatchEdit()
+    try {
+      if (item.additionalEditHandler != null) {
+        item.additionalEditHandler!!.performEdits(item, editor, text, line, column, index)
+      } else if (item.additionalTextEdits != null && item.additionalTextEdits!!.isNotEmpty()) {
+        RewriteHelper.performEdits(item.additionalTextEdits!!, editor)
+      }
+    } finally {
+      text.endBatchEdit()
+    }
+
     if (snippetDescription.allowCommandExecution) {
       executeCommand(editor, item.command)
     }

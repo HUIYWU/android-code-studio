@@ -20,94 +20,46 @@
 <RelativeLayout
   xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:tools="http://schemas.android.com/tools"
-  xmlns:app="http://schemas.android.com/apk/res-auto"
   android:layout_width="match_parent"
   android:layout_height="match_parent"
-  android:clipChildren="false"
-  android:clipToPadding="false"
-  android:translationY="-4dp"
-  >
+  android:background="?attr/colorSurface">
 
-  <LinearLayout
-    android:id="@+id/quick_input_shell"
+  <include
+    android:id="@+id/border"
+    layout="@layout/layout_divider_horizontal"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:layout_marginLeft="16dp"
-    android:layout_marginRight="16dp"
-    android:clipChildren="false"
-    android:clipToPadding="false"
-    android:gravity="center_vertical"
-    android:orientation="horizontal">
+    android:layout_marginBottom="2dp"
+    android:layout_height="0.5dp"
+    android:layout_alignParentTop="true" />
 
-    <Space
-      android:id="@+id/quick_input_leading_space"
-      android:layout_width="40dp"
-      android:layout_height="1dp"
-      android:visibility="gone" />
+  <ViewFlipper
+    android:id="@+id/header_container"
+    android:layout_width="match_parent"
+    android:layout_below="@id/border"
+    android:layout_height="@dimen/editor_sheet_collapsed_height"
+    android:background="?attr/colorSurface">
 
-    <com.google.android.material.card.MaterialCardView
-      android:id="@+id/cardView"
-      android:layout_width="0dp"
-      android:layout_height="wrap_content"
-      android:layout_weight="1"
-      app:cardCornerRadius="24dp"
-      app:strokeWidth="0dp"
-      app:cardElevation="0dp"
-      app:cardBackgroundColor="?attr/colorSurface">
+    <include
+      layout="@layout/layout_editor_build_status"
+      android:id="@+id/build_status"/>
 
-      <eightbitlab.com.blurview.BlurView
-        android:id="@+id/blurView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-        
-        <ViewFlipper
-          android:id="@+id/header_container"
-          android:layout_width="match_parent"
-          android:layout_height="@dimen/editor_sheet_collapsed_height"
-          android:background="@android:color/transparent">
+    <com.tom.rv2ide.ui.SymbolInputView
+      android:id="@+id/symbol_input"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"/>
 
-          <include
-            layout="@layout/layout_editor_build_status"
-            android:id="@+id/build_status"/>
+    <include
+      layout="@layout/layout_editor_bottom_action"
+      android:id="@+id/bottom_action"/>
 
-          <com.tom.rv2ide.ui.SymbolInputView
-            android:id="@+id/symbol_input"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"/>
-
-          <include
-            layout="@layout/layout_editor_bottom_action"
-            android:id="@+id/bottom_action"/>
-
-        </ViewFlipper>
-      </eightbitlab.com.blurview.BlurView>
-
-    </com.google.android.material.card.MaterialCardView>
-
-    <ImageView
-      android:id="@+id/quick_input_toggle"
-      android:layout_width="36dp"
-      android:layout_height="36dp"
-      android:layout_gravity="top"
-      android:layout_marginStart="4dp"
-      android:layout_marginTop="10dp"
-      android:background="@drawable/bg_quick_input_toggle"
-      android:clickable="true"
-      android:focusable="true"
-      android:padding="10dp"
-      android:scaleType="centerInside"
-      android:src="@drawable/ic_arrow_right"
-      android:tint="?attr/colorOnSurface"
-      android:visibility="gone" />
-
-  </LinearLayout>
+  </ViewFlipper>
 
   <com.google.android.material.tabs.TabLayout
     android:id="@+id/tabs"
     style="@style/AppTheme.TabLayout"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_below="@id/quick_input_shell" />
+    android:layout_below="@id/header_container" />
 
   <androidx.legacy.widget.Space
     android:id="@+id/space_bottom"
@@ -118,7 +70,6 @@
 
   <androidx.viewpager2.widget.ViewPager2
     android:id="@+id/pager"
-    android:background="?android:attr/colorBackground"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:layout_above="@id/space_bottom"

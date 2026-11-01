@@ -68,7 +68,6 @@ class EditorPreferencesScreen(
   init {
     addPreference(LSPPreferencesScreen())
     addPreference(CommonConfigurations())
-    addPreference(QuickInputPreferencesScreen())
     addPreference(JavaCodeConfigurations())
     addPreference(XMLPreferencesScreen())
   }

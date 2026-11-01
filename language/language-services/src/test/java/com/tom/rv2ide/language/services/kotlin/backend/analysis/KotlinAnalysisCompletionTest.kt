@@ -9,11 +9,13 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTe
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.CompletionItem
+import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -338,6 +340,402 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun importPackageCompletionUsesWorkspacePackages() {
+    verifyCompletion(
+        "CompletionImportPackage.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            import com.tom.rv2ide.testing.kotlinfixture.libr
+        """,
+        "kotlinfixture.libr",
+    ) { labels, items ->
+      assertTrue(labels.contains("library"))
+      val item = items.single { it.ideLabel == "library" }
+      assertEquals(CompletionItemKind.MODULE, item.completionKind)
+      assertEquals("library", item.insertText)
+    }
+  }
+
+  @Test
+  fun importClassCompletionUsesWorkspaceClassifiers() {
+    verifyCompletion(
+        "CompletionImportClass.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            import com.tom.rv2ide.testing.kotlinfixture.library.Lib
+        """,
+        "library.Lib",
+    ) { labels, items ->
+      assertTrue(labels.contains("LibraryApi"))
+      val item = items.single { it.ideLabel == "LibraryApi" }
+      assertEquals(CompletionItemKind.CLASS, item.completionKind)
+      assertEquals("LibraryApi", item.insertText)
+    }
+  }
+
+  @Test
+  fun classCompletionInExpressionUsesConstructorSnippet() {
+    verifyCompletion(
+        "CompletionConstructorExpression.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            class ConstructorWidget(val name: String)
+
+            fun useConstructorWidget(): ConstructorWidget {
+              return Con
+            }
+        """,
+        "return Con",
+    ) { labels, items ->
+      assertTrue(labels.contains("ConstructorWidget"))
+      val item = items.single { it.ideLabel == "ConstructorWidget" }
+      assertEquals(CompletionItemKind.CLASS, item.completionKind)
+      assertEquals("ConstructorWidget(\$0)", item.insertText)
+      assertEquals(InsertTextFormat.SNIPPET, item.insertTextFormat)
+      assertEquals(Command.TRIGGER_PARAMETER_HINTS, item.command?.command)
+    }
+  }
+
+  @Test
+  fun classCompletionInTypePositionKeepsPlainName() {
+    verifyCompletion(
+        "CompletionConstructorTypePosition.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            class ConstructorTypeWidget(val name: String)
+
+            fun useConstructorTypePosition(value: Con): Unit = Unit
+        """,
+        "value: Con",
+    ) { labels, items ->
+      assertTrue(labels.contains("ConstructorTypeWidget"))
+      val item = items.single { it.ideLabel == "ConstructorTypeWidget" }
+      assertEquals(CompletionItemKind.CLASS, item.completionKind)
+      assertEquals("ConstructorTypeWidget", item.insertText)
+      assertEquals(InsertTextFormat.PLAIN_TEXT, item.insertTextFormat)
+      assertNull(item.command)
+    }
+  }
+
+  @Test
+  fun typeAliasCompletionKeepsTypeAliasDetail() {
+    verifyCompletion(
+        "CompletionTypeAlias.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            typealias Text = String
+
+            fun useTypeAlias(): Te = ""
+        """,
+        "): Te",
+    ) { labels, items ->
+      assertTrue(labels.contains("Text"))
+      val item = items.single { it.ideLabel == "Text" }
+      assertEquals(CompletionItemKind.CLASS, item.completionKind)
+      assertEquals("Text", item.insertText)
+      assertTrue(item.detail.contains("typealias"))
+    }
+  }
+
+  @Test
+  fun annotationClassCompletionUsesAnnotationKind() {
+    verifyCompletion(
+        "CompletionAnnotation.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            annotation class Marker
+
+            fun useAnnotation(value: Mar): Unit = Unit
+        """,
+        "value: Mar",
+    ) { labels, items ->
+      assertTrue(labels.contains("Marker"))
+      val item = items.single { it.ideLabel == "Marker" }
+      assertEquals(CompletionItemKind.ANNOTATION_TYPE, item.completionKind)
+      assertEquals("Marker", item.insertText)
+    }
+  }
+
+  @Test
+  fun enumEntryCompletionUsesEnumMemberKind() {
+    verifyCompletion(
+        "CompletionEnumEntry.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            enum class Color { RED, GREEN }
+
+            fun useColor(): Color = Color.R
+        """,
+        "Color.R",
+    ) { labels, items ->
+      assertTrue(labels.contains("RED"))
+      assertFalse(labels.contains("GREEN"))
+      val item = items.single { it.ideLabel == "RED" }
+      assertEquals(CompletionItemKind.ENUM_MEMBER, item.completionKind)
+      assertEquals("RED", item.insertText)
+    }
+  }
+
+  @Test
+  fun typeParameterCompletionUsesTypeParameterKind() {
+    verifyCompletion(
+        "CompletionTypeParameter.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            fun <Element> useElement(value: Element): Element = Ele
+        """,
+        "Ele",
+    ) { labels, items ->
+      assertTrue(labels.contains("Element"))
+      val item = items.single { it.ideLabel == "Element" }
+      assertEquals(CompletionItemKind.TYPE_PARAMETER, item.completionKind)
+      assertEquals("Element", item.insertText)
+    }
+  }
+
+  @Test
+  fun unimportedClassifierAddsImportEdit() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("ImportCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class UnimportedWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useUnimported(): Unimp = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Unimp") + ": Unimp".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val item = help.items.single { it.ideLabel == "UnimportedWidget" }
+          assertEquals(CompletionItemKind.CLASS, item.completionKind)
+          val edit = requireNotNull(item.additionalTextEdits).single()
+          assertTrue(edit.newText.contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.UnimportedWidget"))
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun modifierKeywordCompletionBeforeFunction() {
+    verifyCompletion(
+        "CompletionModifierFunction.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            class ModifierHolder {
+              pri fun value(): String = ""
+            }
+        """,
+        "pri",
+    ) { labels, items ->
+      assertTrue(labels.contains("private"))
+      assertFalse(labels.contains("value"))
+      val item = items.single { it.ideLabel == "private" }
+      assertEquals(CompletionItemKind.KEYWORD, item.completionKind)
+      assertEquals("private", item.insertText)
+    }
+  }
+
+  @Test
+  fun modifierKeywordCompletionBeforeClass() {
+    verifyCompletion(
+        "CompletionModifierClass.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            pri class ModifierClass
+        """,
+        "pri",
+    ) { labels, items ->
+      assertTrue(labels.contains("private"))
+      val item = items.single { it.ideLabel == "private" }
+      assertEquals(CompletionItemKind.KEYWORD, item.completionKind)
+      assertEquals("private", item.insertText)
+    }
+  }
+
+  @Test
+  fun modifierKeywordsNotOfferedInExpressionPosition() {
+    verifyCompletion(
+        "CompletionModifierNegative.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            fun useModifierNegative() {
+              val answer = pri
+            }
+        """,
+        "pri",
+    ) { labels, _ ->
+      assertFalse(labels.contains("private"))
+    }
+  }
+
+  @Test
+  fun inheritedAndFakeOverrideMembersAppear() {
+    verifyCompletion(
+        "CompletionInheritedMembers.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            interface BaseMember {
+              fun baseFn(): String
+            }
+
+            class DerivedMember : BaseMember {
+              override fun baseFn(): String = ""
+            }
+
+            fun useDerived(d: DerivedMember) {
+              d.
+            }
+        """,
+        "d.",
+    ) { labels, _ ->
+      assertTrue(labels.contains("baseFn"))
+    }
+  }
+
+  @Test
+  fun memberExtensionViaImplicitReceiverAppears() {
+    verifyCompletion(
+        "CompletionMemberExtension.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            class ExtTarget {
+              val name: String = ""
+            }
+
+            class ExtensionHost {
+              fun ExtTarget.hostExtFn(): String = ""
+            }
+
+            fun useExtensionHost(host: ExtensionHost, target: ExtTarget) {
+              with(host) {
+                target.
+              }
+            }
+        """,
+        "target.",
+    ) { labels, _ ->
+      assertTrue(labels.contains("hostExtFn"))
+    }
+  }
+
+  @Test
+  fun smartCastReceiverUsesNarrowedType() {
+    verifyCompletion(
+        "CompletionSmartCast.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            fun useSmartCast(value: Any) {
+              if (value is String) {
+                value.
+              }
+            }
+        """,
+        "value.",
+    ) { labels, _ ->
+      assertTrue(labels.contains("length"))
+    }
+  }
+
+  @Test
+  fun companionReceiverExposesCompanionMembers() {
+    verifyCompletion(
+        "CompletionCompanion.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            class CompanionHost {
+              companion object {
+                fun create(): String = ""
+              }
+            }
+
+            fun useCompanion() {
+              CompanionHost.
+            }
+        """,
+        "CompanionHost.",
+    ) { labels, _ ->
+      assertTrue(labels.contains("create"))
+    }
+  }
+
+  @Test
+  fun objectReceiverExposesObjectMembers() {
+    verifyCompletion(
+        "CompletionObject.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            object SingletonHost {
+              fun ping(): String = ""
+            }
+
+            fun useObject() {
+              SingletonHost.
+            }
+        """,
+        "SingletonHost.",
+    ) { labels, _ ->
+      assertTrue(labels.contains("ping"))
+    }
+  }
+
+  @Test
+  fun extensionFunctionTypeVariableAppearsForReceiver() {
+    verifyCompletion(
+        "CompletionExtensionFunctionValue.kt",
+        """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+
+            fun useExtensionFunctionValue() {
+              val sum: Int.(Int) -> Int = { other -> this + other }
+              val textSum: String.(String) -> String = { other -> this + other }
+              5.
+            }
+        """,
+        "5.",
+    ) { labels, items ->
+      assertTrue(labels.contains("sum"))
+      assertFalse(labels.contains("textSum"))
+      val item = items.single { it.ideLabel == "sum" }
+      assertEquals("sum(\$0)", item.insertText)
+      assertEquals(InsertTextFormat.SNIPPET, item.insertTextFormat)
+      assertEquals(Command.TRIGGER_PARAMETER_HINTS, item.command?.command)
+    }
+  }
+
+  @Test
   fun genericExtensionOnListReceiverAppears() {
     verifyCompletion(
         "CompletionGenericExtension.kt",
@@ -401,6 +799,7 @@ class KotlinAnalysisCompletionTest {
     ) { _, items ->
       val item = items.single { it.ideLabel == "combine" }
       assertEquals("combine(\$0)", item.insertText)
+      assertEquals("String", item.overrideTypeText)
       assertEquals(InsertTextFormat.SNIPPET, item.insertTextFormat)
       assertEquals(Command.TRIGGER_PARAMETER_HINTS, item.command?.command)
       val snippet = requireNotNull(item.snippetDescription)

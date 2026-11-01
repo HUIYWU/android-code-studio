@@ -24,9 +24,12 @@ import org.jetbrains.kotlin.analysis.api.symbols.KaClassSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaClassifierSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaConstructorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaEnumEntrySymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaLocalVariableSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaNamedFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPropertySymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaTypeParameterSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.name
 import org.jetbrains.kotlin.analysis.api.renderer.types.impl.KaTypeRendererForSource
 import org.jetbrains.kotlin.analysis.api.components.render
@@ -43,14 +46,20 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBacking
 
 internal fun symbolName(symbol: KaSymbol): String? = symbol.name?.asString()
 
-internal fun KaSession.completionItemsFor(prefix: String, element: org.jetbrains.kotlin.psi.KtElement): List<CompletionItem> {
+internal fun KaSession.completionItemsFor(
+    prefix: String,
+    element: org.jetbrains.kotlin.psi.KtElement,
+    classCallSnippet: Boolean = false,
+): List<CompletionItem> {
   val scope = element.containingKtFile.scopeContext(element).compositeScope()
   val symbols = sequence<KaSymbol> {
     yieldAll(scope.callables { it.asString().startsWith(prefix, ignoreCase = true) })
     yieldAll(scope.classifiers { it.asString().startsWith(prefix, ignoreCase = true) })
   }
   return symbols
-      .mapNotNull { completionItemFor(it, prefix) }
+      .mapNotNull {
+        completionItemFor(it, prefix, forceCallSnippet = classCallSnippet && it is KaClassSymbol)
+      }
       .distinctBy { it.ideLabel }
       .take(50)
       .toList()
@@ -61,6 +70,7 @@ internal fun KaSession.completionItemFor(
     symbol: KaSymbol,
     prefix: String,
     detailOverride: String? = null,
+    forceCallSnippet: Boolean = false,
 ): CompletionItem? {
   val name = symbolName(symbol) ?: return null
   val kind = when (symbol) {
@@ -71,7 +81,10 @@ internal fun KaSession.completionItemFor(
       else -> CompletionItemKind.CLASS
     }
     is KaConstructorSymbol -> CompletionItemKind.CONSTRUCTOR
+    is KaEnumEntrySymbol -> CompletionItemKind.ENUM_MEMBER
+    is KaTypeParameterSymbol -> CompletionItemKind.TYPE_PARAMETER
     is KaNamedFunctionSymbol -> CompletionItemKind.FUNCTION
+    is KaLocalVariableSymbol -> CompletionItemKind.VARIABLE
     is KaPropertySymbol -> CompletionItemKind.PROPERTY
     is KaClassifierSymbol -> CompletionItemKind.CLASS
     else -> CompletionItemKind.NONE
@@ -91,7 +104,7 @@ internal fun KaSession.completionItemFor(
     else -> MatchLevel.NO_MATCH
   }
   val functionSymbol = symbol as? KaNamedFunctionSymbol
-  val callableLike = functionSymbol != null || symbol is KaConstructorSymbol
+  val callableLike = forceCallSnippet || functionSymbol != null || symbol is KaConstructorSymbol
   val insertText = if (callableLike) "$name(\$0)" else name
   val item = CompletionItem(
       ideLabel = name,
@@ -107,6 +120,14 @@ internal fun KaSession.completionItemFor(
   )
   if (callableLike) {
     item.snippetDescription = describeSnippet(prefix = prefix, allowCommandExecution = true)
+  }
+  if (item.completionKind == CompletionItemKind.FUNCTION) {
+    val returnType = (symbol as? KaCallableSymbol)?.let {
+      runCatching { it.returnType.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT) }.getOrNull()
+    }
+    if (!returnType.isNullOrEmpty()) {
+      item.overrideTypeText = returnType
+    }
   }
   return item
 }

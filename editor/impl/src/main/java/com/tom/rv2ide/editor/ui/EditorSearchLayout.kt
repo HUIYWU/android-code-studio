@@ -27,9 +27,6 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import android.widget.PopupMenu
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsCompat
 import com.tom.rv2ide.editor.databinding.LayoutFindInFileBinding
 import com.tom.rv2ide.editor.ui.ReplaceAction.doReplace
 import com.tom.rv2ide.resources.R
@@ -49,22 +46,6 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
   private var searchOptions = SearchOptions(true, false)
   private val findInFileBinding: LayoutFindInFileBinding
   private val optionsMenu: PopupMenu
-  private var searchVisibilityListener: ((Boolean) -> Unit)? = null
-
-  // The search bar is the replacement for the collapsed header slot; it follows the IME by
-  // offsetting itself while the sheet stays in its collapsed position.
-  private var imeAnimationCallbackInstalled = false
-  private var imeSlotAnimating = false
-  private var imeSlotHasProgress = false
-  private var imeSlotStartedWhileSidebar = false
-  private var imeSlotBaseImeBottom = 0
-  private var imeSlotBaseTranslation = 0f
-  private var imeRouteProvider: (() -> Boolean)? = null
-
-  /** Lets the host decide whether the current IME session belongs to the sidebar. */
-  fun setImeRouteProvider(provider: () -> Boolean) {
-    imeRouteProvider = provider
-  }
 
   init {
     findInFileBinding = LayoutFindInFileBinding.inflate(LayoutInflater.from(context))
@@ -91,89 +72,23 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
         val caseInsensitive = searchOptions.caseInsensitive
         val regex = searchOptions.type == SearchOptions.TYPE_REGULAR_EXPRESSION
         searchOptions =
-            when (it.itemId) {
-              0 -> SearchOptions(it.isChecked, regex)
-              1 -> SearchOptions(caseInsensitive, it.isChecked)
-              else -> searchOptions
-            }
+          when (it.itemId) {
+            0 -> SearchOptions(it.isChecked, regex)
+            1 -> SearchOptions(caseInsensitive, it.isChecked)
+            else -> searchOptions
+          }
         editor.searcher.updateSearchOptions(searchOptions)
 
         true
       } else false
     }
 
-    findInFileBinding.root.visibility = View.GONE
+    findInFileBinding.root.visibility = GONE
     findInFileBinding.moreOptions.setOnClickListener { optionsMenu.show() }
 
     addView(
-        findInFileBinding.root,
-        LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
-    )
-    installImeSlotAnimation()
-  }
-
-  // Drive the search slot offset from the IME animation in its editor host.
-  private fun installImeSlotAnimation() {
-    if (imeAnimationCallbackInstalled) return
-    imeAnimationCallbackInstalled = true
-    ViewCompat.setWindowInsetsAnimationCallback(
-        this,
-        object : WindowInsetsAnimationCompat.Callback(
-            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
-        ) {
-          override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return
-            imeSlotAnimating = false
-          }
-
-          override fun onStart(
-              animation: WindowInsetsAnimationCompat,
-              bounds: WindowInsetsAnimationCompat.BoundsCompat,
-          ): WindowInsetsAnimationCompat.BoundsCompat {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return bounds
-            imeSlotHasProgress = false
-            imeSlotBaseTranslation = translationY
-            imeSlotAnimating = true
-            imeSlotStartedWhileSidebar = imeRouteProvider?.invoke() == true
-            return bounds
-          }
-
-          override fun onProgress(
-              insets: WindowInsetsCompat,
-              runningAnimations: List<WindowInsetsAnimationCompat>,
-          ): WindowInsetsCompat {
-            if (runningAnimations.none {
-                  (it.typeMask and WindowInsetsCompat.Type.ime()) != 0
-                }) {
-              return insets
-            }
-            if (imeSlotStartedWhileSidebar || imeRouteProvider?.invoke() == true) {
-              // The sidebar owns this IME session; the search host must not consume it.
-              return insets
-            }
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-            val bottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-            val visible = findInFileBinding.root.visibility == View.VISIBLE
-            if (imeSlotAnimating && visible) {
-              if (!imeSlotHasProgress) {
-                imeSlotHasProgress = true
-                imeSlotBaseImeBottom = bottom
-                imeSlotBaseTranslation = translationY
-              }
-              translationY = imeSlotBaseTranslation + (imeSlotBaseImeBottom - bottom)
-            }
-            return insets
-          }
-
-          override fun onEnd(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-              imeSlotAnimating = false
-              imeSlotHasProgress = false
-              imeSlotStartedWhileSidebar = false
-            }
-          }
-        }
+      findInFileBinding.root,
+      LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
     )
   }
 
@@ -186,32 +101,7 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
       }
       false
     }
-    // The host can be opened while the IME is already present or its animation is still running.
-    // Sync to the current IME offset so a later exit animation can fold back from the correct
-    // base, and let a running animation capture a fresh base on its next progress frame.
-    imeSlotHasProgress = false
-    syncTranslationToIme()
-    val wasVisible = findInFileBinding.root.visibility == View.VISIBLE
-    findInFileBinding.root.visibility = View.VISIBLE
-    if (!wasVisible) {
-      searchVisibilityListener?.invoke(true)
-    }
-  }
-
-  // Establish a baseline translation from the current IME state when search is opened while the
-  // IME is already on screen, so the exit fold-back and the reopen after close both start from
-  // the current position instead of reusing a stale translationY.
-  private fun syncTranslationToIme() {
-    if (imeSlotAnimating) {
-      // A running IME animation drives the per-frame offsets; keep the current position and let
-      // the next progress frame capture the new base.
-      return
-    }
-    val insets = rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
-    val ime = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-    val bars = insets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
-    val offset = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-    translationY = -offset.toFloat()
+    findInFileBinding.root.visibility = VISIBLE
   }
 
   private fun onSearchActionClick(v: View) {
@@ -221,13 +111,9 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
         return
       }
       findInFileBinding.searchInput.removeTextChangedListener(this.searchInputTextWatcher)
-      val wasVisible = findInFileBinding.root.visibility == View.VISIBLE
-      findInFileBinding.root.visibility = View.GONE
+      findInFileBinding.root.visibility = GONE
       this.searchInputTextWatcher = null
       searcher.onClose()
-      if (wasVisible) {
-        searchVisibilityListener?.invoke(false)
-      }
     }
     if (!searcher.hasQuery()) {
       return
@@ -248,10 +134,10 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
   inner class SearchInputTextChangeListener(val editor: IDEEditor?) : SingleTextWatcher() {
 
     override fun onTextChanged(
-        s: CharSequence,
-        start: Int,
-        before: Int,
-        count: Int,
+      s: CharSequence,
+      start: Int,
+      before: Int,
+      count: Int,
     ) {
       if (editor == null) {
         return
@@ -263,26 +149,22 @@ class EditorSearchLayout(context: Context, val editor: IDEEditor) : FrameLayout(
 
       // Handle bad regexp
       val query =
-          s.toString().let {
-            if (searchOptions.type == SearchOptions.TYPE_REGULAR_EXPRESSION) {
-              try {
-                Pattern.compile(it)
-                it
-              } catch (error: Throwable) {
-                ""
-              }
-            } else {
+        s.toString().let {
+          if (searchOptions.type == SearchOptions.TYPE_REGULAR_EXPRESSION) {
+            try {
+              Pattern.compile(it)
               it
+            } catch (error: Throwable) {
+              ""
             }
+          } else {
+            it
           }
+        }
 
       if (query.isNotBlank()) {
         editor.searcher.search(query, searchOptions)
       }
     }
-  }
-
-  fun setOnSearchVisibilityChangeListener(listener: ((Boolean) -> Unit)?) {
-    searchVisibilityListener = listener
   }
 }

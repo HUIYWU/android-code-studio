@@ -18,15 +18,11 @@ import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.ImageView
 import android.widget.LinearLayout
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsAnimationCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.navigationrail.NavigationRailView
 import com.google.android.material.tabs.TabLayout
 import com.tom.rv2ide.R
-import com.tom.rv2ide.activities.editor.BaseEditorActivity
 import com.tom.rv2ide.fragments.terminal.*
 import com.termux.app.TermuxService
 import com.termux.shared.logger.Logger
@@ -47,10 +43,7 @@ class TerminalFragment : Fragment() {
     private var settingsContent: View? = null
     private var emptyStateContent: View? = null
     private var sessionTabs: TabLayout? = null
-    // The terminal content owns the full-expanded bottom slot and follows the IME by padding.
-    private var terminalImeCallbackInstalled = false
-    private var terminalBasePaddingBottom = 0
-    
+
     private var serviceIsBound = false
     private lateinit var prefs: SharedPreferences
     
@@ -173,8 +166,7 @@ class TerminalFragment : Fragment() {
         emptyStateContent = rootView.findViewById(R.id.empty_state_content)
         terminalView = rootView.findViewById(R.id.terminal_view)
         sessionTabs = rootView.findViewById(R.id.session_tabs)
-        installImeContentSlot(rootView)
-        
+
         // Initialize handlers
         sessionManager = SessionManager(
             fragment = this,
@@ -234,115 +226,6 @@ class TerminalFragment : Fragment() {
         return rootView
     }
     
-    // Apply the IME inset to the terminal content container so the weighted terminal view and
-    // the extra keys bar move together.
-    private fun installImeContentSlot(rootView: View) {
-        if (terminalImeCallbackInstalled) return
-        val content = rootView.findViewById<View>(R.id.terminal_content) ?: return
-        terminalBasePaddingBottom = content.paddingBottom
-        terminalImeCallbackInstalled = true
-        // The sidebar owns the IME session while its input is focused; the terminal slot must not
-        // consume the IME inset in that period, otherwise the terminal content gets pushed up.
-        val isRoutedToSidebar: () -> Boolean = {
-            (rootView.context as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
-        }
-        ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
-            if (isRoutedToSidebar() || terminalContent?.visibility != View.VISIBLE) {
-                view.setPadding(
-                    view.paddingLeft,
-                    view.paddingTop,
-                    view.paddingRight,
-                    terminalBasePaddingBottom,
-                )
-            } else {
-                val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-                val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-                val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-                view.setPadding(
-                    view.paddingLeft,
-                    view.paddingTop,
-                    view.paddingRight,
-                    terminalBasePaddingBottom + imeBottom,
-                )
-            }
-            insets
-        }
-        ViewCompat.setWindowInsetsAnimationCallback(
-            content,
-            object : WindowInsetsAnimationCompat.Callback(
-                WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE
-            ) {
-                var startedWhileSidebar = false
-                // Whether the terminal content is already pushed up when this animation starts.
-                // If so, the animation belongs to a session that began on the terminal and the
-                // terminal must follow it smoothly even if the route was transferred to the
-                // sidebar in the meantime.
-                var pushedByIme = false
-
-                override fun onStart(
-                    animation: WindowInsetsAnimationCompat,
-                    bounds: WindowInsetsAnimationCompat.BoundsCompat,
-                ): WindowInsetsAnimationCompat.BoundsCompat {
-                    startedWhileSidebar = isRoutedToSidebar()
-                    pushedByIme = content.paddingBottom > terminalBasePaddingBottom
-                    return bounds
-                }
-
-                override fun onProgress(
-                    insets: WindowInsetsCompat,
-                    runningAnimations: List<WindowInsetsAnimationCompat>,
-                ): WindowInsetsCompat {
-                    if (startedWhileSidebar || isRoutedToSidebar()) {
-                        // A sidebar-owned session must not move the terminal unless this session
-                        // started on the terminal (content already pushed up) and now returns.
-                        if (!pushedByIme) return insets
-                    }
-                    if (terminalContent?.visibility != View.VISIBLE) {
-                        return insets
-                    }
-                    val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-                    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-                    val imeBottom = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-                    content.setPadding(
-                        content.paddingLeft,
-                        content.paddingTop,
-                        content.paddingRight,
-                        terminalBasePaddingBottom + imeBottom,
-                    )
-                    return insets
-                }
-
-                override fun onEnd(animation: WindowInsetsAnimationCompat) {
-                    startedWhileSidebar = false
-                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) == 0) return
-                    // The whole IME animation may be bypassed while the sidebar owns the session,
-                    // so the resting state is only reachable here; sync the padding to the final
-                    // insets instead of waiting for another onApplyWindowInsets dispatch after
-                    // the exit animation ends.
-                    val rootInsets =
-                        content.rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
-                    val imeBottom =
-                        rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-                    val bars =
-                        rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
-                    val offset = if (imeBottom > 0) (imeBottom - bars).coerceAtLeast(0) else 0
-                    val paddingBottom =
-                        if (isRoutedToSidebar() || terminalContent?.visibility != View.VISIBLE) {
-                            terminalBasePaddingBottom
-                        } else {
-                            terminalBasePaddingBottom + offset
-                        }
-                    content.setPadding(
-                        content.paddingLeft,
-                        content.paddingTop,
-                        content.paddingRight,
-                        paddingBottom,
-                    )
-                }
-            }
-        )
-    }
-
     private fun handleNavigationItemSelected(itemId: Int): Boolean {
         return when (itemId) {
             R.id.nav_toggle_rail -> {
@@ -380,31 +263,8 @@ class TerminalFragment : Fragment() {
         terminalContent?.visibility = View.VISIBLE
         emptyStateContent?.visibility = View.GONE
         settingsContent?.visibility = View.GONE
-        syncTerminalImePadding()
     }
 
-    // The terminal can become visible while the IME is already on screen (initialised after an
-    // IME was shown); the GONE->VISIBLE switch does not re-dispatch insets, so apply the current
-    // inset once here to establish the pushed-up baseline. Without it the IME exit animation
-    // would first jump the terminal up from the resting padding and only then animate it back.
-    private fun syncTerminalImePadding() {
-        val content = terminalContent ?: return
-        val routedToSidebar =
-            (requireContext() as? BaseEditorActivity)?.content?.bottomSheet?.isImeRoutedToSidebar() == true
-        val rootInsets = content.rootWindowInsets?.let { WindowInsetsCompat.toWindowInsetsCompat(it) }
-        val ime = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-        val bars = rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
-        val offset = if (ime > 0) (ime - bars).coerceAtLeast(0) else 0
-        val paddingBottom =
-            if (routedToSidebar) terminalBasePaddingBottom else terminalBasePaddingBottom + offset
-        content.setPadding(
-            content.paddingLeft,
-            content.paddingTop,
-            content.paddingRight,
-            paddingBottom,
-        )
-    }
-    
     private fun showSettings() {
         if (!isAdded) return
         terminalContent?.visibility = View.GONE
@@ -440,8 +300,6 @@ class TerminalFragment : Fragment() {
         settingsContent = null
         emptyStateContent = null
         sessionTabs = null
-        terminalImeCallbackInstalled = false
-        terminalBasePaddingBottom = 0
     }
     
     private fun bindTermuxServiceAndCreateSession() {

@@ -12,13 +12,17 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.Signatu
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.CompletionTarget
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.computeActiveParameter
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.documentationText
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.extensionFunctionValueSignature
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.parameterLabel
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.keywordCompletionItems
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.packageCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.receiverCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveCompletionTarget
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSignatureCallCandidates
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSingleSignatureCall
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureArgumentIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureDisplayName
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedClassifierCompletionItems
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
@@ -166,7 +170,47 @@ internal class KotlinStandaloneAnalysisRuntime(
             )
           }
           CompletionTarget.None -> CompletionResult.EMPTY
-          else -> CompletionResult(completionItemsFor(clientPrefix, element))
+          CompletionTarget.PackageOrImport ->
+              CompletionResult(packageCompletionItems(clientPrefix, environment?.metadataIndex))
+          else -> {
+            KlsLogs.warn(
+                "completion_dispatch prefix='{}' target={} line={} column={} offset={}",
+                clientPrefix,
+                target.javaClass.simpleName,
+                request.line,
+                request.column,
+                offset,
+            )
+            val typePosition = target is CompletionTarget.TypePosition
+            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element, typePosition)
+            KlsLogs.warn(
+                "completion_keyword_result prefix='{}' items={}",
+                clientPrefix,
+                keywordItems?.size,
+            )
+            if (keywordItems != null) {
+              CompletionResult(keywordItems)
+            } else {
+              val classCallSnippet = target !is CompletionTarget.TypePosition &&
+                  target !is CompletionTarget.PackageOrImport
+              val items = completionItemsFor(clientPrefix, element, classCallSnippet)
+              val unimported = unimportedClassifierCompletionItems(
+                  clientPrefix,
+                  file,
+                  environment?.metadataIndex,
+                  classCallSnippet,
+              )
+              val merged =
+                  if (unimported.isEmpty()) {
+                    items
+                  } else {
+                    items + unimported.filterNot { candidate ->
+                      items.any { it.ideLabel == candidate.ideLabel }
+                    }
+                  }
+              CompletionResult(merged)
+            }
+          }
         }
       }
   }
@@ -274,6 +318,10 @@ val symbol = when (val resolution = resolveOrdinaryTargetAt(file, requestOffset(
       withSemanticLiveFile(request) { file ->
         val offset = requestOffset(request)
         val callElement = callElementAt(file, offset) ?: return@withSemanticLiveFile SignatureHelp(emptyList(), 0, 0)
+        val extensionValueSignature = analysisBestEffort(null, request.cancelChecker) {
+          extensionFunctionValueSignature(file, callElement, offset)
+        }
+        if (extensionValueSignature != null) return@withSemanticLiveFile extensionValueSignature
         val candidates = analysisBestEffort(emptyList(), request.cancelChecker) {
           resolveSignatureCallCandidates(callElement)
         }
