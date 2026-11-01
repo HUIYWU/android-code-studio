@@ -495,15 +495,6 @@ fun initializeProject(buildVariants: Map<String, String>) {
   protected fun onGradleBuildServiceConnected(service: GradleBuildService) {
     log.info("Connected to Gradle build service")
 
-    log.info("👋✨", "")
-    log.info("    _    ____ ____      ")
-    log.info("   / \\  / ___/ ___|   ")
-    log.info("  / _ \\| |   \\___ \\  ")
-    log.info(" / ___ \\ |___ ___) |   ")
-    log.info("/_/   \\_\\____|____/   ")
-    log.info("                        ")
-    log.info("ACS Tooling API Revision 1.0            ")
-
     buildServiceConnection.onConnected = null
     editorViewModel.isBoundToBuildSerice = true
     Lookup.getDefault().update(BuildService.KEY_BUILD_SERVICE, service)

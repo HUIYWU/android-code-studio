@@ -24,7 +24,6 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatu
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureDisplayName
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedClassifierCompletionItems
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.projects.models.OneHopDocumentEdit
@@ -173,20 +172,7 @@ internal class KotlinStandaloneAnalysisRuntime(
           CompletionTarget.PackageOrImport ->
               CompletionResult(packageCompletionItems(clientPrefix, environment?.metadataIndex))
           else -> {
-            KlsLogs.warn(
-                "completion_dispatch prefix='{}' target={} line={} column={} offset={}",
-                clientPrefix,
-                target.javaClass.simpleName,
-                request.line,
-                request.column,
-                offset,
-            )
             val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element)
-            KlsLogs.warn(
-                "completion_keyword_result prefix='{}' items={}",
-                clientPrefix,
-                keywordItems?.size,
-            )
             if (keywordItems != null) {
               CompletionResult(keywordItems)
             } else {

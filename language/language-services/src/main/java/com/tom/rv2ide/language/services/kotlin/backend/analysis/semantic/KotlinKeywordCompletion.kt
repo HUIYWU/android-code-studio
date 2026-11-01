@@ -1,6 +1,5 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
@@ -35,18 +34,46 @@ private const val MAX_PROBE_TEXT = 16_384
 
 private const val MAX_PROBE_CANDIDATES = 12
 
+/**
+ * Keywords that only parse when the following keyword is present. The probe appends the whole
+ * construct, otherwise a lone modifier such as `data`, `lateinit` or `sealed` parses as an error.
+ */
+private val COMPOUND_KEYWORDS: Map<KtKeywordToken, List<KtKeywordToken>> =
+    mapOf<KtKeywordToken, List<KtKeywordToken>>(
+        KtTokens.COMPANION_KEYWORD to listOf(KtTokens.OBJECT_KEYWORD),
+        KtTokens.DATA_KEYWORD to listOf(KtTokens.CLASS_KEYWORD, KtTokens.OBJECT_KEYWORD),
+        KtTokens.ENUM_KEYWORD to listOf(KtTokens.CLASS_KEYWORD),
+        KtTokens.ANNOTATION_KEYWORD to listOf(KtTokens.CLASS_KEYWORD),
+        KtTokens.SEALED_KEYWORD to
+            listOf(KtTokens.CLASS_KEYWORD, KtTokens.INTERFACE_KEYWORD, KtTokens.FUN_KEYWORD),
+        KtTokens.LATEINIT_KEYWORD to listOf(KtTokens.VAR_KEYWORD),
+        KtTokens.CONST_KEYWORD to listOf(KtTokens.VAL_KEYWORD),
+        KtTokens.SUSPEND_KEYWORD to listOf(KtTokens.FUN_KEYWORD),
+    )
+
 private val ALL_KEYWORDS: List<KtKeywordToken> =
     (KtTokens.KEYWORDS.types.asList() + KtTokens.SOFT_KEYWORDS.types.asList())
         .filterIsInstance<KtKeywordToken>()
         .distinctBy { it.value }
         .sortedBy { it.value }
 
+/** Probe applications per keyword: the keyword itself followed by a placeholder declaration name. */
+private val KEYWORD_APPLICATIONS: Map<KtKeywordToken, List<String>> =
+    ALL_KEYWORDS.associateWith { token ->
+      val compounds = COMPOUND_KEYWORDS[token]
+      if (compounds == null) {
+        listOf(token.value + " X")
+      } else {
+        compounds.map { compound -> token.value + " " + compound.value + " X" }
+      }
+    }
+
 /**
  * Keyword completion follows the IntelliJ strategy: candidates come from the lexer keyword tables,
  * are filtered by the typed prefix first, and each remaining candidate is accepted only if the real
- * parser accepts it in the reconstructed context. Reconstructing the context instead of classifying
- * positions keeps parameter lists, type parameter lists, expression bodies and statement positions on
- * one code path.
+ * parser accepts the whole keyword application in the reconstructed context. Reconstructing the
+ * context instead of classifying positions keeps parameter lists, type parameter lists, expression
+ * bodies and statement positions on one code path.
  */
 internal fun keywordCompletionItems(
     prefix: String,
@@ -60,15 +87,7 @@ internal fun keywordCompletionItems(
   if (wordPrefix.isEmpty()) return null
   val matched = ALL_KEYWORDS.filter { it.value.startsWith(wordPrefix, ignoreCase = true) }
   if (matched.isEmpty()) return null
-  val startedAt = System.nanoTime()
   val accepted = filterByParsing(file, offset, element, matched)
-  KlsLogs.warn(
-      "keyword_completion_probe prefix='{}' matched={} accepted={} elapsedUs={}",
-      wordPrefix,
-      matched.map { it.value },
-      accepted.map { it.value },
-      (System.nanoTime() - startedAt) / 1_000,
-  )
   if (accepted.isEmpty()) return null
   return accepted.map(::keywordItem)
 }
@@ -96,6 +115,24 @@ private fun filterByParsing(
   return accepted + remaining
 }
 
+private fun keywordAccepted(
+    factory: KtPsiFactory,
+    context: String,
+    token: KtKeywordToken,
+): Boolean {
+  val applications = KEYWORD_APPLICATIONS[token] ?: listOf(token.value + " X")
+  for (application in applications) {
+    val probeFile = factory.createFile("KeywordProbe.kt", context + application)
+    val elementAtCaret = probeFile.findElementAt(context.length) ?: continue
+    val elementType = elementAtCaret.node?.elementType
+    if (elementType == null || !elementType.matchesKeyword(token)) continue
+    if (elementAtCaret.getNonStrictParentOfType<PsiErrorElement>() != null) continue
+    if (hasErrorElementBefore(elementAtCaret)) continue
+    return true
+  }
+  return false
+}
+
 /**
  * Builds the text that ends right before the caret, using the closest structural anchor and keeping
  * only the signature of the preceding siblings (bodies collapse to `{}`).
@@ -105,8 +142,8 @@ private fun probeContextText(file: KtFile, offset: Int, element: PsiElement?): S
   var node: PsiElement? = leaf
   while (node != null && node !is PsiFile) {
     when (node) {
-      is KtBlockExpression -> return "fun foo() { " + node.textBefore(leaf)
-      is KtClassBody -> return "class X { " + node.textBefore(leaf)
+      is KtBlockExpression -> return "fun foo() { " + node.bodyTextBefore(leaf)
+      is KtClassBody -> return "class X { " + node.bodyTextBefore(leaf)
       is KtDeclarationWithInitializer -> {
         val initializer = node.initializer
         if (initializer != null && initializer.offsetInRange(offset)) {
@@ -134,20 +171,12 @@ private fun probeContextText(file: KtFile, offset: Int, element: PsiElement?): S
     }
     node = node.parent
   }
-  return ""
-}
-
-private fun keywordAccepted(
-    factory: KtPsiFactory,
-    context: String,
-    token: KtKeywordToken,
-): Boolean {
-  val probeFile = factory.createFile("KeywordProbe.kt", context + token.value)
-  val elementAtCaret = probeFile.findElementAt(context.length) ?: return true
-  val elementType = elementAtCaret.node?.elementType
-  if (elementType == null || !elementType.matchesKeyword(token)) return false
-  if (elementAtCaret.getNonStrictParentOfType<PsiErrorElement>() != null) return false
-  return !hasErrorElementBefore(elementAtCaret)
+  // Outside any declaration (file level, or a `where` clause the parser recovered as an error):
+  // keep the reduced text of the preceding declaration so the position can still be parsed.
+  val position = leaf ?: element ?: return ""
+  val builder = StringBuilder()
+  buildReducedContextBefore(builder, position, null)
+  return builder.toString()
 }
 
 private fun IElementType.matchesKeyword(token: KtKeywordToken): Boolean =
@@ -213,6 +242,15 @@ private fun typeReferencePrefix(typeReference: KtTypeReference): String {
   val argumentList = projection?.parent as? KtTypeArgumentList
   val userType = argumentList?.parent as? KtUserType
   return if (userType?.parent is KtTypeReference) "fun foo(x: X<" else "fun foo(x: "
+}
+
+/** Text of a block/class body before the position, without the body's own opening brace. */
+private fun PsiElement.bodyTextBefore(position: PsiElement?): String {
+  val content = text ?: return ""
+  val start = textRange?.startOffset ?: 0
+  val cut = ((position?.textRange?.startOffset ?: start) - start).coerceIn(0, content.length)
+  val from = if (content.startsWith("{")) 1 else 0
+  return if (cut <= from) "" else content.substring(from, cut)
 }
 
 private fun PsiElement.textBefore(position: PsiElement?): String {

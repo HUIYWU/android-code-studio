@@ -380,8 +380,7 @@ abstract class BaseEditorActivity :
           }
         }
       }
-    } catch (e: Exception) {
-      // log.error("Error checking content changes", e)
+    } catch (_: Exception) {
     }
   }
 
