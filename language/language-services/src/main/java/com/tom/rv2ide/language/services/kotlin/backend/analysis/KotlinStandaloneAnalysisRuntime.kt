@@ -181,8 +181,7 @@ internal class KotlinStandaloneAnalysisRuntime(
                 request.column,
                 offset,
             )
-            val typePosition = target is CompletionTarget.TypePosition
-            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element, typePosition)
+            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element)
             KlsLogs.warn(
                 "completion_keyword_result prefix='{}' items={}",
                 clientPrefix,
