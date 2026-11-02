@@ -589,6 +589,96 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun unimportedBinaryClassAddsImportEdit() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedBinaryUse.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useBinaryType(): TreeM = TODO()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": TreeM") + ": TreeM".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val labels = help.items.map { it.ideLabel }
+          assertTrue("labels=$labels", labels.contains("TreeMap"))
+          val item = help.items.single { it.ideLabel == "TreeMap" }
+          assertEquals(CompletionItemKind.CLASS, item.completionKind)
+          assertEquals("TreeMap", item.insertText)
+          assertEquals("java.util.TreeMap", item.detail)
+          assertTrue(
+              requireNotNull(item.additionalTextEdits).single().newText
+                  .contains("import java.util.TreeMap")
+          )
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedBinaryCallablesAddImportEdit() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedBinaryCallableUse.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useMathFunction(): Int = ab
+
+          fun useMathProperty(): Double = PI
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val functionCaret = content.indexOf("= ab") + "= ab".length
+          val functionHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, functionCaret))
+          })
+          val functionLabels = functionHelp.items.map { it.ideLabel }
+          assertTrue("labels=$functionLabels", functionLabels.contains("abs"))
+          val absItem = functionHelp.items.single { it.ideLabel == "abs" }
+          assertEquals(CompletionItemKind.FUNCTION, absItem.completionKind)
+          assertEquals("abs(\$0)", absItem.insertText)
+          assertEquals(InsertTextFormat.SNIPPET, absItem.insertTextFormat)
+          assertEquals(Command.TRIGGER_PARAMETER_HINTS, absItem.command?.command)
+          assertTrue(requireNotNull(absItem.snippetDescription).deleteSelected)
+          assertEquals("kotlin.math.abs", absItem.detail)
+          assertTrue(
+              requireNotNull(absItem.additionalTextEdits).single().newText
+                  .contains("import kotlin.math.abs")
+          )
+
+          val propertyCaret = content.indexOf("= PI") + "= PI".length
+          val propertyHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, propertyCaret))
+          })
+          val propertyLabels = propertyHelp.items.map { it.ideLabel }
+          assertTrue("labels=$propertyLabels", propertyLabels.contains("PI"))
+          val piItem = propertyHelp.items.single { it.ideLabel == "PI" }
+          assertEquals(CompletionItemKind.PROPERTY, piItem.completionKind)
+          assertEquals("PI", piItem.insertText)
+          assertEquals(InsertTextFormat.PLAIN_TEXT, piItem.insertTextFormat)
+          assertNull(piItem.command)
+          assertEquals("kotlin.math.PI", piItem.detail)
+          assertTrue(
+              requireNotNull(piItem.additionalTextEdits).single().newText
+                  .contains("import kotlin.math.PI")
+          )
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun unimportedClassifierIgnoresAliasedSimpleName() {
     withWorkspace {
       val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")

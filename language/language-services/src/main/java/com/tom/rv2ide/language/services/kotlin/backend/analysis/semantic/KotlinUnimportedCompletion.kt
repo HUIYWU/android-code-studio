@@ -1,5 +1,8 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmCallableKind
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassIndex
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceExtensionKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.ownerModulePathOf
@@ -13,12 +16,30 @@ import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.lsp.models.TextEdit
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
+import java.nio.file.Path
 import org.jetbrains.kotlin.psi.KtFile
 
 private const val UNIMPORTED_COMPLETION_BUDGET = 50
 
+private val DEFAULT_IMPORTED_PACKAGES =
+    setOf(
+        "java.lang",
+        "kotlin",
+        "kotlin.annotation",
+        "kotlin.collections",
+        "kotlin.comparisons",
+        "kotlin.io",
+        "kotlin.ranges",
+        "kotlin.sequences",
+        "kotlin.text",
+        "kotlin.jvm",
+    )
+
 private enum class UnimportedDeclarationKind {
   CLASS,
+  INTERFACE,
+  ENUM,
+  ANNOTATION,
   FUNCTION,
   PROPERTY,
 }
@@ -34,6 +55,8 @@ internal fun unimportedCompletionItems(
     file: KtFile,
     metadataIndex: KotlinSourceMetadataIndex?,
     classCallSnippet: Boolean,
+    classIndex: JvmClassIndex? = null,
+    binarySources: Collection<Path> = emptyList(),
     cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem> {
   if (metadataIndex == null) return emptyList()
@@ -77,10 +100,46 @@ internal fun unimportedCompletionItems(
       }
     }
   }
+  if (classIndex != null && binarySources.isNotEmpty()) {
+    cancelChecker.abortIfCancelled()
+    for (entry in
+        classIndex.classesBySimpleNamePrefix(segment, binarySources, UNIMPORTED_COMPLETION_BUDGET)) {
+      if (entry.packageName in DEFAULT_IMPORTED_PACKAGES) continue
+      if (entry.simpleName in importedNames) continue
+      candidates +=
+          UnimportedCandidate(
+              name = entry.simpleName,
+              fqName =
+                  if (entry.packageName.isEmpty()) entry.simpleName
+                  else "${entry.packageName}.${entry.simpleName}",
+              kind = entry.kind.toUnimportedKind(),
+          )
+    }
+  }
+  if (classIndex != null && binarySources.isNotEmpty() && classCallSnippet) {
+    cancelChecker.abortIfCancelled()
+    for (callable in
+        classIndex.callablesBySimpleNamePrefix(segment, binarySources, UNIMPORTED_COMPLETION_BUDGET)) {
+      if (callable.packageName in DEFAULT_IMPORTED_PACKAGES) continue
+      if (callable.name in importedNames) continue
+      candidates +=
+          UnimportedCandidate(
+              name = callable.name,
+              fqName =
+                  if (callable.packageName.isEmpty()) callable.name
+                  else "${callable.packageName}.${callable.name}",
+              kind =
+                  when (callable.kind) {
+                    JvmCallableKind.FUNCTION -> UnimportedDeclarationKind.FUNCTION
+                    JvmCallableKind.PROPERTY -> UnimportedDeclarationKind.PROPERTY
+                  },
+          )
+    }
+  }
   if (candidates.isEmpty()) return emptyList()
   val layout = importLayout(file)
   return candidates
-      .distinctBy { it.fqName }
+      .distinctBy { it.fqName to it.kind }
       .sortedWith(compareBy({ it.kind.ordinal }, { it.fqName }))
       .take(UNIMPORTED_COMPLETION_BUDGET)
       .map { unimportedItem(segment, it, layout, classCallSnippet) }
@@ -130,7 +189,7 @@ internal fun unimportedExtensionCompletionItems(
   if (candidates.isEmpty()) return emptyList()
   val layout = importLayout(file)
   return candidates
-      .distinctBy { it.fqName }
+      .distinctBy { it.fqName to it.kind }
       .sortedWith(compareBy({ it.kind.ordinal }, { it.fqName }))
       .take(UNIMPORTED_COMPLETION_BUDGET)
       .map { unimportedItem(prefix, it, layout, true) }
@@ -191,6 +250,14 @@ private fun lineStartOffset(text: String, offset: Int): Int {
   return if (newline < 0) 0 else newline + 1
 }
 
+private fun JvmClassKind.toUnimportedKind(): UnimportedDeclarationKind =
+    when (this) {
+      JvmClassKind.CLASS -> UnimportedDeclarationKind.CLASS
+      JvmClassKind.INTERFACE -> UnimportedDeclarationKind.INTERFACE
+      JvmClassKind.ENUM -> UnimportedDeclarationKind.ENUM
+      JvmClassKind.ANNOTATION -> UnimportedDeclarationKind.ANNOTATION
+    }
+
 private fun unimportedItem(
     segment: String,
     candidate: UnimportedCandidate,
@@ -212,6 +279,9 @@ private fun unimportedItem(
           completionKind =
               when (candidate.kind) {
                 UnimportedDeclarationKind.CLASS -> CompletionItemKind.CLASS
+                UnimportedDeclarationKind.INTERFACE -> CompletionItemKind.INTERFACE
+                UnimportedDeclarationKind.ENUM -> CompletionItemKind.ENUM
+                UnimportedDeclarationKind.ANNOTATION -> CompletionItemKind.ANNOTATION_TYPE
                 UnimportedDeclarationKind.FUNCTION -> CompletionItemKind.FUNCTION
                 UnimportedDeclarationKind.PROPERTY -> CompletionItemKind.PROPERTY
               },

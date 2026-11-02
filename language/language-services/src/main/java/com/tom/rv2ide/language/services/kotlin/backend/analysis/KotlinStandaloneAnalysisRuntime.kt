@@ -213,11 +213,16 @@ internal class KotlinStandaloneAnalysisRuntime(
             val classCallSnippet = target !is CompletionTarget.TypePosition &&
                 target !is CompletionTarget.PackageOrImport
             val items = completionItemsFor(clientPrefix, element, classCallSnippet, request.cancelChecker)
+            val metadataIndex = environment?.metadataIndex
+            val binarySources =
+                environment?.binaryRootsFor(metadataIndex?.ownerModulePathOf(file)).orEmpty()
             val unimported = unimportedCompletionItems(
                 clientPrefix,
                 file,
-                environment?.metadataIndex,
+                metadataIndex,
                 classCallSnippet,
+                environment?.binaryClassIndex,
+                binarySources,
                 request.cancelChecker,
             )
             val symbolItems =

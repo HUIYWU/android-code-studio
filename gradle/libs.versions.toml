@@ -32,6 +32,7 @@ external-customizable-cardview = { module = "com.github.Mohammed-baqer-null:Cust
 
 # Kotlin compiler embeddable for Kotlin LSP
 kotlin-compiler-embeddable = { module = "org.jetbrains.kotlin:kotlin-compiler-embeddable", version.ref = "kotlin" }
+kotlin-metadata-jvm = { module = "org.jetbrains.kotlin:kotlin-metadata-jvm", version = "2.3.0" }
 kotlin-scripting-compiler-embeddable = { module = "org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable", version.ref = "kotlin" }
 
 # Dependencies in composite build

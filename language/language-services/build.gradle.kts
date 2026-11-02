@@ -105,6 +105,7 @@ dependencies {
   implementation(libs.common.kotlin)
 
   implementation(files(ktAnalysisEngineJar))
+  implementation(libs.kotlin.metadata.jvm)
   implementation(libs.asm)
   
   // LSP4J dependencies for external process kotlin-language-server
