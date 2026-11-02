@@ -205,6 +205,7 @@ internal class KotlinStandaloneAnalysisRuntime(
                     modulePath,
                     environment?.binaryClassIndex,
                     binarySources,
+                    environment?.javaSourceIndex,
                     request.cancelChecker,
                 )
             )
@@ -223,6 +224,7 @@ internal class KotlinStandaloneAnalysisRuntime(
                 classCallSnippet,
                 environment?.binaryClassIndex,
                 binarySources,
+                environment?.javaSourceIndex,
                 request.cancelChecker,
             )
             val symbolItems =

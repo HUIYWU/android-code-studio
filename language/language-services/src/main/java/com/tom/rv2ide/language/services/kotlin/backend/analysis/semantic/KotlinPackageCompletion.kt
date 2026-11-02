@@ -3,6 +3,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourceIndex
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
@@ -18,9 +19,14 @@ internal fun packageCompletionItems(
     currentModulePath: String?,
     classIndex: JvmClassIndex? = null,
     binarySources: Collection<Path> = emptyList(),
+    javaIndex: JavaSourceIndex? = null,
     cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem> {
-  if (metadataIndex == null && (classIndex == null || binarySources.isEmpty())) return emptyList()
+  if (metadataIndex == null &&
+      (classIndex == null || binarySources.isEmpty()) &&
+      javaIndex == null) {
+    return emptyList()
+  }
   val normalized = prefix.trim()
   val parentPackage = normalized.substringBeforeLast('.', "")
   val segment = normalized.substringAfterLast('.')
@@ -70,6 +76,19 @@ internal fun packageCompletionItems(
 
     classIndex
         .classesInPackage(parentPackage, binarySources)
+        .asSequence()
+        .filter { it.simpleName.startsWith(segment, ignoreCase = true) }
+        .sortedBy { it.simpleName }
+        .forEach { entry ->
+          cancelChecker.abortIfCancelled()
+          if (items.size >= PACKAGE_COMPLETION_BUDGET) return@forEach
+          items += packageItem(entry.simpleName, parentPackage, segment, classItemKind(entry.kind))
+        }
+  }
+
+  if (javaIndex != null) {
+    javaIndex
+        .classesInPackage(currentModulePath, parentPackage)
         .asSequence()
         .filter { it.simpleName.startsWith(segment, ignoreCase = true) }
         .sortedBy { it.simpleName }

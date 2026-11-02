@@ -679,6 +679,62 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun javaSourceCompletionAddsImportEdit() {
+    withWorkspace {
+      val javaDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/javasrc")
+      val javaFile = javaDir.resolve("JavaWidget.java")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaSourceUse.kt")
+      val javaContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.javasrc;
+
+          public class JavaWidget {}
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import com.tom.rv2ide.testing.kotlinfixture.app.javasrc.JavaW
+
+          fun useJavaWidget(): JavaW = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(javaDir)
+      Files.write(javaFile, javaContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val importCaret = content.indexOf("javasrc.JavaW") + "javasrc.JavaW".length
+          val importHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, importCaret))
+          })
+          val importLabels = importHelp.items.map { it.ideLabel }
+          assertTrue("labels=$importLabels", importLabels.contains("JavaWidget"))
+          val importItem = importHelp.items.single { it.ideLabel == "JavaWidget" }
+          assertEquals(CompletionItemKind.CLASS, importItem.completionKind)
+          assertEquals("com.tom.rv2ide.testing.kotlinfixture.app.javasrc.JavaWidget", importItem.detail)
+
+          val typeCaret = content.indexOf(": JavaW") + ": JavaW".length
+          val typeHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, typeCaret))
+          })
+          val typeLabels = typeHelp.items.map { it.ideLabel }
+          assertTrue("labels=$typeLabels", typeLabels.contains("JavaWidget"))
+          val typeItem = typeHelp.items.single { it.ideLabel == "JavaWidget" }
+          assertEquals(CompletionItemKind.CLASS, typeItem.completionKind)
+          assertEquals("JavaWidget", typeItem.insertText)
+          assertTrue(
+              requireNotNull(typeItem.additionalTextEdits).single().newText
+                  .contains("import com.tom.rv2ide.testing.kotlinfixture.app.javasrc.JavaWidget")
+          )
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(javaFile)
+        Files.deleteIfExists(javaDir)
+      }
+    }
+  }
+
+  @Test
   fun unimportedClassifierIgnoresAliasedSimpleName() {
     withWorkspace {
       val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")

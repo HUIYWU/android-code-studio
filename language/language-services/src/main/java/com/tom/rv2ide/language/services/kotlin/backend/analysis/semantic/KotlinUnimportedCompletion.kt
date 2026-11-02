@@ -6,6 +6,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassK
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceExtensionKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.ownerModulePathOf
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourceIndex
 import com.tom.rv2ide.lsp.api.describeSnippet
 import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.CompletionItem
@@ -57,6 +58,7 @@ internal fun unimportedCompletionItems(
     classCallSnippet: Boolean,
     classIndex: JvmClassIndex? = null,
     binarySources: Collection<Path> = emptyList(),
+    javaIndex: JavaSourceIndex? = null,
     cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem> {
   if (metadataIndex == null) return emptyList()
@@ -133,6 +135,24 @@ internal fun unimportedCompletionItems(
                     JvmCallableKind.FUNCTION -> UnimportedDeclarationKind.FUNCTION
                     JvmCallableKind.PROPERTY -> UnimportedDeclarationKind.PROPERTY
                   },
+          )
+    }
+  }
+  if (javaIndex != null) {
+    cancelChecker.abortIfCancelled()
+    for (entry in
+        javaIndex.classesBySimpleNamePrefix(
+            currentModulePath, segment, UNIMPORTED_COMPLETION_BUDGET)) {
+      if (entry.packageName == currentPackage) continue
+      if (entry.packageName in DEFAULT_IMPORTED_PACKAGES) continue
+      if (entry.simpleName in importedNames) continue
+      candidates +=
+          UnimportedCandidate(
+              name = entry.simpleName,
+              fqName =
+                  if (entry.packageName.isEmpty()) entry.simpleName
+                  else "${entry.packageName}.${entry.simpleName}",
+              kind = entry.kind.toUnimportedKind(),
           )
     }
   }

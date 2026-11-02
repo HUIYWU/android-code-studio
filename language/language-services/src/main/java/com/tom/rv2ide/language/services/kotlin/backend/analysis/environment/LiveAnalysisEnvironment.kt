@@ -7,6 +7,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffo
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisModuleContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassIndex
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourceIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceRootDescriptor
@@ -123,6 +124,8 @@ internal class LiveAnalysisEnvironment(
     private set
   lateinit var binaryClassIndex: JvmClassIndex
     private set
+  lateinit var javaSourceIndex: JavaSourceIndex
+    private set
 
   fun binaryRootsFor(modulePath: String?): List<Path> {
     if (modulePath == null || !::runtimeGraph.isInitialized) return emptyList()
@@ -200,6 +203,8 @@ internal class LiveAnalysisEnvironment(
 
       runtimeGraph = LiveAnalysisModuleGraph.build(projectContext.modules)
       binaryClassIndex = JvmClassIndex()
+      javaSourceIndex =
+          JavaSourceIndex { modulePath -> projectContext.module(modulePath)?.javaSourceRoots.orEmpty() }
       logMissingRoots(runtimeGraph)
 val libraryModules = linkedMapOf<String, KaLibraryModule>()
        val librarySourceModules = linkedMapOf<String, KaLibrarySourceModule>()
@@ -398,6 +403,7 @@ override fun close() {
       }
      if (::liveIndex.isInitialized) liveIndex.close()
      if (::binaryClassIndex.isInitialized) binaryClassIndex.close()
+     if (::javaSourceIndex.isInitialized) javaSourceIndex.close()
      temporaryLibrarySourceRoots.toList().forEach(::deleteTemporarySourceRoot)
      temporaryLibrarySourceRoots.clear()
 Disposer.dispose(disposable)
