@@ -390,7 +390,7 @@ class KotlinAnalysisCompletionTest {
         """,
         "return Con",
     ) { labels, items ->
-      assertTrue(labels.contains("ConstructorWidget"))
+      assertTrue("labels=$labels", labels.contains("ConstructorWidget"))
       val item = items.single { it.ideLabel == "ConstructorWidget" }
       assertEquals(CompletionItemKind.CLASS, item.completionKind)
       assertEquals("ConstructorWidget(\$0)", item.insertText)

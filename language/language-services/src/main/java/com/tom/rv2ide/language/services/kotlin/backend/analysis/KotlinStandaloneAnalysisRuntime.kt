@@ -172,29 +172,33 @@ internal class KotlinStandaloneAnalysisRuntime(
           CompletionTarget.PackageOrImport ->
               CompletionResult(packageCompletionItems(clientPrefix, environment?.metadataIndex))
           else -> {
-            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element)
-            if (keywordItems != null) {
-              CompletionResult(keywordItems)
-            } else {
-              val classCallSnippet = target !is CompletionTarget.TypePosition &&
-                  target !is CompletionTarget.PackageOrImport
-              val items = completionItemsFor(clientPrefix, element, classCallSnippet)
-              val unimported = unimportedClassifierCompletionItems(
-                  clientPrefix,
-                  file,
-                  environment?.metadataIndex,
-                  classCallSnippet,
-              )
-              val merged =
-                  if (unimported.isEmpty()) {
-                    items
-                  } else {
-                    items + unimported.filterNot { candidate ->
-                      items.any { it.ideLabel == candidate.ideLabel }
-                    }
+            val classCallSnippet = target !is CompletionTarget.TypePosition &&
+                target !is CompletionTarget.PackageOrImport
+            val items = completionItemsFor(clientPrefix, element, classCallSnippet)
+            val unimported = unimportedClassifierCompletionItems(
+                clientPrefix,
+                file,
+                environment?.metadataIndex,
+                classCallSnippet,
+            )
+            val symbolItems =
+                if (unimported.isEmpty()) {
+                  items
+                } else {
+                  items + unimported.filterNot { candidate ->
+                    items.any { it.ideLabel == candidate.ideLabel }
                   }
-              CompletionResult(merged)
-            }
+                }
+            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element)
+            val merged =
+                if (keywordItems.isNullOrEmpty()) {
+                  symbolItems
+                } else {
+                  symbolItems + keywordItems.filterNot { keyword ->
+                    symbolItems.any { it.ideLabel == keyword.ideLabel }
+                  }
+                }
+            CompletionResult(merged)
           }
         }
       }
