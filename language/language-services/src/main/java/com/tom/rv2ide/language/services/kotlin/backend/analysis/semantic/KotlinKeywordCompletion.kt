@@ -4,6 +4,7 @@ import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import com.tom.rv2ide.lsp.models.MatchLevel
+import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.com.intellij.psi.PsiComment
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
@@ -80,6 +81,7 @@ internal fun keywordCompletionItems(
     file: KtFile,
     offset: Int,
     element: PsiElement?,
+    cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem>? {
   // A dot prefix means receiver completion; keyword items would replace the receiver text.
   if (prefix.indexOf('.') >= 0) return null
@@ -87,7 +89,7 @@ internal fun keywordCompletionItems(
   if (wordPrefix.isEmpty()) return null
   val matched = ALL_KEYWORDS.filter { it.value.startsWith(wordPrefix, ignoreCase = true) }
   if (matched.isEmpty()) return null
-  val accepted = filterByParsing(file, offset, element, matched)
+  val accepted = filterByParsing(file, offset, element, matched, cancelChecker)
   if (accepted.isEmpty()) return null
   return accepted.map(::keywordItem)
 }
@@ -97,6 +99,7 @@ private fun filterByParsing(
     offset: Int,
     element: PsiElement?,
     candidates: List<KtKeywordToken>,
+    cancelChecker: ICancelChecker,
 ): List<KtKeywordToken> {
   val probed = candidates.take(MAX_PROBE_CANDIDATES)
   val remaining = candidates.drop(probed.size)
@@ -108,6 +111,7 @@ private fun filterByParsing(
           .getOrNull() ?: return candidates
   val accepted =
       probed.filter { token ->
+        cancelChecker.abortIfCancelled()
         // Parsing failures must not hide a keyword: only a successful parse that rejects the
         // position removes the candidate.
         runCatching { keywordAccepted(factory, context, token) }.getOrDefault(true)

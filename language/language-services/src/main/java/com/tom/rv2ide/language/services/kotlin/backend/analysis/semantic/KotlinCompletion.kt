@@ -134,6 +134,15 @@ private fun adjacentDotReceiver(offset: Int, element: PsiElement?): CompletionTa
   return CompletionTarget.Receiver(receiver, safe)
 }
 
+internal fun KaSession.receiverTypeShortName(receiver: KtExpression, safe: Boolean): String? {
+  val type = runCatching { receiver.expressionType }.getOrNull() ?: return null
+  val effective = if (safe && type.isMarkedNullable) type.withNullability(false) else type
+  return runCatching {
+        effective.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)
+      }
+      .getOrNull()
+}
+
 internal fun KaSession.receiverCompletionItems(
     prefix: String,
     target: CompletionTarget.Receiver,

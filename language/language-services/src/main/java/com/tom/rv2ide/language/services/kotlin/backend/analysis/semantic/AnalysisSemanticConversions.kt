@@ -15,6 +15,7 @@ import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.lsp.models.LineIndex
+import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.compositeScope
 import org.jetbrains.kotlin.analysis.api.components.scopeContext
@@ -50,7 +51,9 @@ internal fun KaSession.completionItemsFor(
     prefix: String,
     element: org.jetbrains.kotlin.psi.KtElement,
     classCallSnippet: Boolean = false,
+    cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem> {
+  cancelChecker.abortIfCancelled()
   val scope = element.containingKtFile.scopeContext(element).compositeScope()
   val symbols = sequence<KaSymbol> {
     yieldAll(scope.callables { it.asString().startsWith(prefix, ignoreCase = true) })
@@ -58,6 +61,7 @@ internal fun KaSession.completionItemsFor(
   }
   return symbols
       .mapNotNull {
+        cancelChecker.abortIfCancelled()
         completionItemFor(it, prefix, forceCallSnippet = classCallSnippet && it is KaClassSymbol)
       }
       .distinctBy { it.ideLabel }

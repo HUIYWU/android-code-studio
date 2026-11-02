@@ -1,6 +1,7 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
 
 import org.jetbrains.kotlin.fileClasses.javaFileFacadeFqName
+import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
@@ -8,6 +9,7 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.psi.KtCallableDeclaration
 import org.jetbrains.kotlin.psi.KtClassLikeDeclaration
 import org.jetbrains.kotlin.psi.KtClassOrObject
+import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtProperty
@@ -15,6 +17,7 @@ import org.jetbrains.kotlin.psi.KtNullableType
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 import org.jetbrains.kotlin.psi.KtTypeAlias
 import org.jetbrains.kotlin.psi.KtTypeElement
+import org.jetbrains.kotlin.psi.KtTypeReference
 import org.jetbrains.kotlin.psi.KtUserType
 import org.jetbrains.kotlin.psi.psiUtil.getImportedSimpleNameByImportAlias
 import org.jetbrains.kotlin.psi.psiUtil.getSuperNames
@@ -28,6 +31,24 @@ internal enum class KotlinSourceDeclarationKind {
   FACADE,
   SCRIPT,
 }
+
+internal enum class KotlinSourceClassifierVisibility {
+  PUBLIC,
+  INTERNAL,
+  PRIVATE,
+}
+
+internal enum class KotlinSourceExtensionKind {
+  FUNCTION,
+  PROPERTY,
+}
+
+internal data class KotlinSourceExtension(
+    val name: String,
+    val receiverType: String,
+    val kind: KotlinSourceExtensionKind,
+    val visibility: KotlinSourceClassifierVisibility,
+)
 
 internal sealed interface KotlinSourceDeclarationKey {
   data class ClassLike(val classId: ClassId) : KotlinSourceDeclarationKey
@@ -56,9 +77,35 @@ internal data class KotlinSourceFileMetadata(
     val identity: LiveFileIdentity,
     val indexed: Boolean,
     val topLevelClassifierNames: Set<String>,
+    val topLevelClassifierVisibility: Map<String, KotlinSourceClassifierVisibility>,
     val topLevelCallableNames: Set<String>,
+    val topLevelImportableFunctionNames: Set<String>,
+    val topLevelImportablePropertyNames: Set<String>,
+    val topLevelCallableVisibility: Map<String, KotlinSourceClassifierVisibility>,
+    val topLevelExtensions: List<KotlinSourceExtension>,
     val declarations: List<KotlinSourceDeclarationRecord>,
-)
+) {
+  fun isClassifierImportable(name: String, currentModulePath: String?): Boolean =
+      isImportable(topLevelClassifierVisibility[name], currentModulePath)
+
+  fun isCallableImportable(name: String, currentModulePath: String?): Boolean =
+      isImportable(topLevelCallableVisibility[name], currentModulePath)
+
+  fun isExtensionImportable(
+      extension: KotlinSourceExtension,
+      currentModulePath: String?,
+  ): Boolean = isImportable(extension.visibility, currentModulePath)
+
+  private fun isImportable(
+      visibility: KotlinSourceClassifierVisibility?,
+      currentModulePath: String?,
+  ): Boolean =
+      when (visibility ?: KotlinSourceClassifierVisibility.PUBLIC) {
+        KotlinSourceClassifierVisibility.PRIVATE -> false
+        KotlinSourceClassifierVisibility.INTERNAL -> ownerModulePath == currentModulePath
+        KotlinSourceClassifierVisibility.PUBLIC -> true
+      }
+}
 
 internal class KotlinSourceMetadataIndex {
   private val lock = Any()
@@ -82,6 +129,56 @@ internal class KotlinSourceMetadataIndex {
     synchronized(lock) {
       removeLocked(normalized)
       val declarations = declarationsOf(normalized, identity, file)
+      val classifierVisibility =
+          file.declarations.asSequence()
+              .filterIsInstance<KtClassLikeDeclaration>()
+              .mapNotNull { declaration ->
+                declaration.name?.let { it to declaration.declarationVisibility() }
+              }
+              .toMap()
+      val importableFunctions =
+          file.declarations.filterIsInstance<KtNamedFunction>()
+              .filter { it.receiverTypeReference == null }
+      val importableProperties =
+          file.declarations.filterIsInstance<KtProperty>()
+              .filter { it.receiverTypeReference == null }
+      val callableVisibility =
+          (importableFunctions.asSequence() + importableProperties.asSequence())
+              .mapNotNull { declaration ->
+                declaration.name?.let { it to declaration.declarationVisibility() }
+              }
+              .toMap()
+      val extensions =
+          buildList {
+            file.declarations.filterIsInstance<KtNamedFunction>().forEach { function ->
+              val receiver = simpleReceiverTypeName(function.receiverTypeReference)
+              val name = function.name
+              if (receiver != null && name != null) {
+                add(
+                    KotlinSourceExtension(
+                        name,
+                        receiver,
+                        KotlinSourceExtensionKind.FUNCTION,
+                        function.declarationVisibility(),
+                    )
+                )
+              }
+            }
+            file.declarations.filterIsInstance<KtProperty>().forEach { property ->
+              val receiver = simpleReceiverTypeName(property.receiverTypeReference)
+              val name = property.name
+              if (receiver != null && name != null) {
+                add(
+                    KotlinSourceExtension(
+                        name,
+                        receiver,
+                        KotlinSourceExtensionKind.PROPERTY,
+                        property.declarationVisibility(),
+                    )
+                )
+              }
+            }
+          }
       val metadata = KotlinSourceFileMetadata(
           path = normalized,
           ownerModulePath = sourceRoot?.ownerModulePath,
@@ -89,14 +186,16 @@ internal class KotlinSourceMetadataIndex {
           sourceKind = sourceRoot?.sourceKind ?: KotlinSourceKind.UNKNOWN,
           identity = identity,
           indexed = true,
-          topLevelClassifierNames = file.declarations.asSequence()
-              .filterIsInstance<KtClassLikeDeclaration>()
-              .mapNotNull { it.name }
-              .toSet(),
+          topLevelClassifierNames = classifierVisibility.keys,
+          topLevelClassifierVisibility = classifierVisibility,
           topLevelCallableNames = file.declarations.asSequence()
               .filterIsInstance<KtCallableDeclaration>()
               .mapNotNull { it.name }
               .toSet(),
+          topLevelImportableFunctionNames = importableFunctions.mapNotNull { it.name }.toSet(),
+          topLevelImportablePropertyNames = importableProperties.mapNotNull { it.name }.toSet(),
+          topLevelCallableVisibility = callableVisibility,
+          topLevelExtensions = extensions,
           declarations = declarations,
       )
       records[normalized] = metadata
@@ -309,6 +408,25 @@ internal class KotlinSourceMetadataIndex {
     return declarations
   }
 }
+
+private fun KtDeclaration.declarationVisibility(): KotlinSourceClassifierVisibility =
+    when {
+      hasModifier(KtTokens.PRIVATE_KEYWORD) -> KotlinSourceClassifierVisibility.PRIVATE
+      hasModifier(KtTokens.INTERNAL_KEYWORD) -> KotlinSourceClassifierVisibility.INTERNAL
+      else -> KotlinSourceClassifierVisibility.PUBLIC
+    }
+
+private fun simpleReceiverTypeName(reference: KtTypeReference?): String? {
+  val text = reference?.text?.trim() ?: return null
+  if (text.isEmpty()) return null
+  if (text.any { it == '<' || it == '>' || it == '?' || it == '.' || it == ',' || it.isWhitespace() }) {
+    return null
+  }
+  return text
+}
+
+internal fun KotlinSourceMetadataIndex.ownerModulePathOf(file: KtFile): String? =
+    file.liveBackingPath?.let { metadata(it)?.ownerModulePath }
 
 private fun findInheritableSimpleNames(typeElement: KtTypeElement): List<String> = when (typeElement) {
   is KtUserType -> {

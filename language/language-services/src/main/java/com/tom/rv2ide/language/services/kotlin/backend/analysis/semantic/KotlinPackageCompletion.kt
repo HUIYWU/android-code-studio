@@ -5,12 +5,15 @@ import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import com.tom.rv2ide.lsp.models.MatchLevel
+import com.tom.rv2ide.progress.ICancelChecker
 
 private const val PACKAGE_COMPLETION_BUDGET = 50
 
 internal fun packageCompletionItems(
     prefix: String,
     metadataIndex: KotlinSourceMetadataIndex?,
+    currentModulePath: String?,
+    cancelChecker: ICancelChecker = ICancelChecker.NOOP,
 ): List<CompletionItem> {
   if (metadataIndex == null) return emptyList()
   val normalized = prefix.trim()
@@ -24,6 +27,7 @@ internal fun packageCompletionItems(
       .filter { it.startsWith(segment, ignoreCase = true) }
       .sorted()
       .forEach { name ->
+        cancelChecker.abortIfCancelled()
         if (items.size >= PACKAGE_COMPLETION_BUDGET) return@forEach
         items += packageItem(name, parentPackage, segment, CompletionItemKind.MODULE)
       }
@@ -32,11 +36,15 @@ internal fun packageCompletionItems(
       .filesForPackage(parentPackage)
       .asSequence()
       .mapNotNull(metadataIndex::metadata)
-      .flatMap { it.topLevelClassifierNames.asSequence() }
+      .flatMap { metadata ->
+        metadata.topLevelClassifierNames.asSequence()
+            .filter { metadata.isClassifierImportable(it, currentModulePath) }
+      }
       .distinct()
       .filter { it.startsWith(segment, ignoreCase = true) }
       .sorted()
       .forEach { name ->
+        cancelChecker.abortIfCancelled()
         if (items.size >= PACKAGE_COMPLETION_BUDGET) return@forEach
         items += packageItem(name, parentPackage, segment, CompletionItemKind.CLASS)
       }

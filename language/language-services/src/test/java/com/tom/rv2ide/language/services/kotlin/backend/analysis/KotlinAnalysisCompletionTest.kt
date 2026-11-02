@@ -7,14 +7,19 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTe
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withRuntime
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withWorkspace
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionItemKind
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -541,6 +546,337 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun unimportedClassifierIgnoresAliasedSimpleName() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("AliasCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedAliasUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class AliasWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import com.tom.rv2ide.testing.kotlinfixture.app.extra.AliasWidget as Widget
+
+          fun useAliased(): Alias = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Alias") + ": Alias".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val item = help.items.single { it.ideLabel == "AliasWidget" }
+          assertEquals(CompletionItemKind.CLASS, item.completionKind)
+          val edit = requireNotNull(item.additionalTextEdits).single()
+          assertTrue(edit.newText.contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.AliasWidget"))
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedStarImportSuppressesDuplicateImport() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("StarCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedStarUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class StarWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import com.tom.rv2ide.testing.kotlinfixture.app.extra.*
+
+          fun useStarImported(): Star = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Star") + ": Star".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val item = help.items.single { it.ideLabel == "StarWidget" }
+          assertEquals(CompletionItemKind.CLASS, item.completionKind)
+          assertTrue(item.additionalTextEdits.isNullOrEmpty())
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedClassifierSkipsPrivateTopLevel() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("HiddenCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedHiddenUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          private class HiddenWidget
+
+          class HiddenVisibleWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useHidden(): Hidden = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Hidden") + ": Hidden".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          assertFalse(help.items.any { it.ideLabel == "HiddenWidget" })
+          val item = help.items.single { it.ideLabel == "HiddenVisibleWidget" }
+          val edit = requireNotNull(item.additionalTextEdits).single()
+          assertTrue(edit.newText.contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.HiddenVisibleWidget"))
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedClassifierInsertsSortedImport() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("SortedCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedSortedUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class SortedWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import java.util.ArrayList
+          import kotlin.math.max
+
+          fun useSorted(): Sorted = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Sorted") + ": Sorted".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val item = help.items.single { it.ideLabel == "SortedWidget" }
+          val edit = requireNotNull(item.additionalTextEdits).single()
+          assertEquals("import com.tom.rv2ide.testing.kotlinfixture.app.extra.SortedWidget\n", edit.newText)
+          assertEquals(2, edit.range.start.line)
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedCallablesAddImportEdit() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("CallableCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedCallableUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          fun helperFunction(value: Int): Int = value
+
+          val helperProperty: String = ""
+
+          fun String.helperExtension(): String = this
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useCallables() {
+            val value = helper
+          }
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf("= helper") + "= helper".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val function = help.items.single { it.ideLabel == "helperFunction" }
+          assertEquals(CompletionItemKind.FUNCTION, function.completionKind)
+          assertEquals("helperFunction(\$0)", function.insertText)
+          assertEquals(InsertTextFormat.SNIPPET, function.insertTextFormat)
+          assertEquals(Command.TRIGGER_PARAMETER_HINTS, function.command?.command)
+          assertTrue(requireNotNull(function.snippetDescription).deleteSelected)
+          assertTrue(
+              requireNotNull(function.additionalTextEdits).single().newText
+                  .contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.helperFunction")
+          )
+          val property = help.items.single { it.ideLabel == "helperProperty" }
+          assertEquals(CompletionItemKind.PROPERTY, property.completionKind)
+          assertEquals("helperProperty", property.insertText)
+          assertEquals(InsertTextFormat.PLAIN_TEXT, property.insertTextFormat)
+          assertNull(property.command)
+          assertTrue(
+              requireNotNull(property.additionalTextEdits).single().newText
+                  .contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.helperProperty")
+          )
+          assertFalse(help.items.any { it.ideLabel == "helperExtension" })
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedClassifierInsertsSortedImportInsideGroup() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("GroupedCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedGroupedUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class GroupedWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import java.util.ArrayList
+          import kotlin.math.max
+
+          import com.tom.rv2ide.testing.kotlinfixture.app.other.StaticThing
+
+          fun useGrouped(): Grouped = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Grouped") + ": Grouped".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val item = help.items.single { it.ideLabel == "GroupedWidget" }
+          val edit = requireNotNull(item.additionalTextEdits).single()
+          assertEquals("import com.tom.rv2ide.testing.kotlinfixture.app.extra.GroupedWidget\n", edit.newText)
+          assertEquals(2, edit.range.start.line)
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun unimportedExtensionAddsImportEdit() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("ExtensionCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedExtensionUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          fun String.addExclamation(): String = this + "!"
+
+          val String.extLength: Int get() = length
+
+          fun Int.plusOne(): Int = this + 1
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useUnimportedExtension() {
+            "text".
+          }
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf("\"text\".") + "\"text\".".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val function = help.items.single { it.ideLabel == "addExclamation" }
+          assertEquals(CompletionItemKind.FUNCTION, function.completionKind)
+          assertEquals("addExclamation(\$0)", function.insertText)
+          assertEquals(InsertTextFormat.SNIPPET, function.insertTextFormat)
+          assertEquals(Command.TRIGGER_PARAMETER_HINTS, function.command?.command)
+          assertTrue(requireNotNull(function.snippetDescription).deleteSelected)
+          assertTrue(
+              requireNotNull(function.additionalTextEdits).single().newText
+                  .contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.addExclamation")
+          )
+          val property = help.items.single { it.ideLabel == "extLength" }
+          assertEquals(CompletionItemKind.PROPERTY, property.completionKind)
+          assertEquals("extLength", property.insertText)
+          assertEquals(InsertTextFormat.PLAIN_TEXT, property.insertTextFormat)
+          assertNull(property.command)
+          assertTrue(
+              requireNotNull(property.additionalTextEdits).single().newText
+                  .contains("import com.tom.rv2ide.testing.kotlinfixture.app.extra.extLength")
+          )
+          assertFalse(help.items.any { it.ideLabel == "plusOne" })
+          assertTrue(help.items.any { it.ideLabel == "length" })
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
   fun modifierKeywordCompletionBeforeFunction() {
     verifyCompletion(
         "CompletionModifierFunction.kt",
@@ -863,6 +1199,100 @@ class KotlinAnalysisCompletionTest {
     }
   }
 
+  @Test
+  fun unimportedCandidateSurvivesSameLabelVisibleSymbol() {
+    withWorkspace {
+      val extraDir = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/extra")
+      val extraFile = extraDir.resolve("CollisionCandidate.kt")
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/UnimportedCollisionUse.kt")
+      val extraContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app.extra
+
+          class UnimportedWidget
+      """.trimIndent() + "\n"
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun UnimportedWidget(): String = ""
+
+          fun useUnimportedCollision(): Unimp = TODO()
+      """.trimIndent() + "\n"
+      Files.createDirectories(extraDir)
+      Files.write(extraFile, extraContent.toByteArray(Charsets.UTF_8))
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val caret = content.indexOf(": Unimp") + ": Unimp".length
+          val help = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, caret))
+          })
+          val importedClass =
+              help.items.single {
+                it.ideLabel == "UnimportedWidget" && it.completionKind == CompletionItemKind.CLASS
+              }
+          assertTrue(requireNotNull(importedClass.additionalTextEdits).isNotEmpty())
+          assertTrue(
+              help.items.any {
+                it.ideLabel == "UnimportedWidget" &&
+                    it.completionKind == CompletionItemKind.FUNCTION &&
+                    it.additionalTextEdits.isNullOrEmpty()
+              }
+          )
+        }
+      } finally {
+        Files.deleteIfExists(file)
+        Files.deleteIfExists(extraFile)
+        Files.deleteIfExists(extraDir)
+      }
+    }
+  }
+
+  @Test
+  fun completionAbortsWhenCancelledDuringEnumeration() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/CompletionCancellation.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useCancelledScope() {
+            val value = con
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val offset = content.indexOf("= con") + "= con".length
+          val request = completionRequest(file, content, offset)
+          val checker = CompletionCheckpointChecker(cancelAt = 3)
+          val failure =
+              try {
+                runAnalysis { runtime.complete(request.copy(cancelChecker = checker)) }
+                null
+              } catch (error: Throwable) {
+                error
+              }
+          assertNotNull(failure)
+          var current: Throwable? = failure ?: error("expected cancellation")
+          var cancelled = false
+          while (current != null) {
+            if (current is CancellationException) {
+              cancelled = true
+              break
+            }
+            val cause = current.cause
+            current = if (cause === current) null else cause
+          }
+          assertTrue(cancelled)
+          assertTrue(checker.checkpoints.get() >= 3)
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
   private fun verifyCompletion(
       fixtureName: String,
       body: String,
@@ -919,5 +1349,21 @@ class KotlinAnalysisCompletionTest {
       if (ch.isLetterOrDigit() || ch == '_' || ch == '.') start-- else break
     }
     return content.substring(start, end)
+  }
+
+  private class CompletionCheckpointChecker(private val cancelAt: Int) : ICancelChecker {
+    val checkpoints = AtomicInteger()
+    private val cancelled = AtomicBoolean(false)
+
+    override fun cancel() {
+      cancelled.set(true)
+    }
+
+    override fun isCancelled(): Boolean = cancelled.get()
+
+    override fun abortIfCancelled() {
+      if (checkpoints.incrementAndGet() >= cancelAt) cancel()
+      if (isCancelled()) throw CancellationException()
+    }
   }
 }

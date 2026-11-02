@@ -2,6 +2,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.ownerModulePathOf
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.KotlinSemanticTargetResolution
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.definitionTargetPsi
@@ -17,12 +18,14 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.paramet
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.keywordCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.packageCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.receiverCompletionItems
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.receiverTypeShortName
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveCompletionTarget
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSignatureCallCandidates
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSingleSignatureCall
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureArgumentIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureDisplayName
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedClassifierCompletionItems
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedCompletionItems
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedExtensionCompletionItems
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -164,38 +167,75 @@ internal class KotlinStandaloneAnalysisRuntime(
             val memberPrefix = clientPrefix.substringAfterLast('.')
             CompletionResult(
                 analysisBestEffort(emptyList(), request.cancelChecker) {
-                  receiverCompletionItems(memberPrefix, target, request.cancelChecker)
+                  val visible = receiverCompletionItems(memberPrefix, target, request.cancelChecker)
+                  val receiverTypeName = receiverTypeShortName(target.receiver, target.safe)
+                  val unimported =
+                      if (receiverTypeName == null) {
+                        emptyList()
+                      } else {
+                        unimportedExtensionCompletionItems(
+                            memberPrefix,
+                            receiverTypeName,
+                            file,
+                            environment?.metadataIndex,
+                            request.cancelChecker,
+                        )
+                      }
+                  if (unimported.isEmpty()) {
+                    visible
+                  } else {
+                    visible + unimported.filterNot { candidate ->
+                      visible.any {
+                        it.ideLabel == candidate.ideLabel && it.completionKind == candidate.completionKind
+                      }
+                    }
+                  }
                 }
             )
           }
           CompletionTarget.None -> CompletionResult.EMPTY
-          CompletionTarget.PackageOrImport ->
-              CompletionResult(packageCompletionItems(clientPrefix, environment?.metadataIndex))
+          CompletionTarget.PackageOrImport -> {
+            val metadataIndex = environment?.metadataIndex
+            CompletionResult(
+                packageCompletionItems(
+                    clientPrefix,
+                    metadataIndex,
+                    metadataIndex?.ownerModulePathOf(file),
+                    request.cancelChecker,
+                )
+            )
+          }
           else -> {
             val classCallSnippet = target !is CompletionTarget.TypePosition &&
                 target !is CompletionTarget.PackageOrImport
-            val items = completionItemsFor(clientPrefix, element, classCallSnippet)
-            val unimported = unimportedClassifierCompletionItems(
+            val items = completionItemsFor(clientPrefix, element, classCallSnippet, request.cancelChecker)
+            val unimported = unimportedCompletionItems(
                 clientPrefix,
                 file,
                 environment?.metadataIndex,
                 classCallSnippet,
+                request.cancelChecker,
             )
             val symbolItems =
                 if (unimported.isEmpty()) {
                   items
                 } else {
+                  request.cancelChecker.abortIfCancelled()
                   items + unimported.filterNot { candidate ->
-                    items.any { it.ideLabel == candidate.ideLabel }
+                    items.any {
+                      it.ideLabel == candidate.ideLabel && it.completionKind == candidate.completionKind
+                    }
                   }
                 }
-            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element)
+            val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element, request.cancelChecker)
             val merged =
                 if (keywordItems.isNullOrEmpty()) {
                   symbolItems
                 } else {
                   symbolItems + keywordItems.filterNot { keyword ->
-                    symbolItems.any { it.ideLabel == keyword.ideLabel }
+                    symbolItems.any {
+                      it.ideLabel == keyword.ideLabel && it.completionKind == keyword.completionKind
+                    }
                   }
                 }
             CompletionResult(merged)
