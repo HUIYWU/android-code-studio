@@ -165,7 +165,6 @@ dependencies {
   implementation("org.apache.commons:commons-compress:1.21")
 
   // external deps here
-  implementation("com.github.Dimezis:BlurView:version-3.2.0")
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(projects.external.acsprovider)
   implementation(projects.external.atc)

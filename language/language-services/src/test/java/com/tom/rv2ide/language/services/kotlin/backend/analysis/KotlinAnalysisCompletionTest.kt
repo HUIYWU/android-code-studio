@@ -381,6 +381,49 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun importCompletionIncludesBinaryClasspathClasses() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ImportBinaryUse.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import java.util.Arr
+          import kotlin.collections.Abs
+
+          fun useBinaryImports() {}
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val bootCaret = content.indexOf("java.util.Arr") + "java.util.Arr".length
+          val bootHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, bootCaret))
+          })
+          val bootLabels = bootHelp.items.map { it.ideLabel }
+          assertTrue("labels=$bootLabels", bootLabels.contains("ArrayList"))
+          val arrayList = bootHelp.items.single { it.ideLabel == "ArrayList" }
+          assertEquals(CompletionItemKind.CLASS, arrayList.completionKind)
+          assertEquals("java.util.ArrayList", arrayList.detail)
+          assertEquals("ArrayList", arrayList.insertText)
+
+          val libraryCaret = content.indexOf("kotlin.collections.Abs") + "kotlin.collections.Abs".length
+          val libraryHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, libraryCaret))
+          })
+          val libraryLabels = libraryHelp.items.map { it.ideLabel }
+          assertTrue("labels=$libraryLabels", libraryLabels.contains("AbstractList"))
+          val abstractList = libraryHelp.items.single { it.ideLabel == "AbstractList" }
+          assertEquals(CompletionItemKind.CLASS, abstractList.completionKind)
+          assertEquals("kotlin.collections.AbstractList", abstractList.detail)
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun classCompletionInExpressionUsesConstructorSnippet() {
     verifyCompletion(
         "CompletionConstructorExpression.kt",

@@ -196,11 +196,15 @@ internal class KotlinStandaloneAnalysisRuntime(
           CompletionTarget.None -> CompletionResult.EMPTY
           CompletionTarget.PackageOrImport -> {
             val metadataIndex = environment?.metadataIndex
+            val modulePath = metadataIndex?.ownerModulePathOf(file)
+            val binarySources = environment?.binaryRootsFor(modulePath).orEmpty()
             CompletionResult(
                 packageCompletionItems(
                     clientPrefix,
                     metadataIndex,
-                    metadataIndex?.ownerModulePathOf(file),
+                    modulePath,
+                    environment?.binaryClassIndex,
+                    binarySources,
                     request.cancelChecker,
                 )
             )

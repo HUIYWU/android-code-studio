@@ -6,6 +6,7 @@ import com.tom.rv2ide.javac.config.JavacConfigProvider
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisModuleContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceRootDescriptor
@@ -120,6 +121,13 @@ internal class LiveAnalysisEnvironment(
     private set
   lateinit var runtimeGraph: LiveAnalysisModuleGraph
     private set
+  lateinit var binaryClassIndex: JvmClassIndex
+    private set
+
+  fun binaryRootsFor(modulePath: String?): List<Path> {
+    if (modulePath == null || !::runtimeGraph.isInitialized) return emptyList()
+    return runtimeGraph.libraryRootsByModule[modulePath].orEmpty().map { it.path }
+  }
 
   fun configureRefreshScheduler(schedule: (Path, () -> Unit) -> Unit) {
     if (::liveIndex.isInitialized) liveIndex.configureRefreshScheduler(schedule)
@@ -191,6 +199,7 @@ internal class LiveAnalysisEnvironment(
       }
 
       runtimeGraph = LiveAnalysisModuleGraph.build(projectContext.modules)
+      binaryClassIndex = JvmClassIndex()
       logMissingRoots(runtimeGraph)
 val libraryModules = linkedMapOf<String, KaLibraryModule>()
        val librarySourceModules = linkedMapOf<String, KaLibrarySourceModule>()
@@ -388,6 +397,7 @@ override fun close() {
         return
       }
      if (::liveIndex.isInitialized) liveIndex.close()
+     if (::binaryClassIndex.isInitialized) binaryClassIndex.close()
      temporaryLibrarySourceRoots.toList().forEach(::deleteTemporarySourceRoot)
      temporaryLibrarySourceRoots.clear()
 Disposer.dispose(disposable)
