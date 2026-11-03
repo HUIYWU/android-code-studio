@@ -26,6 +26,7 @@ import org.jetbrains.kotlin.analysis.api.symbols.KaClassifierSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaConstructorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaEnumEntrySymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaJavaFieldSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaLocalVariableSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaNamedFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPropertySymbol
@@ -46,6 +47,15 @@ import java.nio.file.Paths
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 
 internal fun symbolName(symbol: KaSymbol): String? = symbol.name?.asString()
+
+internal fun CompletionItemKind.unimportedShadowingKind(): CompletionItemKind = when (this) {
+  CompletionItemKind.CLASS,
+  CompletionItemKind.INTERFACE,
+  CompletionItemKind.ENUM,
+  CompletionItemKind.ANNOTATION_TYPE,
+  CompletionItemKind.TYPE_PARAMETER -> CompletionItemKind.CLASS
+  else -> this
+}
 
 internal fun KaSession.completionItemsFor(
     prefix: String,
@@ -86,6 +96,7 @@ internal fun KaSession.completionItemFor(
     }
     is KaConstructorSymbol -> CompletionItemKind.CONSTRUCTOR
     is KaEnumEntrySymbol -> CompletionItemKind.ENUM_MEMBER
+    is KaJavaFieldSymbol -> CompletionItemKind.FIELD
     is KaTypeParameterSymbol -> CompletionItemKind.TYPE_PARAMETER
     is KaNamedFunctionSymbol -> CompletionItemKind.FUNCTION
     is KaLocalVariableSymbol -> CompletionItemKind.VARIABLE

@@ -26,6 +26,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatu
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureDisplayName
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedExtensionCompletionItems
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedShadowingKind
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -232,10 +233,12 @@ internal class KotlinStandaloneAnalysisRuntime(
                   items
                 } else {
                   request.cancelChecker.abortIfCancelled()
+                  val visibleKeys = items.mapTo(HashSet()) {
+                    it.ideLabel to it.completionKind.unimportedShadowingKind()
+                  }
                   items + unimported.filterNot { candidate ->
-                    items.any {
-                      it.ideLabel == candidate.ideLabel && it.completionKind == candidate.completionKind
-                    }
+                    request.cancelChecker.abortIfCancelled()
+                    (candidate.ideLabel to candidate.completionKind.unimportedShadowingKind()) in visibleKeys
                   }
                 }
             val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element, request.cancelChecker)

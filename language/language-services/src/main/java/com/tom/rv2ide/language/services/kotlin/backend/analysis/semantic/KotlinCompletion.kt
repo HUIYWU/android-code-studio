@@ -10,6 +10,8 @@ import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.expressionType
+import org.jetbrains.kotlin.analysis.api.components.containingDeclaration
+import org.jetbrains.kotlin.analysis.api.components.isImplicitReferenceToCompanion
 import org.jetbrains.kotlin.analysis.api.components.isMarkedNullable
 import org.jetbrains.kotlin.analysis.api.components.isSubtypeOf
 import org.jetbrains.kotlin.analysis.api.components.render
@@ -35,10 +37,13 @@ import org.jetbrains.kotlin.analysis.api.types.KaType
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
+import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.psi.KtDotQualifiedExpression
 import org.jetbrains.kotlin.psi.KtExpression
 import org.jetbrains.kotlin.psi.KtFunctionLiteral
 import org.jetbrains.kotlin.psi.KtImportDirective
+import org.jetbrains.kotlin.psi.KtNameReferenceExpression
 import org.jetbrains.kotlin.psi.KtPackageDirective
 import org.jetbrains.kotlin.psi.KtQualifiedExpression
 import org.jetbrains.kotlin.psi.KtSafeQualifiedExpression
@@ -148,9 +153,10 @@ internal fun KaSession.receiverCompletionItems(
     target: CompletionTarget.Receiver,
     cancelChecker: ICancelChecker,
 ): List<CompletionItem> {
-  val type = runCatching { target.receiver.expressionType }.getOrNull() ?: return emptyList()
-  val effectiveType = if (target.safe && type.isMarkedNullable) type.withNullability(false) else type
-  val nullableDot = !target.safe && effectiveType.isMarkedNullable
+  val type = runCatching { target.receiver.expressionType }.getOrNull()
+  val effectiveType =
+      type?.let { if (target.safe && it.isMarkedNullable) it.withNullability(false) else it }
+  val nullableDot = effectiveType != null && !target.safe && effectiveType.isMarkedNullable
   val nameFilter: (Name) -> Boolean = { it.asString().startsWith(prefix, ignoreCase = true) }
   val items = ArrayList<CompletionItem>(64)
   var remaining = RECEIVER_CANDIDATE_BUDGET
@@ -161,23 +167,39 @@ internal fun KaSession.receiverCompletionItems(
     remaining--
   }
 
-  if (!nullableDot) {
-    val typeScope = effectiveType.scope
-    if (typeScope != null) {
-      for (signature in typeScope.getCallableSignatures(nameFilter)) {
-        cancelChecker.abortIfCancelled()
-        if (remaining <= 0) break
-        add(completionItemFor(signature, prefix))
+  val receiverRange = target.receiver.textRange
+  val receiverResolution =
+      receiverRange?.let { range ->
+        val offset = (range.endOffset - 1).coerceAtLeast(range.startOffset)
+        resolveOrdinaryTargetAt(target.receiver.containingKtFile, offset)
       }
-      if (remaining > 0) {
-        for (classifier in typeScope.getClassifierSymbols(nameFilter)) {
-          cancelChecker.abortIfCancelled()
-          if (remaining <= 0) break
-          add(completionItemFor(classifier, prefix))
+  val referencedClass =
+      (receiverResolution as? KotlinSemanticTargetResolution.Unique)?.symbol as? KaClassSymbol
+  val receiverClass =
+      if (referencedClass != null && referencedClass.classKind == KaClassKind.COMPANION_OBJECT) {
+        val referenceExpression = when (val receiver = target.receiver) {
+          is KtNameReferenceExpression -> receiver
+          is KtDotQualifiedExpression -> receiver.selectorExpression as? KtNameReferenceExpression
+          else -> null
         }
+        val reference = referenceExpression?.reference as? KtReference
+        if (reference?.isImplicitReferenceToCompanion() == true) {
+          referencedClass.containingDeclaration as? KaClassSymbol
+        } else {
+          referencedClass
+        }
+      } else {
+        referencedClass
       }
-    } else {
-      val classSymbol = (effectiveType as? KaClassType)?.symbol as? KaClassSymbol ?: return emptyList()
+  val classifierQualifier =
+      receiverClass != null &&
+          !receiverClass.classKind.isObject &&
+          (target.receiver is KtNameReferenceExpression ||
+              target.receiver is KtDotQualifiedExpression)
+
+  if (!classifierQualifier && !nullableDot) {
+    if (effectiveType == null) {
+      val classSymbol = receiverClass ?: return emptyList()
       val memberScope = classSymbol.memberScope
       for (symbol in memberScope.callables(nameFilter)) {
         cancelChecker.abortIfCancelled()
@@ -191,40 +213,32 @@ internal fun KaSession.receiverCompletionItems(
           add(completionItemFor(classifier, prefix))
         }
       }
-    }
-  }
-  if (remaining > 0) {
-    val receiverStart = target.receiver.textRange?.startOffset
-    val receiverResolution = receiverStart?.let {
-      resolveOrdinaryTargetAt(target.receiver.containingKtFile, it)
-    }
-    val receiverClass = (receiverResolution as? KotlinSemanticTargetResolution.Unique)?.symbol as? KaClassSymbol
-    if (receiverClass != null) {
-      if (receiverClass.classKind == KaClassKind.ENUM_CLASS) {
-        val staticScope = receiverClass.staticMemberScope
-        for (symbol in staticScope.callables(nameFilter)) {
+    } else {
+      val typeScope = effectiveType.scope
+      if (typeScope != null) {
+        for (signature in typeScope.getCallableSignatures(nameFilter)) {
           cancelChecker.abortIfCancelled()
           if (remaining <= 0) break
-          add(completionItemFor(symbol, prefix))
+          add(completionItemFor(signature, prefix))
         }
         if (remaining > 0) {
-          for (classifier in staticScope.classifiers(nameFilter)) {
+          for (classifier in typeScope.getClassifierSymbols(nameFilter)) {
             cancelChecker.abortIfCancelled()
             if (remaining <= 0) break
             add(completionItemFor(classifier, prefix))
           }
         }
-      }
-      val companion = (receiverClass as? KaNamedClassSymbol)?.companionObject
-      if (companion != null && remaining > 0) {
-        val companionScope = companion.memberScope
-        for (symbol in companionScope.callables(nameFilter)) {
+      } else {
+        val classSymbol = (effectiveType as? KaClassType)?.symbol as? KaClassSymbol
+            ?: return emptyList()
+        val memberScope = classSymbol.memberScope
+        for (symbol in memberScope.callables(nameFilter)) {
           cancelChecker.abortIfCancelled()
           if (remaining <= 0) break
           add(completionItemFor(symbol, prefix))
         }
         if (remaining > 0) {
-          for (classifier in companionScope.classifiers(nameFilter)) {
+          for (classifier in memberScope.classifiers(nameFilter)) {
             cancelChecker.abortIfCancelled()
             if (remaining <= 0) break
             add(completionItemFor(classifier, prefix))
@@ -233,7 +247,49 @@ internal fun KaSession.receiverCompletionItems(
       }
     }
   }
-  if (remaining > 0) {
+
+  if (classifierQualifier && receiverClass != null) {
+    if (remaining > 0) {
+      for (classifier in receiverClass.memberScope.classifiers(nameFilter)) {
+        cancelChecker.abortIfCancelled()
+        if (remaining <= 0) break
+        add(completionItemFor(classifier, prefix))
+      }
+    }
+    val staticScope = receiverClass.staticMemberScope
+    for (symbol in staticScope.callables(nameFilter)) {
+      cancelChecker.abortIfCancelled()
+      if (remaining <= 0) break
+      add(completionItemFor(symbol, prefix))
+    }
+    if (remaining > 0) {
+      for (classifier in staticScope.classifiers(nameFilter)) {
+        cancelChecker.abortIfCancelled()
+        if (remaining <= 0) break
+        add(completionItemFor(classifier, prefix))
+      }
+    }
+  }
+
+  if (receiverClass != null && remaining > 0) {
+    val companion = (receiverClass as? KaNamedClassSymbol)?.companionObject
+    if (companion != null) {
+      val companionScope = companion.memberScope
+      for (symbol in companionScope.callables(nameFilter)) {
+        cancelChecker.abortIfCancelled()
+        if (remaining <= 0) break
+        add(completionItemFor(symbol, prefix))
+      }
+      if (remaining > 0) {
+        for (classifier in companionScope.classifiers(nameFilter)) {
+          cancelChecker.abortIfCancelled()
+          if (remaining <= 0) break
+          add(completionItemFor(classifier, prefix))
+        }
+      }
+    }
+  }
+  if (remaining > 0 && effectiveType != null) {
     val compositeScope = target.receiver.containingKtFile.scopeContext(target.receiver).compositeScope()
     for (symbol in compositeScope.callables(nameFilter)) {
       cancelChecker.abortIfCancelled()

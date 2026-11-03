@@ -1216,6 +1216,99 @@ class KotlinAnalysisCompletionTest {
   }
 
   @Test
+  fun classQualifierOffersNestedAndCompanionMembers() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/CompletionClassQualifier.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class OuterHost {
+            fun instanceFn() {}
+
+            class Nested
+
+            object InnerObj
+
+            companion object {
+              const val CONST_VALUE = 1
+            }
+          }
+
+          fun useOuterClass() {
+            OuterHost.
+          }
+
+          fun useOuterInstance(outer: OuterHost) {
+            outer.
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val classCaret = content.indexOf("OuterHost.") + "OuterHost.".length
+          val classHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, classCaret))
+          })
+          val classLabels = classHelp.items.map { it.ideLabel }
+          assertTrue("labels=$classLabels", classLabels.contains("Nested"))
+          assertTrue("labels=$classLabels", classLabels.contains("InnerObj"))
+          assertTrue("labels=$classLabels", classLabels.contains("CONST_VALUE"))
+          assertFalse("labels=$classLabels", classLabels.contains("instanceFn"))
+
+          val instanceCaret = content.indexOf("outer.") + "outer.".length
+          val instanceHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, instanceCaret))
+          })
+          val instanceLabels = instanceHelp.items.map { it.ideLabel }
+          assertTrue("labels=$instanceLabels", instanceLabels.contains("instanceFn"))
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun javaClassQualifierOffersStaticAndNestedMembers() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/CompletionJavaQualifier.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun useJavaStatics() {
+            System.
+          }
+
+          fun useJavaNested() {
+            java.util.Map.
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val staticCaret = content.indexOf("System.") + "System.".length
+          val staticHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, staticCaret))
+          })
+          val staticLabels = staticHelp.items.map { it.ideLabel }
+          assertTrue("labels=$staticLabels", staticLabels.contains("currentTimeMillis"))
+
+          val nestedCaret = content.indexOf("java.util.Map.") + "java.util.Map.".length
+          val nestedHelp = requireNotNull(runAnalysis {
+            runtime.complete(completionRequest(file, content, nestedCaret))
+          })
+          val nestedLabels = nestedHelp.items.map { it.ideLabel }
+          assertTrue("labels=$nestedLabels", nestedLabels.contains("Entry"))
+        }
+      } finally {
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun objectReceiverExposesObjectMembers() {
     verifyCompletion(
         "CompletionObject.kt",
