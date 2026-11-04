@@ -1,23 +1,32 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.live
 
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.ReferenceConventions
 import org.jetbrains.kotlin.fileClasses.javaFileFacadeFqName
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 
+import org.jetbrains.kotlin.psi.KtArrayAccessExpression
+import org.jetbrains.kotlin.psi.KtBinaryExpression
+import org.jetbrains.kotlin.psi.KtCallExpression
 import org.jetbrains.kotlin.psi.KtCallableDeclaration
 import org.jetbrains.kotlin.psi.KtClassLikeDeclaration
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtDeclaration
+import org.jetbrains.kotlin.psi.KtDestructuringDeclarationEntry
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtForExpression
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtProperty
+import org.jetbrains.kotlin.psi.KtPropertyDelegate
+import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.psi.KtNullableType
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 import org.jetbrains.kotlin.psi.KtTypeAlias
 import org.jetbrains.kotlin.psi.KtTypeElement
 import org.jetbrains.kotlin.psi.KtTypeReference
+import org.jetbrains.kotlin.psi.KtUnaryExpression
 import org.jetbrains.kotlin.psi.KtUserType
 import org.jetbrains.kotlin.psi.psiUtil.getImportedSimpleNameByImportAlias
 import org.jetbrains.kotlin.psi.psiUtil.getSuperNames
@@ -48,6 +57,11 @@ internal data class KotlinSourceExtension(
     val receiverType: String,
     val kind: KotlinSourceExtensionKind,
     val visibility: KotlinSourceClassifierVisibility,
+)
+
+internal data class KotlinSourceImportAlias(
+    val fqName: String,
+    val localName: String,
 )
 
 internal sealed interface KotlinSourceDeclarationKey {
@@ -84,6 +98,9 @@ internal data class KotlinSourceFileMetadata(
     val topLevelCallableVisibility: Map<String, KotlinSourceClassifierVisibility>,
     val topLevelExtensions: List<KotlinSourceExtension>,
     val declarations: List<KotlinSourceDeclarationRecord>,
+    val usageNames: Set<String>,
+    val conventionMask: Int,
+    val aliasImports: List<KotlinSourceImportAlias>,
 ) {
   fun isClassifierImportable(name: String, currentModulePath: String?): Boolean =
       isImportable(topLevelClassifierVisibility[name], currentModulePath)
@@ -118,6 +135,11 @@ internal class KotlinSourceMetadataIndex {
   private val scriptByFqName = mutableMapOf<FqName, MutableSet<KotlinSourceDeclarationRecord>>()
   private val classesBySupertypeNameIndex = mutableMapOf<String, MutableSet<KotlinSourceDeclarationRecord>>()
   private val typeAliasesByAliasedNameIndex = mutableMapOf<String, MutableSet<KotlinSourceDeclarationRecord>>()
+  private val usageNameToPaths = mutableMapOf<String, MutableSet<Path>>()
+  private val conventionPathsByBit = mutableMapOf<Int, MutableSet<Path>>()
+  private val aliasNameByFqName = mutableMapOf<String, MutableMap<String, MutableSet<Path>>>()
+  private val aliasImportPaths = mutableSetOf<Path>()
+  private var revisionValue = 0L
 
   fun replace(
       path: Path,
@@ -129,6 +151,7 @@ internal class KotlinSourceMetadataIndex {
     synchronized(lock) {
       removeLocked(normalized)
       val declarations = declarationsOf(normalized, identity, file)
+      val usageSummary = usageSummaryOf(file)
       val classifierVisibility =
           file.declarations.asSequence()
               .filterIsInstance<KtClassLikeDeclaration>()
@@ -197,10 +220,27 @@ internal class KotlinSourceMetadataIndex {
           topLevelCallableVisibility = callableVisibility,
           topLevelExtensions = extensions,
           declarations = declarations,
+          usageNames = usageSummary.names,
+          conventionMask = usageSummary.conventionMask,
+          aliasImports = usageSummary.aliases,
       )
       records[normalized] = metadata
       packageToPaths.getOrPut(metadata.packageName) { linkedSetOf() }.add(normalized)
       declarations.forEach(::addDeclarationLocked)
+      usageSummary.names.forEach { name ->
+        usageNameToPaths.getOrPut(name) { linkedSetOf() }.add(normalized)
+      }
+      forEachConventionBit(usageSummary.conventionMask) { bit ->
+        conventionPathsByBit.getOrPut(bit) { linkedSetOf() }.add(normalized)
+      }
+      usageSummary.aliases.forEach { alias ->
+        aliasNameByFqName
+            .getOrPut(alias.fqName) { mutableMapOf() }
+            .getOrPut(alias.localName) { linkedSetOf() }
+            .add(normalized)
+        aliasImportPaths.add(normalized)
+      }
+      revisionValue++
     }
   }
 
@@ -262,6 +302,39 @@ internal class KotlinSourceMetadataIndex {
     records.keys.toSet()
   }
 
+  fun pathsReferencing(names: Set<String>): Set<Path> = synchronized(lock) {
+    if (names.isEmpty()) return@synchronized emptySet()
+    val result = linkedSetOf<Path>()
+    names.forEach { name -> usageNameToPaths[name]?.let { result.addAll(it) } }
+    result
+  }
+
+  fun pathsWithConventions(mask: Int): Set<Path> = synchronized(lock) {
+    if (mask == 0) return@synchronized emptySet()
+    val result = linkedSetOf<Path>()
+    forEachConventionBit(mask) { bit ->
+      conventionPathsByBit[bit]?.let { result.addAll(it) }
+    }
+    result
+  }
+
+  fun pathsWithAliasImports(): Set<Path> = synchronized(lock) {
+    aliasImportPaths.toSet()
+  }
+
+  fun aliasNamesFor(fqNames: Set<String>): Set<String> = synchronized(lock) {
+    if (fqNames.isEmpty()) return@synchronized emptySet()
+    val result = linkedSetOf<String>()
+    fqNames.forEach { fqName ->
+      aliasNameByFqName[fqName]?.forEach { (localName, paths) ->
+        if (paths.isNotEmpty()) result.add(localName)
+      }
+    }
+    result
+  }
+
+  fun revision(): Long = synchronized(lock) { revisionValue }
+
   private fun removeLocked(path: Path) {
     records.remove(path)?.let { record ->
       packageToPaths[record.packageName]?.let { paths ->
@@ -269,6 +342,25 @@ internal class KotlinSourceMetadataIndex {
         if (paths.isEmpty()) packageToPaths.remove(record.packageName)
       }
       record.declarations.forEach(::removeDeclarationLocked)
+      record.usageNames.forEach { name ->
+        removePathFromSet(usageNameToPaths, name, path)
+      }
+      forEachConventionBit(record.conventionMask) { bit ->
+        removePathFromSet(conventionPathsByBit, bit, path)
+      }
+      record.aliasImports.forEach { alias ->
+        aliasNameByFqName[alias.fqName]?.let { byAlias ->
+          byAlias[alias.localName]?.let { paths ->
+            paths.remove(path)
+            if (paths.isEmpty()) byAlias.remove(alias.localName)
+          }
+          if (byAlias.isEmpty()) aliasNameByFqName.remove(alias.fqName)
+        }
+      }
+      if (record.aliasImports.isNotEmpty()) {
+        aliasImportPaths.remove(path)
+      }
+      revisionValue++
     }
   }
 
@@ -301,6 +393,25 @@ internal class KotlinSourceMetadataIndex {
     record.inheritableAliasedNames.forEach { name -> removeFromMap(typeAliasesByAliasedNameIndex, name, record) }
   }
 
+  private fun <K> removePathFromSet(
+      map: MutableMap<K, MutableSet<Path>>,
+      key: K,
+      path: Path,
+  ) {
+    map[key]?.let { paths ->
+      paths.remove(path)
+      if (paths.isEmpty()) map.remove(key)
+    }
+  }
+
+  private fun forEachConventionBit(mask: Int, action: (Int) -> Unit) {
+    var bit = 1
+    while (bit <= ReferenceConventions.ALL) {
+      if (mask and bit != 0) action(bit)
+      bit = bit shl 1
+    }
+  }
+
   private fun <K> removeFromMap(
       map: MutableMap<K, MutableSet<KotlinSourceDeclarationRecord>>,
       key: K,
@@ -310,6 +421,71 @@ internal class KotlinSourceMetadataIndex {
       declarations.remove(record)
       if (declarations.isEmpty()) map.remove(key)
     }
+  }
+
+  private data class KotlinSourceUsageSummary(
+      val names: Set<String>,
+      val conventionMask: Int,
+      val aliases: List<KotlinSourceImportAlias>,
+  )
+
+  private fun usageSummaryOf(file: KtFile): KotlinSourceUsageSummary {
+    val names = linkedSetOf<String>()
+    val aliases =
+        buildList<KotlinSourceImportAlias> {
+          file.importDirectives.forEach { directive ->
+            if (directive.isAllUnder) return@forEach
+            val fqName = directive.importedFqName?.asString() ?: return@forEach
+            val aliasName = directive.aliasName ?: return@forEach
+            names.add(aliasName)
+            add(KotlinSourceImportAlias(fqName, aliasName))
+          }
+        }
+    var conventionMask = 0
+    file.accept(
+        object : KtTreeVisitorVoid() {
+          override fun visitSimpleNameExpression(expression: KtSimpleNameExpression) {
+            expression.getReferencedName()?.takeIf { it.isNotEmpty() }?.let { names.add(it) }
+            super.visitSimpleNameExpression(expression)
+          }
+
+          override fun visitArrayAccessExpression(expression: KtArrayAccessExpression) {
+            conventionMask = conventionMask or ReferenceConventions.ARRAY_ACCESS
+            super.visitArrayAccessExpression(expression)
+          }
+
+          override fun visitBinaryExpression(expression: KtBinaryExpression) {
+            conventionMask = conventionMask or ReferenceConventions.OPERATOR
+            super.visitBinaryExpression(expression)
+          }
+
+          override fun visitUnaryExpression(expression: KtUnaryExpression) {
+            conventionMask = conventionMask or ReferenceConventions.OPERATOR
+            super.visitUnaryExpression(expression)
+          }
+
+          override fun visitDestructuringDeclarationEntry(entry: KtDestructuringDeclarationEntry) {
+            conventionMask = conventionMask or ReferenceConventions.DESTRUCTURING
+            super.visitDestructuringDeclarationEntry(entry)
+          }
+
+          override fun visitForExpression(expression: KtForExpression) {
+            conventionMask = conventionMask or ReferenceConventions.FOR_LOOP
+            super.visitForExpression(expression)
+          }
+
+          override fun visitPropertyDelegate(delegate: KtPropertyDelegate) {
+            conventionMask = conventionMask or ReferenceConventions.DELEGATE
+            super.visitPropertyDelegate(delegate)
+          }
+
+          override fun visitCallExpression(expression: KtCallExpression) {
+            conventionMask = conventionMask or ReferenceConventions.INVOKE
+            super.visitCallExpression(expression)
+          }
+        }
+    )
+    return KotlinSourceUsageSummary(names, conventionMask, aliases)
   }
 
   private fun declarationsOf(

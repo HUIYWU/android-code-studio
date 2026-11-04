@@ -18,9 +18,10 @@ package com.tom.rv2ide.language.services.kotlin.actions
 
 import com.tom.rv2ide.actions.ActionItem
 import com.tom.rv2ide.lsp.actions.IActionsMenuProvider
+import com.tom.rv2ide.language.services.kotlin.actions.common.FindReferencesAction
 import com.tom.rv2ide.language.services.kotlin.actions.common.GoToDefinitionAction
 
 internal object KotlinCodeActionsMenu : IActionsMenuProvider {
   override val actions: List<ActionItem> =
-      listOf(GoToDefinitionAction())
+      listOf(GoToDefinitionAction(), FindReferencesAction())
 }

@@ -494,6 +494,10 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
     currentFiles.keys.filter { getCurrentKtFile(it) != null }
   }
 
+  fun currentIdentity(path: Path): LiveFileIdentity? = synchronized(refreshLock) {
+    currentFiles[path.normalize()]?.identity
+  }
+
   fun registerDiskFile(path: Path): KtFile? = refreshCurrentKtFile(path)
 
   fun closeCurrent(path: Path) {

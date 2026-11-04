@@ -7,12 +7,15 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTe
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.runAnalysis
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withRuntime
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withWorkspace
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.ReferenceScanObserver
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MarkupKind
+import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.android.AndroidModule
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.readText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -274,6 +277,212 @@ class KotlinAnalysisRuntimeTest {
         }
         Files.deleteIfExists(generatedDirectory)
       }
+    }
+  }
+
+  @Test
+  fun referencesTreatInitializerAsUsageAndRespectDeclarationFlag() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceUsage.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          val sourceValue: String = "x"
+          val copiedValue: String = sourceValue
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val usageOnly = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "sourceValue"))
+          })
+          assertEquals(1, usageOnly.locations.size)
+          assertEquals(listOf(ReferenceRole.USAGE), usageOnly.roles)
+          val usageStart = content.indexOf("sourceValue", content.indexOf("sourceValue") + 1)
+          assertTrue(usageStart >= 0)
+          assertEquals(
+              LineIndex.from(content).indexToPosition(usageStart),
+              usageOnly.locations.single().range.start,
+          )
+
+          val withDeclaration = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(file, content, "sourceValue", includeDeclaration = true)
+            )
+          })
+          assertEquals(2, withDeclaration.locations.size)
+          assertEquals(2, withDeclaration.roles.size)
+          assertTrue(withDeclaration.roles.contains(ReferenceRole.DEFINITION))
+          assertTrue(withDeclaration.roles.contains(ReferenceRole.USAGE))
+          assertTrue(
+              withDeclaration.locations.zipWithNext().all { (first, second) ->
+                first.range.start.line < second.range.start.line ||
+                    (first.range.start.line == second.range.start.line &&
+                        first.range.start.column <= second.range.start.column)
+              }
+          )
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun referencesIncludeAliasUsageAndIgnoreCommentAndStringNoise() {
+    withWorkspace {
+      val requestFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/AppConsumer.kt")
+      val requestContent = requestFile.readText()
+      val aliasFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceAlias.kt")
+      val noiseFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceNoise.kt")
+      val aliasContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import com.tom.rv2ide.testing.kotlinfixture.library.LibraryApi as Api
+
+          // LibraryApi in a comment
+          const val aliasText: String = "LibraryApi"
+          fun aliasUse(): Api = Api()
+      """.trimIndent() + "\n"
+      val noiseContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          // LibraryApi only in a comment
+          const val noiseText: String = "LibraryApi"
+      """.trimIndent() + "\n"
+      openDocument(requestFile, requestContent, version = 1, revision = 1L)
+      openDocument(aliasFile, aliasContent, version = 1, revision = 1L)
+      openDocument(noiseFile, noiseContent, version = 1, revision = 1L)
+      Files.write(aliasFile, aliasContent.toByteArray(Charsets.UTF_8))
+      Files.write(noiseFile, noiseContent.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis {
+            runtime.onFileOpened(requestFile)
+            runtime.onFileOpened(aliasFile)
+            runtime.onFileOpened(noiseFile)
+          }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(requestFile, requestContent, "LibraryApi", includeDeclaration = true)
+            )
+          })
+          assertTrue(references.locations.any { it.file == aliasFile })
+          assertTrue(references.locations.none { it.file == noiseFile })
+        }
+      } finally {
+        closeDocument(aliasFile)
+        closeDocument(noiseFile)
+        Files.deleteIfExists(aliasFile)
+        Files.deleteIfExists(noiseFile)
+      }
+    }
+  }
+
+  @Test
+  fun referencesForLocalSymbolStayInDeclarationFile() {
+    withWorkspace {
+      val ownerFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceLocalOwner.kt")
+      val otherFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceLocalOther.kt")
+      val ownerContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun localOwner(): String {
+            val localValue = "owner"
+            return localValue
+          }
+      """.trimIndent() + "\n"
+      val otherContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun localOther(): String {
+            val localValue = "other"
+            return localValue
+          }
+      """.trimIndent() + "\n"
+      openDocument(ownerFile, ownerContent, version = 1, revision = 1L)
+      openDocument(otherFile, otherContent, version = 1, revision = 1L)
+      Files.write(ownerFile, ownerContent.toByteArray(Charsets.UTF_8))
+      Files.write(otherFile, otherContent.toByteArray(Charsets.UTF_8))
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis {
+            runtime.onFileOpened(ownerFile)
+            runtime.onFileOpened(otherFile)
+          }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(ownerFile, ownerContent, "localValue", includeDeclaration = true)
+            )
+          })
+          assertEquals(2, references.locations.size)
+          assertTrue(references.locations.all { it.file == ownerFile })
+        }
+      } finally {
+        closeDocument(ownerFile)
+        closeDocument(otherFile)
+        Files.deleteIfExists(ownerFile)
+        Files.deleteIfExists(otherFile)
+      }
+    }
+  }
+
+  @Test
+  fun referencesSkipAnalysisForFilesWithoutCandidateName() {
+    withWorkspace {
+      val requestFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/AppConsumer.kt")
+      val requestContent = requestFile.readText()
+      val noiseFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceObserverNoise.kt")
+      val noiseContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class ReferenceObserverNoise
+      """.trimIndent() + "\n"
+      openDocument(requestFile, requestContent, version = 1, revision = 1L)
+      openDocument(noiseFile, noiseContent, version = 1, revision = 1L)
+      Files.write(noiseFile, noiseContent.toByteArray(Charsets.UTF_8))
+      try {
+        val observer = RecordingReferenceObserver()
+        withRuntime(workspace, observer) { runtime ->
+          runAnalysis {
+            runtime.onFileOpened(requestFile)
+            runtime.onFileOpened(noiseFile)
+          }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(requestFile, requestContent, "LibraryApi", includeDeclaration = true)
+            )
+          })
+          assertTrue(references.locations.isNotEmpty())
+          assertTrue(observer.sessions.isNotEmpty())
+          assertTrue(observer.sessions.none { it == noiseFile })
+          assertTrue(observer.resolved > 0)
+        }
+      } finally {
+        closeDocument(noiseFile)
+        Files.deleteIfExists(noiseFile)
+      }
+    }
+  }
+
+  private class RecordingReferenceObserver : ReferenceScanObserver {
+    val candidates = linkedSetOf<Path>()
+    val sessions = linkedSetOf<Path>()
+    var resolved = 0
+
+    override fun candidateSelected(path: Path) {
+      candidates.add(path)
+    }
+
+    override fun analysisSessionStarted(path: Path) {
+      sessions.add(path)
+    }
+
+    override fun referenceResolved(path: Path) {
+      resolved++
     }
   }
 }

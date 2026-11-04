@@ -3,6 +3,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 import com.google.gson.JsonObject
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.ReferenceScanObserver
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.language.services.kotlin.semantic.KotlinSemanticRequest
 import com.tom.rv2ide.lsp.models.LineIndex
@@ -29,8 +30,21 @@ internal object KotlinAnalysisTestSupport {
   }
 
   fun withRuntime(workspace: IWorkspace, action: (KotlinStandaloneAnalysisRuntime) -> Unit) {
+    withRuntime(workspace, ReferenceScanObserver.NONE, action)
+  }
+
+  fun withRuntime(
+      workspace: IWorkspace,
+      observer: ReferenceScanObserver,
+      action: (KotlinStandaloneAnalysisRuntime) -> Unit,
+  ) {
     prepareAnalysisPaths()
-    val runtime = KotlinStandaloneAnalysisRuntime(KotlinProjectClasspathProvider(workspace), analysisApiJar())
+    val runtime =
+        KotlinStandaloneAnalysisRuntime(
+            KotlinProjectClasspathProvider(workspace),
+            analysisApiJar(),
+            observer,
+        )
     try {
       val started = runtime.start()
       assertTrue(

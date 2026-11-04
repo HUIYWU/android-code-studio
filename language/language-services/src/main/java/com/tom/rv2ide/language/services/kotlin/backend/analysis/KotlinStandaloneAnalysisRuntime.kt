@@ -4,9 +4,11 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.Live
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisBestEffort
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.ownerModulePathOf
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.KotlinSemanticTargetResolution
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.ReferenceScanObserver
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.buildReferencePlan
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.collectReferences
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.completionItemsFor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.definitionTargetPsi
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForElement
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.locationForPsi
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveOrdinaryTargetAt
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.SignatureCallCandidate
@@ -38,10 +40,8 @@ import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.MarkupKind
 import com.tom.rv2ide.lsp.models.ParameterInformation
 import com.tom.rv2ide.lsp.models.ReferenceResult
-import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.lsp.models.SignatureInformation
-import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.analysis.api.KaContextParameterApi
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
@@ -49,20 +49,14 @@ import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.KaNonPublicApi
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.render
-import org.jetbrains.kotlin.analysis.api.components.resolveToSymbols
 import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
-import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
-import org.jetbrains.kotlin.analysis.api.symbols.pointers.KaSymbolPointer
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
-import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.psi.KtCallElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtFunctionLiteral
-import org.jetbrains.kotlin.psi.KtNamedDeclaration
 import org.jetbrains.kotlin.psi.KtNonPublicApi
-import org.jetbrains.kotlin.psi.KtSimpleNameExpression
 import org.jetbrains.kotlin.types.Variance
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
@@ -71,6 +65,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
+    private val referenceObserver: ReferenceScanObserver = ReferenceScanObserver.NONE,
 ) : KotlinAnalysisRuntime {
   private val closed = AtomicBoolean(false)
   private var environment: LiveAnalysisEnvironment? = null
@@ -302,59 +297,17 @@ val symbol = when (val resolution = resolveOrdinaryTargetAt(file, requestOffset(
 
   override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? {
     val env = environment ?: return null
-    val target = withSemanticLiveFile(request) { file ->
-      val resolution = resolveOrdinaryTargetAt(file, requestOffset(request))
-      val symbol = (resolution as? KotlinSemanticTargetResolution.Unique)?.symbol ?: return@withSemanticLiveFile null
-      if (symbol.origin != org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin.SOURCE) return@withSemanticLiveFile null
-      SearchTarget(symbol.createPointer(), request.file)
-    } ?: return ReferenceResult(emptyList())
-
-    val locations = mutableListOf<Location>()
-    val roles = mutableListOf<ReferenceRole>()
-    env.liveIndex.currentPaths().forEach { path ->
-      request.cancelChecker.abortIfCancelled()
-      env.liveIndex.withLiveKtFile(path, request.cancelChecker) { live ->
-        if (live.isStale) return@withLiveKtFile Unit
-        live.analyzing(request.cancelChecker) { file ->
-          val visitor = object : org.jetbrains.kotlin.psi.KtTreeVisitorVoid() {
-            override fun visitElement(element: PsiElement) {
-              request.cancelChecker.abortIfCancelled()
-              if (request.includeDeclaration && element is KtNamedDeclaration) {
-                val nameIdentifier = element.nameIdentifier
-                if (nameIdentifier != null && analysisBestEffort(false, request.cancelChecker) {
-                      element.symbol.createPointer().pointsToTheSameSymbolAs(target.pointer)
-                    }) {
-                  val location = locationForElement(path, file, nameIdentifier)
-                  if (location != null) {
-                    locations += location
-                    roles += ReferenceRole.DEFINITION
-                  }
-                }
-              }
-              super.visitElement(element)
-            }
-
-            override fun visitSimpleNameExpression(expression: org.jetbrains.kotlin.psi.KtSimpleNameExpression) {
-              request.cancelChecker.abortIfCancelled()
-              val reference = expression.reference as? KtReference
-              if (reference != null && analysisBestEffort(false, request.cancelChecker) {
-                    reference.resolveToSymbols().any { it.createPointer().pointsToTheSameSymbolAs(target.pointer) }
-                  }) {
-                val location = locationForElement(path, file, expression)
-                if (location != null && (request.includeDeclaration || path != target.path || expression.parent !is KtNamedDeclaration)) {
-                  locations += location
-                  roles += if (path == target.path && expression.parent is KtNamedDeclaration) ReferenceRole.DEFINITION else ReferenceRole.USAGE
-                }
-              }
-              super.visitSimpleNameExpression(expression)
-            }
-          }
-          file.accept(visitor)
-        }
-      }
-    }
-    val distinctResults = locations.zip(roles).distinctBy { it.first }
-    return ReferenceResult(distinctResults.map { it.first }, distinctResults.map { it.second })
+    val plan =
+        withSemanticLiveFile(request) { file ->
+          buildReferencePlan(
+              requestPath = request.file,
+              file = file,
+              offset = requestOffset(request),
+              includeDeclaration = request.includeDeclaration,
+              environment = env,
+          )
+        } ?: return ReferenceResult(emptyList())
+    return collectReferences(plan, env, request.cancelChecker, referenceObserver)
   }
 
   override fun signatureHelp(request: KotlinSemanticRequest): SignatureHelp? =
@@ -417,11 +370,6 @@ val symbol = when (val resolution = resolveOrdinaryTargetAt(file, requestOffset(
     fun acceptsArgument(index: Int): Boolean =
         index < parameterCount || (acceptsExtraArguments && parameterCount > 0)
   }
-
-  private data class SearchTarget(
-      val pointer: KaSymbolPointer<KaSymbol>,
-      val path: Path,
-  )
 
   private fun <T> withSemanticLiveFile(
       request: KotlinSemanticRequest,
