@@ -114,67 +114,11 @@ override fun getLibraryMap(): CompletableFuture<Map<String, DefaultLibrary>> {
       val compileDependencies = variantDependencies.mainArtifact.compileDependencies
       val libraries = variantDependencies.libraries
 
-      logComposeDependencySummary(compileDependencies, libraries)
-
       for (dependency in compileDependencies) {
         seen[dependency.key] ?: fillLibrary(dependency, libraries, seen)
       }
 
-      logComposeSeenSummary(seen)
       seen
-    }
-  }
-
-  private fun logComposeDependencySummary(
-      compileDependencies: List<GraphItem>,
-      libraries: Map<String, Library>,
-  ) {
-  }
-
-  private fun logComposeSeenSummary(seen: Map<String, DefaultLibrary>) {
-  }
-
-
-
-  private fun collectGraphKeys(item: GraphItem, result: MutableSet<String>) {
-    if (!result.add(item.key)) return
-    item.dependencies.forEach { dependency -> collectGraphKeys(dependency, result) }
-  }
-
-  private fun isComposeInteresting(value: String?): Boolean {
-    if (value.isNullOrBlank()) return false
-    val normalized = value.lowercase()
-    return normalized.contains("androidx.compose") ||
-        normalized.contains("compose-ui") ||
-        normalized.contains("compose.ui") ||
-        normalized.contains("material3") ||
-        normalized.contains("ui-text") ||
-        normalized.contains("ui-graphics") ||
-        normalized.contains("foundation") ||
-        normalized.contains("runtime")
-  }
-
-  private fun describeLibrary(library: Library): String {
-    val info = library.libraryInfo
-    val coordinates = listOfNotNull(info?.group, info?.name, info?.version).joinToString(":")
-    val compileJarPreview = library.androidLibraryData?.compileJarFiles?.take(3)?.joinToString(",") { it.name }
-    val artifactName = library.artifact?.name
-    return buildString {
-      append("type=")
-      append(library.type)
-      if (coordinates.isNotBlank()) {
-        append(", coords=")
-        append(coordinates)
-      }
-      if (!artifactName.isNullOrBlank()) {
-        append(", artifact=")
-        append(artifactName)
-      }
-      if (!compileJarPreview.isNullOrBlank()) {
-        append(", compileJars=[")
-        append(compileJarPreview)
-        append("]")
-      }
     }
   }
 

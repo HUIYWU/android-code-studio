@@ -16,8 +16,6 @@
  */
 package com.tom.rv2ide.tooling.impl.sync
 
-import com.android.builder.model.v2.ide.GraphItem
-import com.android.builder.model.v2.ide.Library
 import com.android.builder.model.v2.models.AndroidDsl
 import com.android.builder.model.v2.models.AndroidProject
 import com.android.builder.model.v2.models.BasicAndroidProject
@@ -107,8 +105,6 @@ class AndroidProjectModelBuilder(initializationParams: InitializeProjectParams) 
           it.dontBuildHostTestRuntimeClasspath = emptyMap()
         }
 
-    logComposeDependencySummary(projectPath, configurationVariant, variantDependencies)
-
     controller.findModel(module, ProjectSyncIssues::class.java)?.also { syncIssues ->
       syncIssueReporter.reportAll(syncIssues)
     }
@@ -122,62 +118,5 @@ class AndroidProjectModelBuilder(initializationParams: InitializeProjectParams) 
         versions,
         androidDsl,
     )
-  }
-  private fun logComposeDependencySummary(
-      projectPath: String,
-      configurationVariant: String,
-      variantDependencies: VariantDependencies,
-  ) {
-  }
-
-
-
-  private fun collectGraphKeys(item: GraphItem, result: MutableSet<String>) {
-    if (!result.add(item.key)) return
-    item.dependencies.forEach { dependency -> collectGraphKeys(dependency, result) }
-  }
-
-  private fun isComposeInteresting(value: String?): Boolean {
-    if (value.isNullOrBlank()) return false
-    val normalized = value.lowercase()
-    return normalized.contains("androidx.compose") ||
-        normalized.contains("compose-ui") ||
-        normalized.contains("compose.ui") ||
-        normalized.contains("material3") ||
-        normalized.contains("ui-text") ||
-        normalized.contains("ui-graphics") ||
-        normalized.contains("foundation") ||
-        normalized.contains("runtime")
-  }
-
-  private fun isMaterial3Interesting(value: String?): Boolean {
-    if (value.isNullOrBlank()) return false
-    val normalized = value.lowercase()
-    return normalized.contains("androidx.compose.material3") || normalized.contains("material3")
-  }
-
-  private fun describeLibrary(library: Library): String {
-    val info = library.libraryInfo
-    val coordinates = listOfNotNull(info?.group, info?.name, info?.version).joinToString(":")
-    val compileJarPreview =
-        library.androidLibraryData?.compileJarFiles?.take(3)?.joinToString(",") { it.name }
-    val artifactName = library.artifact?.name
-    return buildString {
-      append("type=")
-      append(library.type)
-      if (coordinates.isNotBlank()) {
-        append(", coords=")
-        append(coordinates)
-      }
-      if (!artifactName.isNullOrBlank()) {
-        append(", artifact=")
-        append(artifactName)
-      }
-      if (!compileJarPreview.isNullOrBlank()) {
-        append(", compileJars=[")
-        append(compileJarPreview)
-        append("]")
-      }
-    }
   }
 }
