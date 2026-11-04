@@ -127,6 +127,444 @@ class KotlinAnalysisReferencesTargetsTest {
   }
 
   @Test
+  fun genericBaseOverrideKeepsDeclaredBinding() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceGenericOverride.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          open class GenericBase<T> {
+            open fun value(item: T): T = item
+          }
+
+          class GenericDerived : GenericBase<String>() {
+            override fun value(item: String): String = item
+            fun callSuper(): String = super.value("x")
+          }
+
+          fun useGeneric(value: GenericDerived): String = value.value("y")
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(file, content, "value", occurrence = 0, includeDeclaration = true)
+            )
+          })
+          val superLine = LineIndex.from(content).indexToPosition(content.indexOf("super.value")).line
+          val derivedCallLine =
+              LineIndex.from(content).indexToPosition(content.indexOf("value.value(")).line
+          assertTrue(references.locations.any { it.range.start.line == superLine })
+          assertTrue(references.locations.none { it.range.start.line == derivedCallLine })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun operatorConventionFindsPlusUsage() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceOperator.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class OperatorTarget {
+            operator fun plus(other: OperatorTarget): OperatorTarget = this
+          }
+
+          fun useOperator(left: OperatorTarget, right: OperatorTarget): OperatorTarget = left + right
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "plus", includeDeclaration = true))
+          })
+          val operatorLine =
+              LineIndex.from(content).indexToPosition(content.indexOf("left + right")).line
+          assertEquals(2, references.locations.size)
+          assertTrue(references.locations.any { it.range.start.line == operatorLine })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun arrayGetConventionFindsIndexUsage() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceArrayGet.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class ArrayGetTarget {
+            operator fun get(index: Int): String = index.toString()
+          }
+
+          fun useArrayGet(target: ArrayGetTarget): String = target[0]
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "get", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun plusAssignConventionFindsCompoundAssignment() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferencePlusAssign.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class PlusAssignTarget {
+            operator fun plusAssign(other: PlusAssignTarget) = Unit
+          }
+
+          fun usePlusAssign(target: PlusAssignTarget, other: PlusAssignTarget) {
+            target += other
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "plusAssign", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun arraySetConventionFindsIndexAssignment() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceArraySet.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class ArraySetTarget {
+            operator fun set(index: Int, value: String) = Unit
+          }
+
+          fun useArraySet(target: ArraySetTarget, value: String) {
+            target[0] = value
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "set", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun invokeConventionFindsCallOnValue() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceInvoke.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class InvokeTarget {
+            operator fun invoke(): String = "invoke"
+          }
+
+          fun useInvoke(target: InvokeTarget): String = target()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "invoke", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun componentConventionFindsDestructuring() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceComponent.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class ComponentTarget {
+            operator fun component1(): String = "component"
+          }
+
+          fun useComponent(target: ComponentTarget): String {
+            val (value) = target
+            return value
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "component1", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun forLoopConventionFindsIterator() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceForLoop.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class ForLoopTarget {
+            operator fun iterator(): Iterator<String> = emptyList<String>().iterator()
+          }
+
+          fun useForLoop(target: ForLoopTarget): Int {
+            var count = 0
+            for (value in target) count++
+            return count
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "iterator", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun delegateConventionFindsGetValue() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceDelegate.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import kotlin.reflect.KProperty
+
+          class DelegateTarget {
+            operator fun getValue(thisRef: Any?, property: KProperty<*>): String = "delegate"
+          }
+
+          val delegatedValue: String by DelegateTarget()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "getValue", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun unaryIncConventionFindsIncrement() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceInc.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class IncTarget {
+            var value: Int = 0
+            operator fun inc(): IncTarget {
+              value++
+              return this
+            }
+          }
+
+          fun useInc(target: IncTarget) {
+            var current = target
+            current++
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "inc", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun delegateSetValueConventionFindsAssignment() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceDelegateSet.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import kotlin.reflect.KProperty
+
+          class MutableDelegateTarget {
+            operator fun getValue(thisRef: Any?, property: KProperty<*>): String = "delegate"
+            operator fun setValue(thisRef: Any?, property: KProperty<*>, value: String) = Unit
+          }
+
+          var mutableDelegated: String by MutableDelegateTarget()
+
+          fun assignDelegated() {
+            mutableDelegated = "next"
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "setValue", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun provideDelegateConventionFindsDelegation() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceProvideDelegate.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import kotlin.reflect.KProperty
+
+          class ProvidedTarget {
+            operator fun getValue(thisRef: Any?, property: KProperty<*>): String = "provided"
+          }
+
+          class DelegateProvider {
+            operator fun provideDelegate(thisRef: Any?, property: KProperty<*>): ProvidedTarget =
+                ProvidedTarget()
+          }
+
+          val providedValue: String by DelegateProvider()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "provideDelegate", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun unboundSameNameFunctionIsNotConventionUsage() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceUnboundOperator.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class UnboundTarget {
+            fun plus(other: Int): Int = other
+          }
+
+          fun useUnbound(): Int = 1 + 2
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "plus", includeDeclaration = true))
+          })
+          assertEquals(1, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun companionQualifierDoesNotLeakInstanceReceiver() {
     withWorkspace {
       val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceCompanion.kt")
@@ -141,6 +579,7 @@ class KotlinAnalysisReferencesTargetsTest {
           }
 
           fun useCompanion(): String = CompanionHost.companionValue()
+          fun useExplicitCompanion(): String = CompanionHost.Companion.companionValue()
           fun useInstance(): String = CompanionHost().instanceValue()
       """.trimIndent() + "\n"
       Files.write(file, content.toByteArray(Charsets.UTF_8))
@@ -155,9 +594,14 @@ class KotlinAnalysisReferencesTargetsTest {
           })
           val companionLine =
               LineIndex.from(content).indexToPosition(content.indexOf("CompanionHost.companionValue")).line
+          val explicitLine =
+              LineIndex.from(content)
+                  .indexToPosition(content.indexOf("CompanionHost.Companion.companionValue"))
+                  .line
           val instanceLine =
               LineIndex.from(content).indexToPosition(content.indexOf("CompanionHost().instanceValue")).line
           assertTrue(references.locations.any { it.range.start.line == companionLine })
+          assertTrue(references.locations.any { it.range.start.line == explicitLine })
           assertTrue(references.locations.none { it.range.start.line == instanceLine })
         }
       } finally {

@@ -167,6 +167,9 @@ object AndroidModulePropertyCopier {
       this.androidLibraryData = copy(value.androidLibraryData)
       this.artifact = value.artifact
       this.srcJar = value.srcJar
+      // srcJars is only exposed by newer AGP v2 Library models; older AGP (e.g. 8.10.1)
+      // throws UnsupportedMethodException for it. The legacy srcJar above still provides
+      // the source archive, so an unavailable srcJars list must not fail workspace setup.
       this.srcJars = runCatching { value.srcJars }.getOrDefault(emptyList())
       this.docJar = value.docJar
       this.samplesJar = value.samplesJar

@@ -21,7 +21,14 @@ import org.jetbrains.kotlin.analysis.api.components.containingModule
 import org.jetbrains.kotlin.analysis.api.components.declaredMemberScope
 import org.jetbrains.kotlin.analysis.api.components.fakeOverrideOriginal
 import org.jetbrains.kotlin.analysis.api.components.intersectionOverriddenSymbols
+import org.jetbrains.kotlin.analysis.api.components.resolveSymbol
+import org.jetbrains.kotlin.analysis.api.components.resolveToCall
 import org.jetbrains.kotlin.analysis.api.components.resolveToSymbols
+import org.jetbrains.kotlin.analysis.api.resolution.KaCall
+import org.jetbrains.kotlin.analysis.api.resolution.KaCompoundAccessCall
+import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
+import org.jetbrains.kotlin.analysis.api.resolution.successfulCallOrNull
+import org.jetbrains.kotlin.analysis.api.resolution.symbol as callableSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaCallableSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaClassKind
 import org.jetbrains.kotlin.analysis.api.symbols.KaClassSymbol
@@ -40,11 +47,19 @@ import org.jetbrains.kotlin.com.intellij.openapi.diagnostic.ControlFlowException
 import org.jetbrains.kotlin.com.intellij.openapi.project.IndexNotReadyException
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.idea.references.KtReference
+import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.psi.KtArrayAccessExpression
+import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallExpression
+import org.jetbrains.kotlin.psi.KtDestructuringDeclarationEntry
+import org.jetbrains.kotlin.psi.KtExpression
 import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtForExpression
 import org.jetbrains.kotlin.psi.KtImportAlias
+import org.jetbrains.kotlin.psi.KtPropertyDelegate
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
+import org.jetbrains.kotlin.psi.KtUnaryExpression
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
@@ -296,6 +311,7 @@ private fun KtFile.hasReferenceName(
 ): Boolean {
   cancelChecker.abortIfCancelled()
   if (plan.scanAllNames) return true
+  if (plan.requiredConventions != 0) return true
   if (plan.searchNames.isEmpty()) return false
   var found = false
   accept(
@@ -327,6 +343,32 @@ private fun KaSession.scanReferenceTree(
   val lineIndex = LineIndex.from(file.text)
   val textLength = file.textLength
   val hits = LinkedHashMap<ReferenceKey, ReferenceHit>()
+  fun scanConvention(element: PsiElement, reference: KtReference?): Boolean {
+    if (reference == null) return false
+    cancelChecker.abortIfCancelled()
+    if (!session.referenceMatches(reference, plan, null)) return false
+    observer.referenceResolved(path)
+    locationForReferenceRange(path, element, reference, lineIndex, textLength)?.let { location ->
+      hits.putIfAbsent(
+          ReferenceKey.of(location),
+          ReferenceHit(location, ReferenceRole.USAGE),
+      )
+    }
+    return true
+  }
+  fun scanConventionSymbol(element: PsiElement, symbol: KaSymbol?): Boolean {
+    if (symbol == null) return false
+    cancelChecker.abortIfCancelled()
+    if (!session.symbolPointerMatches(symbol, plan)) return false
+    observer.referenceResolved(path)
+    locationForReferenceElement(path, element, lineIndex, textLength)?.let { location ->
+      hits.putIfAbsent(
+          ReferenceKey.of(location),
+          ReferenceHit(location, ReferenceRole.USAGE),
+      )
+    }
+    return true
+  }
   val visitor =
       object : KtTreeVisitorVoid() {
         override fun visitElement(element: PsiElement) {
@@ -364,6 +406,76 @@ private fun KaSession.scanReferenceTree(
           }
           super.visitSimpleNameExpression(expression)
         }
+
+        override fun visitArrayAccessExpression(expression: KtArrayAccessExpression) {
+          if (plan.requiredConventions and ReferenceConventions.ARRAY_ACCESS != 0) {
+            if (!scanConvention(expression, expression.reference as? KtReference)) {
+              scanConventionSymbol(expression, session.arrayAccessSymbol(expression))
+            }
+          }
+          super.visitArrayAccessExpression(expression)
+        }
+
+        override fun visitBinaryExpression(expression: KtBinaryExpression) {
+          if (plan.requiredConventions and ReferenceConventions.OPERATOR != 0 &&
+            expression.operationToken != KtTokens.EQ) {
+            if (expression.operationToken in KtTokens.AUGMENTED_ASSIGNMENTS) {
+              scanConventionSymbol(
+                  expression.operationReference,
+                  session.callableSymbolOf(expression),
+              )
+            } else {
+              scanConvention(
+                  expression.operationReference,
+                  expression.operationReference.reference as? KtReference,
+              )
+            }
+          }
+          super.visitBinaryExpression(expression)
+        }
+
+        override fun visitUnaryExpression(expression: KtUnaryExpression) {
+          if (plan.requiredConventions and ReferenceConventions.OPERATOR != 0) {
+            if (!scanConvention(
+                expression.operationReference,
+                expression.operationReference.reference as? KtReference,
+            )) {
+              scanConventionSymbol(
+                  expression.operationReference,
+                  session.callableSymbolOf(expression),
+              )
+            }
+          }
+          super.visitUnaryExpression(expression)
+        }
+
+        override fun visitCallExpression(expression: KtCallExpression) {
+          if (plan.requiredConventions and ReferenceConventions.INVOKE != 0) {
+            scanConvention(expression, expression.reference as? KtReference)
+          }
+          super.visitCallExpression(expression)
+        }
+
+        override fun visitDestructuringDeclarationEntry(entry: KtDestructuringDeclarationEntry) {
+          if (plan.requiredConventions and ReferenceConventions.DESTRUCTURING != 0) {
+            scanConvention(entry, entry.reference as? KtReference)
+          }
+          super.visitDestructuringDeclarationEntry(entry)
+        }
+
+        override fun visitForExpression(expression: KtForExpression) {
+          if (plan.requiredConventions and ReferenceConventions.FOR_LOOP != 0) {
+            scanConvention(expression, expression.reference as? KtReference)
+          }
+          super.visitForExpression(expression)
+        }
+
+        override fun visitPropertyDelegate(delegate: KtPropertyDelegate) {
+          if (plan.requiredConventions and ReferenceConventions.DELEGATE != 0) {
+            scanConvention(delegate, delegate.reference as? KtReference)
+          }
+          super.visitPropertyDelegate(delegate)
+        }
       }
   file.accept(visitor)
   return hits.values.toList()
@@ -382,6 +494,28 @@ private fun KaSession.referenceMatches(
           }
       pointerMatch || isAliasConstructorMatch(symbol, plan, writtenName)
     }
+
+private fun KaSession.symbolPointerMatches(
+    symbol: KaSymbol,
+    plan: ReferenceSearchPlan,
+): Boolean {
+  val normalized = (symbol as? KaCallableSymbol)?.fakeOverrideOriginal ?: symbol
+  return plan.matchPointers.any { pointer ->
+    normalized.createPointer().pointsToTheSameSymbolAs(pointer)
+  }
+}
+
+private fun KaSession.arrayAccessSymbol(element: KtArrayAccessExpression): KaSymbol? =
+    element.resolveSymbol()
+
+private fun KaSession.callableSymbolOf(expression: KtExpression): KaSymbol? {
+  val call = expression.resolveToCall()?.successfulCallOrNull<KaCall>() ?: return null
+  return when (call) {
+    is KaCompoundAccessCall -> call.operationCall.callableSymbol
+    is KaFunctionCall<*> -> call.callableSymbol
+    else -> null
+  }
+}
 
 private fun isAliasConstructorMatch(
     symbol: KaSymbol,
@@ -471,6 +605,23 @@ private fun locationForReferenceElement(
   val range = element.textRange ?: return null
   val start = range.startOffset.coerceIn(0, textLength)
   val end = range.endOffset.coerceIn(start, textLength)
+  return Location(
+      path.normalize(),
+      Range(lineIndex.indexToPosition(start), lineIndex.indexToPosition(end)),
+  )
+}
+
+private fun locationForReferenceRange(
+    path: Path,
+    element: PsiElement,
+    reference: KtReference,
+    lineIndex: LineIndex,
+    textLength: Int,
+): Location? {
+  val elementRange = element.textRange ?: return null
+  val relative = reference.rangeInElement
+  val start = (elementRange.startOffset + relative.startOffset).coerceIn(0, textLength)
+  val end = (elementRange.startOffset + relative.endOffset).coerceIn(start, textLength)
   return Location(
       path.normalize(),
       Range(lineIndex.indexToPosition(start), lineIndex.indexToPosition(end)),
