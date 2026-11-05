@@ -1068,7 +1068,6 @@ abstract class BaseEditorActivity :
   open fun hideBottomSheet() {
     if (editorBottomSheet?.state != BottomSheetBehavior.STATE_COLLAPSED) {
       editorBottomSheet?.state = BottomSheetBehavior.STATE_COLLAPSED
-      content.bottomSheet.binding.headerContainer.visibility = View.VISIBLE
     }
   }
 
@@ -1084,7 +1083,6 @@ abstract class BaseEditorActivity :
   
     if (index >= 0 && index < content.bottomSheet.binding.tabs.tabCount) {
       content.bottomSheet.binding.tabs.getTabAt(index)?.select()
-      content.bottomSheet.binding.headerContainer.visibility = View.GONE
     }
   }
 

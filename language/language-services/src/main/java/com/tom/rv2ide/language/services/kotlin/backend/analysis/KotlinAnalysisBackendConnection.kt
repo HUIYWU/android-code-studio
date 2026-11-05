@@ -465,7 +465,10 @@ internal suspend fun findDefinition(
 internal suspend fun findReferences(
        request: KotlinSemanticRequest,
        isCurrent: (KotlinSemanticRequest) -> Boolean,
-   ): ReferenceResult? = executeSemanticRequest(request, AnalysisRequestKind.COMMAND, isCurrent) { it.findReferences(request) }
+   ): ReferenceResult? = executeSemanticRequest(request, AnalysisRequestKind.COMMAND, isCurrent) { runtime ->
+     val epoch = requestScheduler.mutationEpoch()
+     runtime.findReferences(request)?.takeIf { requestScheduler.mutationEpoch() == epoch }
+   }
 
 internal suspend fun signatureHelp(
        request: KotlinSemanticRequest,

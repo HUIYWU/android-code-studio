@@ -565,6 +565,177 @@ class KotlinAnalysisReferencesTargetsTest {
   }
 
   @Test
+  fun forLoopConventionFindsHasNext() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceHasNext.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class CustomIterator {
+            operator fun hasNext(): Boolean = false
+            operator fun next(): String = "next"
+          }
+
+          class HasNextTarget {
+            operator fun iterator(): CustomIterator = CustomIterator()
+          }
+
+          fun useHasNext(target: HasNextTarget) {
+            for (value in target) {
+              println(value)
+            }
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "hasNext", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun forLoopConventionFindsNext() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceNext.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          class NextIterator {
+            operator fun hasNext(): Boolean = false
+            operator fun next(): String = "next"
+          }
+
+          class NextTarget {
+            operator fun iterator(): NextIterator = NextIterator()
+          }
+
+          fun useNext(target: NextTarget) {
+            for (value in target) {
+              println(value)
+            }
+          }
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(file, content, "next", includeDeclaration = true))
+          })
+          assertEquals(2, references.locations.size)
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun javaSourceTargetFindsKotlinUsagesAndDeclaration() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceJavaUsage.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun consumeJava(interop: JavaInterop): String = interop.value("java")
+      """.trimIndent() + "\n"
+      val javaFile = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java")
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(file, content, "JavaInterop", includeDeclaration = true)
+            )
+          })
+          assertTrue(references.locations.any { it.file == file })
+          assertTrue(references.locations.any { it.file == javaFile })
+          assertTrue(references.locations.none { it.file.toString().endsWith(".jar") })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun jdkTargetFindsKotlinUsageWithoutFakeDeclaration() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceTreeMap.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import java.util.TreeMap
+
+          fun useTreeMap(): TreeMap<String, String> = TreeMap()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(file, content, "TreeMap", occurrence = 2, includeDeclaration = true)
+            )
+          })
+          assertTrue(references.locations.any { it.file == file })
+          assertTrue(references.locations.none { it.file.toString().endsWith(".jar") })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun stdlibFunctionTargetFindsKotlinUsage() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceAbs.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          import kotlin.math.abs
+
+          fun useAbs(): Int = abs(-1)
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(
+                request(file, content, "abs", occurrence = 1, includeDeclaration = true)
+            )
+          })
+          assertTrue(references.locations.any { it.file == file })
+          assertTrue(references.locations.none { it.file.toString().endsWith(".jar") })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
   fun companionQualifierDoesNotLeakInstanceReceiver() {
     withWorkspace {
       val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceCompanion.kt")

@@ -78,6 +78,7 @@ internal class LiveSourceFileIndex(
   private val pins = ConcurrentHashMap<Path, Pin>()
   private val refreshLock = Any()
   private var scheduleRefresh: ((Path, () -> Unit) -> Unit)? = null
+  private var identityRevisionValue = 0L
 
   lateinit var parser: KtPsiFactory
   var onScriptFileCommitted: ((KtFile) -> Unit)? = null
@@ -213,6 +214,7 @@ internal class LiveSourceFileIndex(
   private fun detachCurrent(path: Path): RemovedSource? {
     val module = sourceRegistry.moduleForPath(path)
     val current = currentFiles.remove(path)
+    if (current != null) identityRevisionValue++
     sourceRegistry.unregister(path)
     if (path.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
     metadataIndex.remove(path)
@@ -424,6 +426,7 @@ logIncrementalTrace("edit-modification-success", path, current.file, edit.target
                     )
                   }
 currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
+                    identityRevisionValue++
                     logIncrementalTrace("incremental", path, current.file, edit.targetIdentity()) { modificationEvent }
                    applied = true
                 }
@@ -498,6 +501,8 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
     currentFiles[path.normalize()]?.identity
   }
 
+  fun identityRevision(): Long = synchronized(refreshLock) { identityRevisionValue }
+
   fun registerDiskFile(path: Path): KtFile? = refreshCurrentKtFile(path)
 
   fun closeCurrent(path: Path) {
@@ -511,7 +516,9 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
       val pin = pins[normalized]
       if (pin != null) {
         val module = sourceRegistry.moduleForPath(normalized)
-        val file = currentFiles.remove(normalized)?.file ?: pin.file
+        val current = currentFiles.remove(normalized)
+        if (current != null) identityRevisionValue++
+        val file = current?.file ?: pin.file
         sourceRegistry.unregister(normalized)
         if (normalized.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
         metadataIndex.remove(normalized)
@@ -519,7 +526,9 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
         return@synchronized null
       }
       val module = sourceRegistry.moduleForPath(normalized)
-      val file = currentFiles.remove(normalized)?.file
+      val current = currentFiles.remove(normalized)
+      if (current != null) identityRevisionValue++
+      val file = current?.file
       sourceRegistry.unregister(normalized)
       if (normalized.toString().endsWith(".kts")) onScriptModulesChanged?.invoke()
       metadataIndex.remove(normalized)
@@ -665,6 +674,7 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
             )
           }
           currentFiles[path] = VersionedFile(identity, newFile)
+          identityRevisionValue++
           if (!script) {
             if (old == null) {
               KaSourceModificationService.getInstance(project)
@@ -743,6 +753,7 @@ currentFiles[path] = VersionedFile(edit.targetIdentity(), current.file)
 
   override fun close() {
     synchronized(refreshLock) {
+      if (currentFiles.isNotEmpty()) identityRevisionValue++
       currentFiles.clear()
       pins.clear()
       scheduleRefresh = null

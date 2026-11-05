@@ -304,6 +304,8 @@ val symbol = when (val resolution = resolveOrdinaryTargetAt(file, requestOffset(
               file = file,
               offset = requestOffset(request),
               includeDeclaration = request.includeDeclaration,
+              requestVersion = request.snapshot.version,
+              requestRevision = request.snapshot.revision,
               environment = env,
           )
         } ?: return ReferenceResult(emptyList())

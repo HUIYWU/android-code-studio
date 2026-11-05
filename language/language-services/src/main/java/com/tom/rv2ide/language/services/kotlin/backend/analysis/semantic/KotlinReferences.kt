@@ -37,10 +37,10 @@ import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPropertyAccessorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPropertySymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
-import org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbolVisibility
 import org.jetbrains.kotlin.analysis.api.symbols.KaTypeAliasSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.pointers.KaSymbolPointer
+import org.jetbrains.kotlin.analysis.api.types.KaClassType
 import org.jetbrains.kotlin.analysis.api.types.symbol
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
 import org.jetbrains.kotlin.com.intellij.openapi.diagnostic.ControlFlowException
@@ -49,6 +49,7 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.KtArrayAccessExpression
 import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallExpression
@@ -79,6 +80,13 @@ internal data class ReferenceDeclarationSite(
     val location: Location,
 )
 
+internal data class ReferenceSearchStamp(
+    val metadataRevision: Long,
+    val identityRevision: Long,
+    val requestVersion: Int,
+    val requestRevision: Long,
+)
+
 internal data class ReferenceSearchPlan(
     val matchPointers: List<KaSymbolPointer<KaSymbol>>,
     val searchNames: Set<String>,
@@ -90,6 +98,7 @@ internal data class ReferenceSearchPlan(
     val declaration: ReferenceDeclarationSite?,
     val includeDeclaration: Boolean,
     val scope: ReferenceScope,
+    val stamp: ReferenceSearchStamp,
 )
 
 internal data class ReferenceHit(val location: Location, val role: ReferenceRole)
@@ -99,6 +108,8 @@ internal fun KaSession.buildReferencePlan(
     file: KtFile,
     offset: Int,
     includeDeclaration: Boolean,
+    requestVersion: Int,
+    requestRevision: Long,
     environment: LiveAnalysisEnvironment,
 ): ReferenceSearchPlan? {
   val symbol =
@@ -109,7 +120,6 @@ internal fun KaSession.buildReferencePlan(
         KotlinSemanticTargetResolution.None -> return null
       }
   val declaration = symbol as? KaDeclarationSymbol ?: return null
-  if (declaration.origin != KaSymbolOrigin.SOURCE) return null
   val normalized = normalizeReferenceTarget(declaration)
   val declarationTarget =
       declaration.psi?.navigationElement
@@ -118,6 +128,7 @@ internal fun KaSession.buildReferencePlan(
       declarationTarget?.let { target ->
         val definition = definitionTargetPsi(target)
         val location = locationForPsi(requestPath, file, definition) ?: return@let null
+        if (!isProjectSourcePath(location.file, environment)) return@let null
         val range = definition.textRange ?: return@let null
         ReferenceDeclarationSite(
             path = location.file.normalize(),
@@ -187,6 +198,13 @@ internal fun KaSession.buildReferencePlan(
       declaration = site,
       includeDeclaration = includeDeclaration,
       scope = scope,
+      stamp =
+          ReferenceSearchStamp(
+              metadataRevision = environment.metadataIndex.revision(),
+              identityRevision = environment.liveIndex.identityRevision(),
+              requestVersion = requestVersion,
+              requestRevision = requestRevision,
+          ),
   )
 }
 
@@ -198,17 +216,16 @@ internal fun collectReferences(
 ): ReferenceResult {
   val orderedPaths = LinkedHashSet<Path>()
   orderedPaths.addAll(selectCandidatePaths(plan, environment))
-  if (plan.includeDeclaration) {
-    plan.declaration?.let { orderedPaths.add(it.path) }
-  }
   val hits = ArrayList<ReferenceHit>()
+  if (plan.includeDeclaration) {
+    plan.declaration?.let { declaration ->
+      hits += ReferenceHit(declaration.location, ReferenceRole.DEFINITION)
+    }
+  }
   for (path in orderedPaths.sortedBy { it.toString() }) {
     cancelChecker.abortIfCancelled()
     observer.candidateSelected(path)
-    val declaration = plan.declaration
-    if (plan.includeDeclaration && declaration != null && declaration.path == path) {
-      hits += ReferenceHit(declaration.location, ReferenceRole.DEFINITION)
-    }
+    val identityBefore = environment.liveIndex.currentIdentity(path)
     val fileHits =
         try {
           scanReferenceFile(plan, path, environment, cancelChecker, observer)
@@ -222,7 +239,14 @@ internal fun collectReferences(
           )
           continue
         } ?: return ReferenceResult(emptyList())
+    if (environment.liveIndex.currentIdentity(path) != identityBefore) {
+      return ReferenceResult(emptyList())
+    }
     hits += fileHits
+  }
+  if (plan.stamp.metadataRevision != environment.metadataIndex.revision() ||
+      plan.stamp.identityRevision != environment.liveIndex.identityRevision()) {
+    return ReferenceResult(emptyList())
   }
   return toReferenceResult(hits)
 }
@@ -465,7 +489,12 @@ private fun KaSession.scanReferenceTree(
 
         override fun visitForExpression(expression: KtForExpression) {
           if (plan.requiredConventions and ReferenceConventions.FOR_LOOP != 0) {
-            scanConvention(expression, expression.reference as? KtReference)
+            val matched = scanConvention(expression, expression.reference as? KtReference)
+            if (!matched && plan.searchNames.any { it == "hasNext" || it == "next" }) {
+              session.forLoopProtocolSymbols(expression).forEach { symbol ->
+                scanConventionSymbol(expression, symbol)
+              }
+            }
           }
           super.visitForExpression(expression)
         }
@@ -495,6 +524,20 @@ private fun KaSession.referenceMatches(
       pointerMatch || isAliasConstructorMatch(symbol, plan, writtenName)
     }
 
+private fun isProjectSourcePath(
+    path: Path,
+    environment: LiveAnalysisEnvironment,
+): Boolean {
+  val normalized = path.normalize()
+  if (environment.liveIndex.currentIdentity(normalized) != null) return true
+  return environment.projectContext.modules.any { module ->
+    (module.javaSourceRoots + module.generatedSourceRoots).any { root ->
+      val normalizedRoot = root.normalize()
+      normalized == normalizedRoot || normalized.startsWith(normalizedRoot)
+    }
+  }
+}
+
 private fun KaSession.symbolPointerMatches(
     symbol: KaSymbol,
     plan: ReferenceSearchPlan,
@@ -507,6 +550,17 @@ private fun KaSession.symbolPointerMatches(
 
 private fun KaSession.arrayAccessSymbol(element: KtArrayAccessExpression): KaSymbol? =
     element.resolveSymbol()
+
+private fun KaSession.forLoopProtocolSymbols(expression: KtForExpression): List<KaSymbol> {
+  val reference = expression.reference as? KtReference ?: return emptyList()
+  val iterator =
+      reference.resolveToSymbols().filterIsInstance<KaCallableSymbol>().firstOrNull()
+          ?: return emptyList()
+  val classType = iterator.returnType as? KaClassType ?: return emptyList()
+  val classSymbol = classType.symbol as? KaClassSymbol ?: return emptyList()
+  val names = listOf(Name.identifier("hasNext"), Name.identifier("next"))
+  return classSymbol.declaredMemberScope.callables(names).toList()
+}
 
 private fun KaSession.callableSymbolOf(expression: KtExpression): KaSymbol? {
   val call = expression.resolveToCall()?.successfulCallOrNull<KaCall>() ?: return null

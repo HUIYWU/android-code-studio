@@ -23,6 +23,7 @@ internal class AnalysisRequestScheduler(
 ) : AutoCloseable {
   private val closed = AtomicBoolean(false)
   private val requestIds = AtomicLong(0L)
+  private val mutationEpochValue = AtomicLong(0L)
   private val queue = PriorityBlockingQueue<AnalysisRequest<*>>()
   private val wakeup = Object()
   private val pending = ConcurrentHashMap<Long, AnalysisRequest<*>>()
@@ -37,6 +38,8 @@ internal class AnalysisRequestScheduler(
     isDaemon = true
     start()
   }
+
+  fun mutationEpoch(): Long = mutationEpochValue.get()
 
   fun <T> submit(
       kind: AnalysisRequestKind,
@@ -72,6 +75,9 @@ internal class AnalysisRequestScheduler(
             sequence
           }
       required to reserved
+    }
+    if (mutationPaths.isNotEmpty()) {
+      mutationEpochValue.incrementAndGet()
     }
     val requestCancellation = AnalysisRequestCancellation(cancelChecker)
     val request = AnalysisRequest<T>(
