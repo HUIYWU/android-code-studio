@@ -12,42 +12,15 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
+ *  along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 package com.tom.rv2ide.utils
 
-import com.tom.rv2ide.models.ActionQuickItem
-import com.tom.rv2ide.models.EditorQuickItem
 import com.tom.rv2ide.models.Symbol
-import com.tom.rv2ide.models.SymbolQuickItem
 import java.io.File
 
 object EditorQuickInputProvider {
 
-  fun forFile(file: File?): List<EditorQuickItem> {
-    return Symbols.forFile(file).toQuickItems()
-  }
-
-  fun plainTextItems(): List<EditorQuickItem> {
-    return Symbols.plainTextSymbols.toQuickItems()
-  }
-
-  /** Resolves the expanded grid from the active file-type profile. */
-  fun expandedItems(file: File?, symbolItems: List<EditorQuickItem>): List<EditorQuickItem> {
-    return EditorQuickInputPreferences.itemsFor(file, symbolItems)
-  }
-
-  fun Symbol.toQuickItem(): SymbolQuickItem {
-    return SymbolQuickItem(
-        id = "symbol:$commit:$offset:$label",
-        label = label,
-        commit = commit,
-        offset = offset,
-    )
-  }
-
-  fun List<Symbol>.toQuickItems(): List<EditorQuickItem> {
-    return map { it.toQuickItem() }
-  }
+  fun symbolsFor(file: File?): List<Symbol> = EditorQuickInputPreferences.symbolsFor(file)
 }

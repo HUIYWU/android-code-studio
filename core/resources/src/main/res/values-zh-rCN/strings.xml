@@ -276,11 +276,9 @@
   <string name="action_expand_selection">扩选</string>
   <string name="idepref_java_matchLower_title">代码补全匹配小写字母</string>
   <string name="title_common">常规</string>
-  <string name="idepref_editor_category_quickInput">快捷输入</string>
-  <string name="idepref_editor_quickInputExpand_title">启用展开面板</string>
-  <string name="idepref_editor_quickInputExpand_summary">从编辑器符号栏显示展开的快捷输入面板。</string>
+  <string name="idepref_editor_category_quickInput">符号输入项</string>
   <string name="idepref_editor_quickInputCustomize_title">自定义输入项</string>
-  <string name="idepref_editor_quickInputCustomize_summary">选择并排列展开面板中显示的文本操作。</string>
+  <string name="idepref_editor_quickInputCustomize_summary">选择并排列编辑器符号栏中显示的符号。</string>
 <string name="title_files_unsaved">未保存文件</string>
   <string name="msg_files_unsaved">部分文件并未保存，是否在关闭项目之前保存？未保存的文件：\n%s</string>
   <string name="idepref_editor_autoSave_title">自动保存文件</string>
@@ -384,7 +382,6 @@
   <string name="idepref_customFont_title">字体选择</string>
   <string name="idepref_customFont_summary">选择编辑器字体。JetBrains Mono 为默认字体，导入的字体将从 ~/.androidide/ui 加载。</string>
   <string name="msg_installing_apk">正在安装 APK …</string>
-  <string name="symbol_input_toggle">展开或收起符号输入</string>
   <string name="msg_action_open_application">您想打开该应用吗？</string>
   <string name="title_gradle_service_notification_channel">AndroidIDE Gradle 构建服务</string>
   <string name="msg_hex_color_code">十六进制颜色代码</string>
@@ -585,10 +582,6 @@
   <string name="msg_experimental_flavor">您正在 %2$s 的设备上使用 AndroidIDE 的 %1$s 变体。此配置可能有效，但会使性能降低并可能导致安全漏洞。请尽可能避免使用此配置。</string>
   <string name="idepref_editor_pinLineNumbers_title">固定行号</string>
   <string name="idepref_editor_pinLineNumbers_summary">编辑器是否应在水平滚动时固定行号栏。</string>
-  <string name="idepref_editor_quickInputActions_title">快捷输入操作</string>
-  <string name="idepref_editor_quickInputActions_summary">选择在展开的快捷输入面板中显示的文本操作。</string>
-  <string name="idepref_editor_quickInputOrder_title">快捷输入操作顺序</string>
-  <string name="idepref_editor_quickInputOrder_summary">调整已启用快捷输入操作的显示顺序。</string>
   <string name="idepref_editor_quickInputTextType_title">文本类型</string>
   <string name="idepref_editor_quickInputTextType_summary">选择要自定义的符号和操作配置。</string>
   <string name="idepref_editor_quickInputType_plainText">纯文本</string>
@@ -600,9 +593,8 @@
   <string name="idepref_editor_quickInputItem_title">输入项</string>
   <string name="idepref_editor_quickInputAdd_title">新增项</string>
   <string name="idepref_editor_quickInputAdd_summary">新增文本插入项或文本操作项。</string>
-  <string name="idepref_editor_quickInputLimit_message">一个快捷输入面板最多包含 30 项。</string>
+  <string name="idepref_editor_quickInputLimit_message">一个快捷输入组最多包含 30 项。</string>
   <string name="idepref_editor_quickInputEdit_title">编辑</string>
-  <string name="idepref_editor_quickInputEdit_pending">“%1$s”的编辑功能将在下一步自定义中提供。</string>
   <string name="idepref_editor_quickInputEdit_name">名称 / 简名</string>
   <string name="idepref_editor_quickInputEdit_text">文本</string>
   <string name="idepref_editor_quickInputEdit_name_hint">最多 3 个窄字符或 2 个宽字符。</string>

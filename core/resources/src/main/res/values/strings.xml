@@ -481,11 +481,9 @@
   <string
     name="idepref_editor_category_common"
     translatable="false">@string/title_common</string>
-<string name="idepref_editor_category_quickInput">Quick input</string>
-   <string name="idepref_editor_quickInputExpand_title">Enable expanded panel</string>
-   <string name="idepref_editor_quickInputExpand_summary">Show the expanded quick input panel from the editor symbol bar.</string>
+<string name="idepref_editor_category_quickInput">Symbol input items</string>
    <string name="idepref_editor_quickInputCustomize_title">Customize input items</string>
-   <string name="idepref_editor_quickInputCustomize_summary">Choose and order text actions shown in the expanded panel.</string>
+   <string name="idepref_editor_quickInputCustomize_summary">Choose and order the symbols shown in the editor symbol bar.</string>
    <string
      name="idepref_editor_category_java"
      translatable="false">Java</string>
@@ -696,7 +694,6 @@
   <string name="idepref_customFont_imported_applied">Font imported and applied: %1$s</string>
   <string name="idepref_customFont_import_error">Error importing font: %1$s</string>
   <string name="msg_installing_apk">Installing APK...</string>
-  <string name="symbol_input_toggle">Expand or collapse symbol input</string>
   <string name="msg_action_open_application">Do you want to open the application?</string>
 
 
@@ -1542,10 +1539,6 @@ Add a remote to push/pull changes</string>
   <string name="msg_experimental_flavor">You are using %1$s variant of Android Code Studio on a %2$s device. This configuration may work, but it\'ll result in reduced performance and possible security vulnerabilities. Please avoid using this configuration whenever possible.</string>
   <string name="idepref_editor_pinLineNumbers_title">Pin line numbers</string>
 <string name="idepref_editor_pinLineNumbers_summary">Whether the editor should pin line number panel when scrolled horizontally.</string>
-   <string name="idepref_editor_quickInputActions_title">Quick input actions</string>
-   <string name="idepref_editor_quickInputActions_summary">Choose the text actions shown in the expanded quick input panel.</string>
-   <string name="idepref_editor_quickInputOrder_title">Quick input action order</string>
-<string name="idepref_editor_quickInputOrder_summary">Adjust the order of enabled quick input actions.</string>
    <string name="idepref_editor_quickInputTextType_title">Text type</string>
 <string name="idepref_editor_quickInputTextType_summary">Choose the symbol and action configuration to customize.</string>
     <string name="idepref_editor_quickInputType_plainText">Plain text</string>
@@ -1557,9 +1550,8 @@ Add a remote to push/pull changes</string>
    <string name="idepref_editor_quickInputItem_title">Input item</string>
    <string name="idepref_editor_quickInputAdd_title">Add item</string>
 <string name="idepref_editor_quickInputAdd_summary">Add a text insertion or text action item.</string>
-    <string name="idepref_editor_quickInputLimit_message">A quick input panel can contain at most 30 items.</string>
+    <string name="idepref_editor_quickInputLimit_message">A quick input group can contain at most 30 items.</string>
    <string name="idepref_editor_quickInputEdit_title">Edit</string>
-   <string name="idepref_editor_quickInputEdit_pending">Editing %1$s will be available in the next customization step.</string>
    <string name="idepref_editor_quickInputEdit_name">Name / short label</string>
 <string name="idepref_editor_quickInputEdit_text">Text</string>
     <string name="idepref_editor_quickInputEdit_name_hint">Up to 3 narrow characters or 2 wide characters.</string>
@@ -1568,7 +1560,7 @@ Add a remote to push/pull changes</string>
     <string name="idepref_editor_quickInputEdit_text_error">Please enter insertion text.</string>
     <string name="idepref_editor_quickInputEdit_function">Function</string>
  <string name="idepref_editor_quickInputEdit_insert">Text insertion</string>
-<string name="theme_blue_wave">Blue Wave</string>
+ <string name="theme_blue_wave">Blue Wave</string>
   <string name="theme_sunny_glow">Sunny Glow</string>
   <string name="theme_greenish">Greenish</string>
   <string name="theme_vscode">VS Code</string>

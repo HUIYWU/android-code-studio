@@ -263,9 +263,9 @@ private fun showItemEditor(context: Context, index: Int?, existing: EditorQuickI
   )
   val functionOptions = buildList {
     add(context.getString(string.idepref_editor_quickInputEdit_insert))
-    addAll(EditorQuickInputPreferences.supportedExpandedActions.map { context.getString(it.labelRes) })
+    addAll(EditorQuickInputPreferences.supportedActions.map { context.getString(it.labelRes) })
   }
-  val selectedFunctionIndex = EditorQuickInputPreferences.supportedExpandedActions
+  val selectedFunctionIndex = EditorQuickInputPreferences.supportedActions
       .indexOfFirst { it.id == existing?.actionId }
       .let { if (it < 0) 0 else it + 1 }
   val functionInput = MaterialAutoCompleteTextView(context).apply {
@@ -339,7 +339,7 @@ private fun showItemEditor(context: Context, index: Int?, existing: EditorQuickI
   dialog.setOnShowListener {
     dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
       val label = name.text.toString().trim()
-      val actionId = EditorQuickInputPreferences.supportedExpandedActions
+      val actionId = EditorQuickInputPreferences.supportedActions
           .getOrNull(selectedFunction - 1)
           ?.id
       val saved = when {
@@ -360,7 +360,7 @@ private fun showItemEditor(context: Context, index: Int?, existing: EditorQuickI
       EditorQuickInputPreferences.saveItems(type, items)
       dialog.dismiss(); requestPageRefresh(context)
     }
-    }
+  }
   fun closeFunctionPopup() {
     dialogClosing = true
     functionInput.isEnabled = false

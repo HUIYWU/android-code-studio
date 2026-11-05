@@ -948,6 +948,8 @@ abstract class BaseEditorActivity :
       startAutoSave()
     }
 
+    refreshSymbolInput()
+
     try {
       getFileTreeFragment()?.listProjectFiles()
     } catch (th: Throwable) {
@@ -1066,14 +1068,12 @@ abstract class BaseEditorActivity :
   }
 
   open fun hideBottomSheet() {
-    content.bottomSheet.collapseSymbolInputExpansion()
     if (editorBottomSheet?.state != BottomSheetBehavior.STATE_COLLAPSED) {
       editorBottomSheet?.state = BottomSheetBehavior.STATE_COLLAPSED
     }
   }
 
   open fun showSearchResults() {
-    content.bottomSheet.collapseSymbolInputExpansion()
     if (editorBottomSheet?.state != BottomSheetBehavior.STATE_EXPANDED) {
       editorBottomSheet?.state = BottomSheetBehavior.STATE_EXPANDED
     }
@@ -1318,9 +1318,6 @@ abstract class BaseEditorActivity :
     editorBottomSheet?.addBottomSheetCallback(
         object : BottomSheetCallback() {
           override fun onStateChanged(bottomSheet: View, newState: Int) {
-            if (newState != BottomSheetBehavior.STATE_COLLAPSED) {
-              content.bottomSheet.collapseSymbolInputExpansion()
-            }
             if (newState == BottomSheetBehavior.STATE_EXPANDED) {
               val editor = provideCurrentEditor()
               editor?.editor?.ensureWindowsDismissed()

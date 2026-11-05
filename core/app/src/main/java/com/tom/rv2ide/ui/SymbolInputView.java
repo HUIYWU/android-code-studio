@@ -19,8 +19,6 @@ package com.tom.rv2ide.ui;
 
 import android.content.Context;
 import android.util.AttributeSet;
-import android.view.ViewGroup;
-import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import com.tom.rv2ide.adapters.SymbolInputAdapter;
@@ -30,9 +28,6 @@ import com.tom.rv2ide.utils.Symbols;
 import java.util.List;
 
 public class SymbolInputView extends RecyclerView {
-
-  private static final int ITEM_HEIGHT_DP = 40;
-  private static final int MAX_ROWS = 3;
 
   public SymbolInputView(Context context) {
     this(context, null);
@@ -47,46 +42,6 @@ public class SymbolInputView extends RecyclerView {
     setLayoutManager(new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false));
   }
 
-  /** Returns the height the expanded grid would use for the current adapter. */
-  public int calculateExpandedHeight(int spanCount) {
-    final int spans = Math.max(1, spanCount);
-    final var adapter = getAdapter();
-    final int count = adapter == null ? 0 : adapter.getItemCount();
-    int rows = Math.max(1, (int) Math.ceil(count / (double) spans));
-    rows = Math.min(rows, MAX_ROWS);
-    return dp(ITEM_HEIGHT_DP * rows);
-  }
-
-  /**
-   * Switches between the collapsed horizontal row and the expanded multi-row grid.
-   *
-   * @return the resulting height of this view in pixels.
-   */
-  public int setExpanded(boolean expanded, int spanCount) {
-    if (isComputingLayout()) {
-      post(() -> setExpanded(expanded, spanCount));
-      return getHeight();
-    }
-
-    final int spans = Math.max(1, spanCount);
-    if (expanded) {
-      setLayoutManager(new GridLayoutManager(getContext(), spans));
-    } else {
-      setLayoutManager(new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false));
-    }
-
-    final int height = expanded ? calculateExpandedHeight(spans) : dp(ITEM_HEIGHT_DP);
-    ViewGroup.LayoutParams params = getLayoutParams();
-    if (params == null) {
-      params = new RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height);
-    } else {
-      params.height = height;
-    }
-    setLayoutParams(params);
-    post(() -> scrollToPosition(0));
-    return height;
-  }
-
   public void refresh(IDEEditor editor, List<Symbol> symbols) {
     if (symbols == null || symbols.isEmpty()) {
       symbols = Symbols.INSTANCE.getPlainTextSymbols();
@@ -98,9 +53,5 @@ public class SymbolInputView extends RecyclerView {
     } else {
       setAdapter(new SymbolInputAdapter(editor));
     }
-  }
-
-  private int dp(int value) {
-    return Math.round(value * getResources().getDisplayMetrics().density);
   }
 }
