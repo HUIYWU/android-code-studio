@@ -32,7 +32,7 @@ import org.json.JSONObject
 
 /** Persisted, per-text-type quick-input items. */
 object EditorQuickInputPreferences {
-  const val MAX_ITEMS = 30
+  const val MAX_ITEMS = 35
 
   data class QuickInputAction(val id: String, @StringRes val labelRes: Int)
 
@@ -77,26 +77,6 @@ object EditorQuickInputPreferences {
         "xml" -> QuickInputTextType.XML
         else -> QuickInputTextType.PLAIN_TEXT
       }
-
-  /** Symbols used by the editor's collapsed symbol bar. Text actions are deliberately excluded. */
-  fun symbolsFor(file: File?): List<Symbol> {
-    val type = textTypeFor(file)
-    val baseSymbols = defaultSymbols(type)
-    val symbolItems =
-        baseSymbols.map {
-          SymbolQuickItem(
-              "symbol:${it.label}:${it.commit}:${it.offset}",
-              it.label,
-              it.commit,
-              it.offset,
-          )
-        }
-    return itemsFor(type, symbolItems)
-        .mapNotNull { item ->
-          (item as? SymbolQuickItem)?.let { Symbol(it.label.toString(), it.commit, it.offset) }
-        }
-        .ifEmpty { baseSymbols }
-  }
 
   fun itemsFor(file: File?, symbols: List<EditorQuickItem>): List<EditorQuickItem> =
       itemsFor(textTypeFor(file), symbols)

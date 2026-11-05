@@ -19,15 +19,18 @@ package com.tom.rv2ide.ui;
 
 import android.content.Context;
 import android.util.AttributeSet;
+import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import com.tom.rv2ide.adapters.SymbolInputAdapter;
 import com.tom.rv2ide.editor.ui.IDEEditor;
-import com.tom.rv2ide.models.Symbol;
-import com.tom.rv2ide.utils.Symbols;
+import com.tom.rv2ide.models.EditorQuickItem;
+import com.tom.rv2ide.utils.EditorQuickInputProvider;
 import java.util.List;
 
 public class SymbolInputView extends RecyclerView {
+
+  @Nullable private SymbolInputAdapter.ActionClickListener actionClickListener;
 
   public SymbolInputView(Context context) {
     this(context, null);
@@ -42,16 +45,24 @@ public class SymbolInputView extends RecyclerView {
     setLayoutManager(new LinearLayoutManager(getContext(), LinearLayoutManager.HORIZONTAL, false));
   }
 
-  public void refresh(IDEEditor editor, List<Symbol> symbols) {
-    if (symbols == null || symbols.isEmpty()) {
-      symbols = Symbols.INSTANCE.getPlainTextSymbols();
+  public void setActionClickListener(SymbolInputAdapter.ActionClickListener listener) {
+    actionClickListener = listener;
+    final var adapter = getAdapter();
+    if (adapter instanceof SymbolInputAdapter) {
+      ((SymbolInputAdapter) adapter).setActionClickListener(listener);
+    }
+  }
+
+  public void refresh(IDEEditor editor, List<EditorQuickItem> items) {
+    if (items == null || items.isEmpty()) {
+      items = EditorQuickInputProvider.defaultItems();
     }
 
     final var adapter = getAdapter();
     if (adapter instanceof SymbolInputAdapter) {
-      ((SymbolInputAdapter) adapter).refresh(editor, symbols);
+      ((SymbolInputAdapter) adapter).refresh(editor, items);
     } else {
-      setAdapter(new SymbolInputAdapter(editor));
+      setAdapter(new SymbolInputAdapter(editor, items, actionClickListener));
     }
   }
 }

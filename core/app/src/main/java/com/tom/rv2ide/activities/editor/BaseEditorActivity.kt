@@ -70,7 +70,12 @@ import com.google.android.material.tabs.TabLayout
 import com.google.android.material.tabs.TabLayout.Tab
 import com.tom.rv2ide.R
 import com.tom.rv2ide.R.string
+import com.tom.rv2ide.actions.ActionData
 import com.tom.rv2ide.actions.ActionItem.Location.EDITOR_FILE_TABS
+import com.tom.rv2ide.actions.ActionItem.Location.EDITOR_TOOLBAR
+import com.tom.rv2ide.actions.ActionsRegistry
+import com.tom.rv2ide.actions.etc.TextActionMenuAction
+import com.tom.rv2ide.actions.internal.DefaultActionsRegistry
 import com.tom.rv2ide.adapters.DiagnosticsAdapter
 import com.tom.rv2ide.adapters.SearchListAdapter
 import com.tom.rv2ide.app.EdgeToEdgeIDEActivity
@@ -1313,7 +1318,30 @@ abstract class BaseEditorActivity :
     sb.append('\n')
   }
 
+  private fun executeQuickInputAction(actionId: String) {
+    val editorView = provideCurrentEditor() ?: return
+    val registry = ActionsRegistry.getInstance()
+    val textMenu =
+        registry.findAction(EDITOR_TOOLBAR, "ide.editor.text.actions") as? TextActionMenuAction
+            ?: return
+    val action = textMenu.findAction(actionId) ?: return
+    val data =
+        ActionData().apply {
+          put(Context::class.java, this@BaseEditorActivity)
+          put(CodeEditorView::class.java, editorView)
+          put(IDEEditor::class.java, editorView.editor)
+          put(File::class.java, editorView.file)
+        }
+
+    action.prepare(data)
+    if (!action.visible || !action.enabled) {
+      return
+    }
+    (registry as? DefaultActionsRegistry)?.executeAction(action, data)
+  }
+
   private fun setupBottomSheet() {
+    content.bottomSheet.onQuickInputActionClick = ::executeQuickInputAction
     editorBottomSheet = BottomSheetBehavior.from<View>(content.bottomSheet)
     editorBottomSheet?.addBottomSheetCallback(
         object : BottomSheetCallback() {

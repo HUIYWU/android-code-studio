@@ -100,6 +100,7 @@ constructor(
   private var anchorOffset = 0
   private var isImeVisible = false
   private var windowInsets: Insets? = null
+  var onQuickInputActionClick: ((String) -> Unit)? = null
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -176,6 +177,10 @@ constructor(
       if (behavior.state != BottomSheetBehavior.STATE_EXPANDED) {
         behavior.state = BottomSheetBehavior.STATE_EXPANDED
       }
+    }
+
+    binding.symbolInput.setActionClickListener { actionId ->
+      onQuickInputActionClick?.invoke(actionId)
     }
 
     ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
@@ -294,7 +299,7 @@ constructor(
 
   fun refreshSymbolInput(editor: CodeEditorView) {
     val ideEditor = editor.editor ?: return
-    binding.symbolInput.refresh(ideEditor, EditorQuickInputProvider.symbolsFor(editor.file))
+    binding.symbolInput.refresh(ideEditor, EditorQuickInputProvider.quickItemsFor(editor.file))
   }
 
   fun onSoftInputChanged() {

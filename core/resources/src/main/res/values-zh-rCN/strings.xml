@@ -593,7 +593,7 @@
   <string name="idepref_editor_quickInputItem_title">输入项</string>
   <string name="idepref_editor_quickInputAdd_title">新增项</string>
   <string name="idepref_editor_quickInputAdd_summary">新增文本插入项或文本操作项。</string>
-  <string name="idepref_editor_quickInputLimit_message">一个快捷输入组最多包含 30 项。</string>
+  <string name="idepref_editor_quickInputLimit_message">一个快捷输入组最多包含 35 项。</string>
   <string name="idepref_editor_quickInputEdit_title">编辑</string>
   <string name="idepref_editor_quickInputEdit_name">名称 / 简名</string>
   <string name="idepref_editor_quickInputEdit_text">文本</string>

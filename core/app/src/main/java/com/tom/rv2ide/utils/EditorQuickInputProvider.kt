@@ -17,10 +17,31 @@
 
 package com.tom.rv2ide.utils
 
+import com.tom.rv2ide.models.EditorQuickItem
 import com.tom.rv2ide.models.Symbol
+import com.tom.rv2ide.models.SymbolQuickItem
 import java.io.File
 
 object EditorQuickInputProvider {
 
-  fun symbolsFor(file: File?): List<Symbol> = EditorQuickInputPreferences.symbolsFor(file)
+  fun quickItemsFor(file: File?): List<EditorQuickItem> {
+    val symbols = Symbols.forFile(file).ifEmpty { Symbols.plainTextSymbols }
+    return EditorQuickInputPreferences.itemsFor(file, symbols.toQuickItems())
+  }
+
+  @JvmStatic
+  fun defaultItems(): List<EditorQuickItem> = Symbols.plainTextSymbols.toQuickItems()
+
+  private fun Symbol.toQuickItem(): SymbolQuickItem {
+    return SymbolQuickItem(
+        id = "symbol:$commit:$offset:$label",
+        label = label,
+        commit = commit,
+        offset = offset,
+    )
+  }
+
+  private fun List<Symbol>.toQuickItems(): List<EditorQuickItem> {
+    return map { it.toQuickItem() }
+  }
 }
