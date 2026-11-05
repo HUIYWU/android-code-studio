@@ -696,6 +696,7 @@
   <string name="idepref_customFont_imported_applied">Font imported and applied: %1$s</string>
   <string name="idepref_customFont_import_error">Error importing font: %1$s</string>
   <string name="msg_installing_apk">Installing APK...</string>
+  <string name="symbol_input_toggle">Expand or collapse symbol input</string>
   <string name="msg_action_open_application">Do you want to open the application?</string>
 
 

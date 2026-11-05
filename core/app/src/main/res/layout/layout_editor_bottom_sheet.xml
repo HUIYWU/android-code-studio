@@ -43,10 +43,38 @@
       layout="@layout/layout_editor_build_status"
       android:id="@+id/build_status"/>
 
-    <com.tom.rv2ide.ui.SymbolInputView
-      android:id="@+id/symbol_input"
+    <LinearLayout
+      android:id="@+id/symbol_input_container"
       android:layout_width="match_parent"
-      android:layout_height="wrap_content"/>
+      android:layout_height="match_parent"
+      android:orientation="vertical">
+
+      <FrameLayout
+        android:id="@+id/expand_toggle"
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:contentDescription="@string/symbol_input_toggle"
+        android:focusable="true">
+
+        <ImageView
+          android:id="@+id/expand_toggle_icon"
+          android:layout_width="16dp"
+          android:layout_height="16dp"
+          android:layout_gravity="center"
+          android:rotation="90"
+          android:src="@drawable/ic_arrow_right"
+          android:tint="?attr/colorOnSurfaceVariant" />
+
+      </FrameLayout>
+
+      <com.tom.rv2ide.ui.SymbolInputView
+        android:id="@+id/symbol_input"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"/>
+
+    </LinearLayout>
 
     <include
       layout="@layout/layout_editor_bottom_action"

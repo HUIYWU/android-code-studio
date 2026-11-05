@@ -384,6 +384,7 @@
   <string name="idepref_customFont_title">字体选择</string>
   <string name="idepref_customFont_summary">选择编辑器字体。JetBrains Mono 为默认字体，导入的字体将从 ~/.androidide/ui 加载。</string>
   <string name="msg_installing_apk">正在安装 APK …</string>
+  <string name="symbol_input_toggle">展开或收起符号输入</string>
   <string name="msg_action_open_application">您想打开该应用吗？</string>
   <string name="title_gradle_service_notification_channel">AndroidIDE Gradle 构建服务</string>
   <string name="msg_hex_color_code">十六进制颜色代码</string>

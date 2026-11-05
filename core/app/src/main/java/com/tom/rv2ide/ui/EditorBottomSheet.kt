@@ -100,6 +100,8 @@ constructor(
   private var anchorOffset = 0
   private var isImeVisible = false
   private var windowInsets: Insets? = null
+  private var isSymbolInputExpanded = false
+  private val expandToggleHeight: Int by lazy { SizeUtils.dp2px(16f) }
 
   private val insetBottom: Int
     get() = if (isImeVisible) 0 else windowInsets?.bottom ?: 0
@@ -178,6 +180,9 @@ constructor(
       }
     }
 
+    binding.expandToggle.setOnClickListener { toggleSymbolInputExpansion() }
+    binding.expandToggleIcon.rotation = 90f
+
     ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
       this.windowInsets = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
       insets
@@ -215,6 +220,8 @@ constructor(
           view.viewTreeObserver.removeOnGlobalLayoutListener(this)
           anchorOffset = view.height + SizeUtils.dp2px(1f)
 
+          isSymbolInputExpanded = false
+          binding.expandToggleIcon.rotation = 90f
           behavior.peekHeight = collapsedHeight.roundToInt()
           behavior.expandedOffset = anchorOffset
           behavior.isGestureInsetBottomIgnored = isImeVisible
@@ -232,7 +239,78 @@ constructor(
     view.viewTreeObserver.addOnGlobalLayoutListener(listener)
   }
 
+  fun collapseSymbolInputExpansion() {
+    if (!isSymbolInputExpanded) {
+      return
+    }
+
+    isSymbolInputExpanded = false
+    binding.symbolInput.setExpanded(false, 1)
+    applyHeaderHeight(collapsedHeight.roundToInt())
+    binding.expandToggleIcon.rotation = 90f
+  }
+
+  private fun toggleSymbolInputExpansion() {
+    if (isSymbolInputExpanded) {
+      collapseSymbolInputExpansion()
+    } else {
+      expandSymbolInput()
+    }
+  }
+
+  private fun expandSymbolInput() {
+    if (behavior.state != BottomSheetBehavior.STATE_COLLAPSED || isSymbolInputExpanded) {
+      return
+    }
+
+    val count = binding.symbolInput.adapter?.itemCount ?: 0
+    if (count == 0) {
+      return
+    }
+
+    val spanCount = calculateSymbolSpanCount()
+    val symbolHeight = binding.symbolInput.calculateExpandedHeight(spanCount)
+    val contentHeight = expandToggleHeight + symbolHeight
+    if (contentHeight > maxHeaderHeight()) {
+      return
+    }
+
+    binding.symbolInput.setExpanded(true, spanCount)
+    isSymbolInputExpanded = true
+    applyHeaderHeight(contentHeight)
+    binding.expandToggleIcon.rotation = -90f
+  }
+
+  private fun applyHeaderHeight(contentHeight: Int) {
+    binding.headerContainer.updateLayoutParams<ViewGroup.LayoutParams> {
+      height = contentHeight + insetBottom
+    }
+    binding.headerContainer.updatePaddingRelative(bottom = insetBottom)
+    behavior.peekHeight = contentHeight
+    (parent as? View)?.requestLayout()
+    requestLayout()
+  }
+
+  private fun calculateSymbolSpanCount(): Int {
+    val itemSize = SizeUtils.dp2px(40f)
+    val width = binding.symbolInput.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+    return (width / itemSize).coerceAtLeast(1)
+  }
+
+  private fun maxHeaderHeight(): Int {
+    val available = height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+    return (available - SizeUtils.dp2px(120f)).coerceAtLeast(collapsedHeight.roundToInt())
+  }
+
   fun onSlide(sheetOffset: Float) {
+    if (isSymbolInputExpanded) {
+      if (sheetOffset > 0f) {
+        collapseSymbolInputExpansion()
+      } else {
+        return
+      }
+    }
+
     val heightScale = if (sheetOffset >= COLLAPSE_HEADER_AT_OFFSET) {
       ((COLLAPSE_HEADER_AT_OFFSET - sheetOffset) + COLLAPSE_HEADER_AT_OFFSET) * 2f
     } else {
@@ -257,6 +335,9 @@ constructor(
   }
 
   fun showChild(index: Int) {
+    if (index != CHILD_SYMBOL_INPUT) {
+      collapseSymbolInputExpansion()
+    }
     binding.headerContainer.displayedChild = index
   }
 
@@ -293,6 +374,7 @@ constructor(
   }
 
   fun refreshSymbolInput(editor: CodeEditorView) {
+    collapseSymbolInputExpansion()
     val ideEditor = editor.editor ?: return
     binding.symbolInput.refresh(ideEditor, forFile(editor.file))
   }
@@ -303,6 +385,7 @@ constructor(
       return
     }
 
+    collapseSymbolInputExpansion()
     binding.symbolInput.itemAnimator?.endAnimations()
 
     TransitionManager.beginDelayedTransition(
