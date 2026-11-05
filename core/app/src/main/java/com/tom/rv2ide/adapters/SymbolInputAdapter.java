@@ -111,6 +111,7 @@ public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.
   @Override
   public void onBindViewHolder(@NonNull VH holder, int position) {
     final EditorQuickItem item = items.get(position);
+    applyItemPresentation(holder, item);
     holder.binding.symbol.setText(item.getLabel());
     holder.binding.symbol.setTextColor(
         resolveAttr(holder.binding.symbol.getContext(), R.attr.colorOnSurface));
@@ -123,6 +124,23 @@ public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.
             actionClickListener.onActionClick(((ActionQuickItem) item).getActionId());
           }
         });
+  }
+
+  private void applyItemPresentation(VH holder, EditorQuickItem item) {
+    final var symbol = holder.binding.symbol;
+    if (item instanceof ActionQuickItem) {
+      symbol.setPadding(0, symbol.getPaddingTop(), 0, symbol.getPaddingBottom());
+      symbol.setMinWidth(0);
+      symbol.setMinimumWidth(0);
+    } else {
+      symbol.setPadding(
+          holder.basePaddingLeft,
+          symbol.getPaddingTop(),
+          holder.basePaddingRight,
+          symbol.getPaddingBottom());
+      symbol.setMinWidth(holder.baseMinWidth);
+      symbol.setMinimumWidth(holder.baseMinWidth);
+    }
   }
 
   @Override
@@ -171,10 +189,16 @@ public class SymbolInputAdapter extends RecyclerView.Adapter<SymbolInputAdapter.
   public static class VH extends RecyclerView.ViewHolder {
 
     LayoutSymbolItemBinding binding;
+    final int basePaddingLeft;
+    final int basePaddingRight;
+    final int baseMinWidth;
 
     public VH(LayoutSymbolItemBinding binding) {
       super(binding.getRoot());
       this.binding = binding;
+      this.basePaddingLeft = binding.symbol.getPaddingLeft();
+      this.basePaddingRight = binding.symbol.getPaddingRight();
+      this.baseMinWidth = binding.symbol.getMinWidth();
     }
   }
 }
