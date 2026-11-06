@@ -23,12 +23,12 @@ import androidx.core.util.Pair;
 import com.tom.rv2ide.common.logging.IdeLogConfig;
 import com.tom.rv2ide.language.compiler.javac.compiler.ReusableCompiler;
 import com.tom.rv2ide.language.compiler.javac.partial.CompilationInfo;
-import com.tom.rv2ide.language.compiler.javac.partial.MethodReparse;
+import com.tom.rv2ide.language.compiler.javac.partial.InPlaceReparser;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinSourceStubProvider;
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
-import com.tom.rv2ide.language.services.java.models.MethodReparsePlan;
+import com.tom.rv2ide.language.services.java.models.ReparsePlan;
 import com.tom.rv2ide.preferences.internal.JavaPreferences;
 import com.tom.rv2ide.language.services.java.parser.ParseTask;
 import com.tom.rv2ide.language.services.java.parser.Parser;
@@ -68,7 +68,9 @@ import jdkx.tools.Diagnostic;
 import jdkx.tools.JavaFileObject;
 import jdkx.tools.StandardLocation;
 import openjdk.source.tree.CompilationUnitTree;
+import openjdk.source.tree.BlockTree;
 import openjdk.source.tree.MethodTree;
+import openjdk.source.tree.VariableTree;
 import openjdk.source.util.TreePath;
 import openjdk.tools.javac.api.JavacTrees;
 import org.slf4j.Logger;
@@ -355,12 +357,18 @@ public class JavaCompilerService implements CompilerProvider {
    * containment, mutation-failure isolation, or partial-diagnostic rollback.
    */
   private synchronized void reparseOrRecompile(CompilationRequest request) {
-    if (request.methodReparsePlan == null) {
+    if (request.reparsePlan == null) {
       recompile(request);
       return;
     }
-    final ReparseOutcome outcome =
+    ReparseOutcome outcome =
         methodReparseCorruptedTask ? ReparseOutcome.FAILED_AFTER_MUTATION : tryMethodReparse(request);
+    if (outcome == ReparseOutcome.NOT_APPLICABLE) {
+      outcome = tryFieldInitializerReparse(request);
+    }
+    if (outcome == ReparseOutcome.NOT_APPLICABLE) {
+      outcome = tryInitializerBlockReparse(request);
+    }
     if (outcome == ReparseOutcome.SUCCESS) {
       return;
     }
@@ -369,50 +377,12 @@ public class JavaCompilerService implements CompilerProvider {
   }
 
   private ReparseOutcome tryMethodReparse(CompilationRequest request) {
-    final MethodReparsePlan plan = request.methodReparsePlan;
-    if (plan == null) {
-      return ReparseOutcome.FAILED;
-    }
-    if (cachedCompile == null) {
-      return ReparseOutcome.FAILED;
-    }
-    if (cachedCompile.closed) {
-      return ReparseOutcome.FAILED;
-    }
-    if (request.sources.size() != 1) {
-      return ReparseOutcome.FAILED;
-    }
-    if (plan.contents == null || plan.cursor < 0) {
-      return ReparseOutcome.FAILED;
-    }
-    final JavaFileObject requestedSource = request.sources.iterator().next();
-    if (!requestedSource.toUri().normalize().equals(plan.file.toUri().normalize())) {
-      return ReparseOutcome.FAILED;
-    }
-    final String oldContents = cachedCompile.currentSourceContents();
+    final ReparsePlan plan = request.reparsePlan;
+    final String oldContents = validatedContents(request, plan);
     if (oldContents == null) {
       return ReparseOutcome.FAILED;
     }
-    // The MVP requires an explicit contiguous document identity. A task produced by
-    // Diagnostics or another request without version metadata must be re-established first;
-    // otherwise we could mutate a task whose source snapshot is only approximately known.
-    if (cachedCompile.documentVersion() < 0 || plan.documentVersion < 0) {
-      return ReparseOutcome.FAILED;
-    }
-    if (plan.documentVersion != cachedCompile.documentVersion() + 1) {
-      return ReparseOutcome.FAILED;
-    }
-    if (cachedCompile.documentRevision() < 0 || plan.documentRevision < 0) {
-      return ReparseOutcome.FAILED;
-    }
-    if (plan.documentRevision <= cachedCompile.documentRevision()) {
-      return ReparseOutcome.FAILED;
-    }
 
-    final SingleTextEdit edit = SingleTextEdit.compute(oldContents, plan.contents);
-    if (edit == null) {
-      return ReparseOutcome.FAILED;
-    }
     final CompilationUnitTree root = cachedCompile.root(plan.file);
     if (root == null) {
       return ReparseOutcome.FAILED;
@@ -434,16 +404,13 @@ public class JavaCompilerService implements CompilerProvider {
       }
     }
     if (candidate == null) {
-      return ReparseOutcome.FAILED;
+      return ReparseOutcome.NOT_APPLICABLE;
     }
     if (!(candidate.second.getLeaf() instanceof MethodTree)) {
       return ReparseOutcome.FAILED;
     }
     final MethodTree method = (MethodTree) candidate.second.getLeaf();
     if (method.getBody() == null) {
-      return ReparseOutcome.FAILED;
-    }
-    if (method.getName().contentEquals("<init>")) {
       return ReparseOutcome.FAILED;
     }
 
@@ -455,18 +422,15 @@ public class JavaCompilerService implements CompilerProvider {
     }
     final int bodyStart = (int) bodyStartLong;
     final int bodyEnd = (int) bodyEndLong;
-    if (edit.start <= bodyStart || edit.oldEnd >= bodyEnd) {
+    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, bodyStart, bodyEnd)) {
       return ReparseOutcome.FAILED;
     }
-    final int newBodyEnd = bodyEnd + edit.delta();
-    if (newBodyEnd > plan.contents.length() || newBodyEnd <= bodyStart) {
-      return ReparseOutcome.FAILED;
-    }
+    final int newBodyEnd = bodyEnd + plan.contents.length() - oldContents.length();
 
     if (request.configureContext != null) {
       request.configureContext.accept(cachedCompile.task.getContext());
     }
-    final MethodReparse reparser = new MethodReparse();
+    final InPlaceReparser reparser = new InPlaceReparser();
     final CompilationInfo info =
         new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
     final String newBody = plan.contents.substring(bodyStart, newBodyEnd);
@@ -485,43 +449,196 @@ public class JavaCompilerService implements CompilerProvider {
   }
 
   /** Result of one method-reparse attempt as far as the compiler cache is concerned. */
+  /**
+   * Returns the previous document text when this request may mutate the cached task in place, or
+   * {@code null} when the strict document identity is not established.
+   */
+  private String validatedContents(CompilationRequest request, ReparsePlan plan) {
+    if (plan == null || cachedCompile == null || cachedCompile.closed) {
+      return null;
+    }
+    if (request.sources.size() != 1 || plan.contents == null || plan.cursor < 0) {
+      return null;
+    }
+    final JavaFileObject requestedSource = request.sources.iterator().next();
+    if (!requestedSource.toUri().normalize().equals(plan.file.toUri().normalize())) {
+      return null;
+    }
+    final String oldContents = cachedCompile.currentSourceContents();
+    if (oldContents == null) {
+      return null;
+    }
+    // The MVP requires an explicit contiguous document identity. A task produced by Diagnostics or
+    // another request without version metadata must be re-established first.
+    if (cachedCompile.documentVersion() < 0 || plan.documentVersion < 0) {
+      return null;
+    }
+    if (plan.documentVersion != cachedCompile.documentVersion() + 1) {
+      return null;
+    }
+    if (cachedCompile.documentRevision() < 0 || plan.documentRevision < 0) {
+      return null;
+    }
+    return plan.documentRevision <= cachedCompile.documentRevision() ? null : oldContents;
+  }
+
+  /**
+   * Replaces a class-member field initializer in place.
+   *
+   * The field symbol itself is unchanged, so only the initializer expression is re-attributed; the
+   * class member table does not need to be re-entered.
+   */
+  private ReparseOutcome tryFieldInitializerReparse(CompilationRequest request) {
+    final ReparsePlan plan = request.reparsePlan;
+    final String oldContents = validatedContents(request, plan);
+    if (oldContents == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final CompilationUnitTree root = cachedCompile.root(plan.file);
+    if (root == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final List<Pair<Range, TreePath>> positions =
+        cachedCompile.fieldPositions.get(plan.file.toAbsolutePath().toString());
+    if (positions == null) {
+      return ReparseOutcome.FAILED;
+    }
+    Pair<Range, TreePath> candidate = null;
+    for (Pair<Range, TreePath> position : positions) {
+      final Range range = position.first;
+      final int start = range.getStart().requireIndex();
+      final int end = range.getEnd().requireIndex();
+      if (plan.cursor >= start && plan.cursor <= end) {
+        candidate = position;
+        break;
+      }
+    }
+    if (candidate == null) {
+      return ReparseOutcome.NOT_APPLICABLE;
+    }
+    if (!(candidate.second.getLeaf() instanceof VariableTree)) {
+      return ReparseOutcome.FAILED;
+    }
+    final VariableTree field = (VariableTree) candidate.second.getLeaf();
+    if (field.getInitializer() == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
+    final long initStartLong =
+        trees.getSourcePositions().getStartPosition(root, field.getInitializer());
+    final long initEndLong =
+        trees.getSourcePositions().getEndPosition(root, field.getInitializer());
+    if (initStartLong < 0 || initEndLong < initStartLong) {
+      return ReparseOutcome.FAILED;
+    }
+    final int initStart = (int) initStartLong;
+    final int initEnd = (int) initEndLong;
+    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, initStart, initEnd)) {
+      return ReparseOutcome.FAILED;
+    }
+    final int newInitEnd = initEnd + plan.contents.length() - oldContents.length();
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final String newInitializer = plan.contents.substring(initStart, newInitEnd);
+    final boolean success =
+        reparser.reparseFieldInitializer(info, candidate.second, newInitializer, plan.contents);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        methodReparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * Replaces a static or instance initializer block in place.
+   *
+   * The block is re-attributed in the class environment; javac gives class-level blocks their own
+   * BLOCK scope, so no class member table entry changes.
+   */
+  private ReparseOutcome tryInitializerBlockReparse(CompilationRequest request) {
+    final ReparsePlan plan = request.reparsePlan;
+    final String oldContents = validatedContents(request, plan);
+    if (oldContents == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final CompilationUnitTree root = cachedCompile.root(plan.file);
+    if (root == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final List<Pair<Range, TreePath>> positions =
+        cachedCompile.initializerBlockPositions.get(plan.file.toAbsolutePath().toString());
+    if (positions == null) {
+      return ReparseOutcome.FAILED;
+    }
+    Pair<Range, TreePath> candidate = null;
+    for (Pair<Range, TreePath> position : positions) {
+      final Range range = position.first;
+      final int start = range.getStart().requireIndex();
+      final int end = range.getEnd().requireIndex();
+      if (plan.cursor >= start && plan.cursor <= end) {
+        candidate = position;
+        break;
+      }
+    }
+    if (candidate == null) {
+      return ReparseOutcome.FAILED;
+    }
+    if (!(candidate.second.getLeaf() instanceof BlockTree)) {
+      return ReparseOutcome.FAILED;
+    }
+    final BlockTree block = (BlockTree) candidate.second.getLeaf();
+    final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
+    final long blockStartLong = trees.getSourcePositions().getStartPosition(root, block);
+    final long blockEndLong = trees.getSourcePositions().getEndPosition(root, block);
+    if (blockStartLong < 0 || blockEndLong < blockStartLong) {
+      return ReparseOutcome.FAILED;
+    }
+    final int blockStart = (int) blockStartLong;
+    final int blockEnd = (int) blockEndLong;
+    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, blockStart, blockEnd)) {
+      return ReparseOutcome.FAILED;
+    }
+    final int newBlockEnd = blockEnd + plan.contents.length() - oldContents.length();
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final String newBlock = plan.contents.substring(blockStart, newBlockEnd);
+    final boolean success =
+        reparser.reparseInitializerBlock(info, candidate.second, newBlock, plan.contents);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        methodReparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
   private enum ReparseOutcome {
     SUCCESS,
     FAILED,
     FAILED_AFTER_MUTATION,
+    /** The cursor is not inside a method body, so member-level reparse may take over. */
+    NOT_APPLICABLE,
   }
 
-  private static final class SingleTextEdit {
-    final int start;
-    final int oldEnd;
-    final int newEnd;
-
-    private SingleTextEdit(int start, int oldEnd, int newEnd) {
-      this.start = start;
-      this.oldEnd = oldEnd;
-      this.newEnd = newEnd;
-    }
-
-    static SingleTextEdit compute(String oldText, String newText) {
-      int prefix = 0;
-      final int commonLength = Math.min(oldText.length(), newText.length());
-      while (prefix < commonLength && oldText.charAt(prefix) == newText.charAt(prefix)) {
-        prefix++;
-      }
-      int oldSuffix = oldText.length();
-      int newSuffix = newText.length();
-      while (oldSuffix > prefix && newSuffix > prefix
-          && oldText.charAt(oldSuffix - 1) == newText.charAt(newSuffix - 1)) {
-        oldSuffix--;
-        newSuffix--;
-      }
-      return new SingleTextEdit(prefix, oldSuffix, newSuffix);
-    }
-
-    int delta() {
-      return newEnd - oldEnd;
-    }
-  }
 
   private synchronized void recompile(CompilationRequest request) {
     close();

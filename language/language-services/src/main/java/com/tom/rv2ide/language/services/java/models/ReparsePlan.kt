@@ -20,13 +20,13 @@ package com.tom.rv2ide.language.services.java.models
 import java.nio.file.Path
 
 /**
- * Immutable snapshot used by the method-level reparse
+ * Immutable snapshot of one in-place reparse request.
  *
  * The contents are the exact text that will be analyzed by javac, after CompletionProvider's
- * temporary syntax fixes have been applied. The compiler derives the single edit range by comparing
- * this snapshot with the text retained by the cached CompileBatch.
+ * temporary syntax fixes have been applied. The compiler derives the edited range by comparing this
+ * snapshot with the text retained by the cached CompileBatch.
  */
-data class MethodReparsePlan(
+data class ReparsePlan(
     @JvmField val file: Path,
     @JvmField val contents: String,
     @JvmField val documentVersion: Int,

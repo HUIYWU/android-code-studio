@@ -26,8 +26,8 @@ import openjdk.tools.javac.util.Context
 /**
  * Data sent to the stable Java compilation path.
  *
- * <p>Method-level incremental analysis is optional and remains a request-scoped plan. Requests
- * without a plan continue to use the stable full compilation path.
+ * <p>In-place incremental analysis is optional and remains a request-scoped plan. Requests without a
+ * plan continue to use the stable full compilation path.
  *
  * @param sources The source files to compile.
  * @author Akash Yadav
@@ -38,6 +38,6 @@ constructor(
     @JvmField val sources: Collection<JavaFileObject>,
     @JvmField val compilationTaskProcessor: CompilationTaskProcessor = DefaultCompilationTaskProcessor(),
     @JvmField var configureContext: Consumer<Context>? = null,
-    @JvmField val methodReparsePlan: MethodReparsePlan? = null,
+    @JvmField val reparsePlan: ReparsePlan? = null,
     @JvmField val documentState: CompilationDocumentState? = null,
 )

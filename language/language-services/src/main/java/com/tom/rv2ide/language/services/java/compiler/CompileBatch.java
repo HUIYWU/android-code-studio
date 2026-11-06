@@ -32,6 +32,8 @@ import com.tom.rv2ide.language.services.java.kotlin.KotlinAbiStubJavaFileObject;
 import com.tom.rv2ide.language.compiler.javac.compiler.ReusableBorrow;
 import com.tom.rv2ide.language.compiler.javac.partial.DiagnosticListenerImpl;
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
+import com.tom.rv2ide.language.services.java.visitors.FieldRangeScanner;
+import com.tom.rv2ide.language.services.java.visitors.InitializerBlockRangeScanner;
 import com.tom.rv2ide.language.services.java.visitors.MethodRangeScanner;
 import com.tom.rv2ide.models.Range;
 import com.tom.rv2ide.projects.ModuleProject;
@@ -76,6 +78,11 @@ public class CompileBatch implements AutoCloseable {
   /** Source URIs already accepted from the javac parse result. */
   private final Set<String> processedSourceUris = new HashSet<>();
   protected final Map<String, List<Pair<Range, TreePath>>> methodPositions = new HashMap<>();
+  /** Class-member fields that carry an initializer, used for member-level in-place reparse. */
+  protected final Map<String, List<Pair<Range, TreePath>>> fieldPositions = new HashMap<>();
+  /** Static and instance initializer blocks declared directly in a class body. */
+  protected final Map<String, List<Pair<Range, TreePath>>> initializerBlockPositions =
+      new HashMap<>();
   protected DiagnosticListenerImpl diagnosticListener;
   private String currentSourceContents;
   private int documentVersion = -1;
@@ -92,8 +99,8 @@ public class CompileBatch implements AutoCloseable {
     this.task = borrow.task;
     this.roots = new ArrayList<>();
     String documentStateOrigin = "NONE";
-    if (compilationRequest.methodReparsePlan != null) {
-      final var plan = compilationRequest.methodReparsePlan;
+    if (compilationRequest.reparsePlan != null) {
+      final var plan = compilationRequest.reparsePlan;
       this.currentSourceContents = plan.contents;
       this.documentVersion = plan.documentVersion;
       this.documentRevision = plan.documentRevision;
@@ -194,6 +201,12 @@ public class CompileBatch implements AutoCloseable {
       throw new IllegalStateException(
           "Duplicate CompilationUnitTree for file:" + tree.getSourceFile().toUri());
     }
+    final List<Pair<Range, TreePath>> fields = new ArrayList<>();
+    new FieldRangeScanner(this.task).scan(tree, fields);
+    this.fieldPositions.put(path, fields);
+    final List<Pair<Range, TreePath>> blocks = new ArrayList<>();
+    new InitializerBlockRangeScanner(this.task).scan(tree, blocks);
+    this.initializerBlockPositions.put(path, blocks);
     if (IdeLogConfig.shouldLogIde()) {
       watch.log();
     }
@@ -354,6 +367,8 @@ public class CompileBatch implements AutoCloseable {
   public void close() {
     closed = true;
     methodPositions.clear();
+    fieldPositions.clear();
+    initializerBlockPositions.clear();
     roots.clear();
     diagnosticListener = null;
   }

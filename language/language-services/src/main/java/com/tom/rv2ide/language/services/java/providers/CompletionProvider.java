@@ -35,7 +35,7 @@ import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService;
 import com.tom.rv2ide.language.services.java.compiler.SourceFileObject;
 import com.tom.rv2ide.language.services.java.compiler.SynchronizedTask;
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
-import com.tom.rv2ide.language.services.java.models.MethodReparsePlan;
+import com.tom.rv2ide.language.services.java.models.ReparsePlan;
 
 import com.tom.rv2ide.language.services.java.providers.completion.IJavaCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.IdentifierCompletionProvider;
@@ -424,7 +424,7 @@ final long classifyStartedNs = System.nanoTime();
         Collections.singletonList(source),
         new com.tom.rv2ide.language.services.java.compiler.DefaultCompilationTaskProcessor(),
         null,
-        new MethodReparsePlan(
+        new ReparsePlan(
             file,
             contents,
             params.getDocumentVersion(),

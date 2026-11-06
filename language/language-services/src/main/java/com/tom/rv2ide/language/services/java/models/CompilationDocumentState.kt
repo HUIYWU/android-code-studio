@@ -22,9 +22,9 @@ import java.nio.file.Path
 /**
  * Exact document snapshot associated with a full compilation request.
  *
- * Unlike [MethodReparsePlan], this state does not request incremental mutation. It only lets a
- * freshly compiled task retain the identity of the source snapshot it was built from, so a later
- * strictly contiguous Completion request can safely attempt method-level reparse.
+ * Unlike [ReparsePlan], this state does not request incremental mutation. It only lets a freshly
+ * compiled task retain the identity of the source snapshot it was built from, so a later contiguous
+ * request can safely attempt an in-place reparse.
  */
 data class CompilationDocumentState(
     @JvmField val file: Path,

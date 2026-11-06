@@ -19,7 +19,8 @@ package com.tom.rv2ide.language.compiler.javac.partial
 
 import com.tom.rv2ide.language.compiler.javac.compiler.JavacFlowListener
 import com.tom.rv2ide.language.compiler.javac.util.ReparserUtils
-import com.tom.rv2ide.language.compiler.javac.visitors.FindAnonymousVisitor
+import com.tom.rv2ide.language.compiler.javac.visitors.DocCommentOwners
+import com.tom.rv2ide.language.compiler.javac.visitors.ErrorAwareTreeScanner
 import com.tom.rv2ide.language.compiler.javac.visitors.TranslateMethodPositionsVisitor
 import java.nio.CharBuffer
 import java.util.Arrays
@@ -27,7 +28,9 @@ import openjdk.source.tree.BlockTree
 import openjdk.source.tree.ClassTree
 import openjdk.source.tree.CompilationUnitTree
 import openjdk.source.tree.Tree.Kind.BLOCK
+import openjdk.source.tree.Tree
 import openjdk.source.tree.Tree.Kind.METHOD
+import openjdk.source.tree.Tree.Kind.VARIABLE
 import openjdk.source.util.TreePath
 import openjdk.tools.javac.api.JavacScope
 import openjdk.tools.javac.api.JavacTrees
@@ -39,6 +42,7 @@ import openjdk.tools.javac.comp.AttrContext
 import openjdk.tools.javac.comp.Enter
 import openjdk.tools.javac.comp.Env
 import openjdk.tools.javac.comp.Flow
+import openjdk.tools.javac.comp.MemberEnter
 import openjdk.tools.javac.parser.JavacParser
 import openjdk.tools.javac.parser.LazyDocCommentTable.Entry
 import openjdk.tools.javac.parser.ScannerFactory
@@ -49,6 +53,7 @@ import openjdk.tools.javac.tree.JCTree.JCBlock
 import openjdk.tools.javac.tree.JCTree.JCClassDecl
 import openjdk.tools.javac.tree.JCTree.JCCompilationUnit
 import openjdk.tools.javac.tree.JCTree.JCMethodDecl
+import openjdk.tools.javac.tree.JCTree.JCVariableDecl
 import openjdk.tools.javac.tree.TreeInfo
 import openjdk.tools.javac.tree.TreeMaker
 import openjdk.tools.javac.util.Context
@@ -58,13 +63,20 @@ import openjdk.tools.javac.util.Names
 import org.slf4j.LoggerFactory
 
 /**
- * Method-level partial reparse implementation.
+ * In-place javac AST and semantic-state mutation for one member at a time.
  *
- * <p>This directly mutates a supplied javac task and is intended to update one method body in place.
+ * Two reparse units are supported today, both of which leave the enclosing class member table alone:
  *
- * @author Akash Yadav
+ * - `reparseMethod` replaces a method or constructor body and re-attributes it in the method
+ *   environment;
+ * - `reparseFieldInitializer` replaces a field initializer expression and re-attributes it in the
+ *   field's own environment.
+ *
+ * Both entry points return `false` when the edit cannot be applied safely; callers then fall back to
+ * a full compilation. `taskMutated` reports whether the cached task was already modified, so a failed
+ * attempt can never be retried against the same task.
  */
-class MethodReparse : PartialReparse {
+class InPlaceReparser {
 
   /** True when the current attempt changed the cached javac AST or its semantic state. */
   var taskMutated: Boolean = false
@@ -73,9 +85,9 @@ class MethodReparse : PartialReparse {
   private val allowPartialReparse: Boolean = ReparserUtils.canReparse()
 
   companion object {
-    private val log = LoggerFactory.getLogger(MethodReparse::class.java)
+    private val log = LoggerFactory.getLogger(InPlaceReparser::class.java)
   }
-  override fun reparseMethod(
+  fun reparseMethod(
 
       ci: CompilationInfo,
       methodPath: TreePath,
@@ -98,7 +110,13 @@ class MethodReparse : PartialReparse {
     }
     val method = methodPath.leaf as JCMethodDecl
 
-    val methodScope = ci.trees.getScope(TreePath(methodPath, method.body))
+    // The body path would make JavacTrees copy and attribute the old body, which registers copy
+    // symbols for local/anonymous classes. The declaration path only builds the method env.
+    val methodEnv = ci.trees.getScope(methodPath)
+    if (methodEnv.env.enclMethod?.sym !== method.sym) {
+      log.debug("Unable to resolve the method environment for {}", method.name)
+      return false
+    }
     val jt = JavacTrees.instance(task)
     val origStartPos = jt.sourcePositions.getStartPosition(cu, method.body).toInt()
     val origEndPos = jt.sourcePositions.getEndPosition(cu, method.body).toInt()
@@ -112,13 +130,11 @@ class MethodReparse : PartialReparse {
       return false
     }
 
-    val fav = FindAnonymousVisitor()
-    fav.scan(method.body, null)
-    if (fav.hasLocalClass) {
-      return false
-    }
-
-    val noInner = fav.noInner
+    // Collected from the old body so the doc-comment table can drop stale owners. Local and
+    // anonymous classes are allowed here: doUnenter removes their symbols before the new body is
+    // entered again, which is what makes local-class edits repairable in place.
+    val oldBodyDocs = DocCommentOwners()
+    oldBodyDocs.scan(method.body, null)
     val context = task.context
 
     try {
@@ -170,13 +186,6 @@ class MethodReparse : PartialReparse {
           return false
         }
 
-        fav.reset()
-        fav.scan(block, null)
-
-        val newNoInner = fav.noInner
-        if (fav.hasLocalClass || noInner != newNoInner) {
-          return false
-        }
         // End positions/doc-comments/unenter have already started mutating the cached task.
         taskMutated = true
         val cuDocComments = cu.docComments
@@ -191,7 +200,7 @@ class MethodReparse : PartialReparse {
                 origEndPos,
                 newBody.length,
                   docComments.size,
-                fav.docOwners.size,
+                oldBodyDocs.owners.size,
                 err.javaClass.name,
                 err.message,
                 err,
@@ -199,7 +208,7 @@ class MethodReparse : PartialReparse {
             return false
           }
           try {
-            docCommentsTable.keys.removeAll(fav.docOwners)
+            docCommentsTable.keys.removeAll(oldBodyDocs.owners)
           } catch (err: Throwable) {
             log.error(
                 "Partial reparse stage failed: stage=doc-comments-remove method={} origStartPos={} origEndPos={} newBodyLength={} tableSize={} addedDocComments={} removedOwners={} errorType={} errorMessage={}",
@@ -209,7 +218,7 @@ class MethodReparse : PartialReparse {
                 newBody.length,
                   docCommentsTable.size,
                 docComments.size,
-                fav.docOwners.size,
+                oldBodyDocs.owners.size,
                 err.javaClass.name,
                 err.message,
                 err,
@@ -227,7 +236,7 @@ class MethodReparse : PartialReparse {
                 newBody.length,
                   docCommentsTable.size,
                 docComments.size,
-                fav.docOwners.size,
+                oldBodyDocs.owners.size,
                 err.javaClass.name,
                 err.message,
                 err,
@@ -268,7 +277,7 @@ class MethodReparse : PartialReparse {
         method.body = block
         taskMutated = true
         try {
-          reAttrMethodBody(context, methodScope, method, block)
+          reAttrMethodBody(context, methodEnv, method, block)
         } catch (err: Throwable) {
           log.error(
               "Partial reparse stage failed: stage=reattr method={} origStartPos={} origEndPos={} newBodyLength={}",
@@ -358,6 +367,316 @@ class MethodReparse : PartialReparse {
     }
 
     return true
+  }
+
+  /**
+   * Replaces the initializer expression of a class-member field in place.
+   *
+   * The field symbol is unchanged, so the new expression is only re-attributed in the field's own
+   * environment; the class member table is never re-entered.
+   */
+  fun reparseFieldInitializer(
+      ci: CompilationInfo,
+      fieldPath: TreePath,
+      newInitializer: String,
+      fileContents: CharSequence,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    if (fieldPath.leaf.kind != VARIABLE) {
+      return false
+    }
+    val field = fieldPath.leaf as JCVariableDecl
+    val oldInitializer = field.init ?: return false
+    val fieldSymbol = field.sym ?: return false
+    val classPath = fieldPath.parentPath ?: return false
+    val classEnv = ci.trees.getScope(classPath)
+    if (classEnv.env.enclClass?.sym !== fieldSymbol.owner) {
+      log.debug("Unable to resolve the field environment for {}", field.name)
+      return false
+    }
+    val initEnv = MemberEnter.instance(ci.task.context).getInitEnv(field, classEnv.env) ?: return false
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val jt = JavacTrees.instance(ci.task)
+    val origStartPos = jt.sourcePositions.getStartPosition(cu, oldInitializer).toInt()
+    val origEndPos = jt.sourcePositions.getEndPosition(cu, oldInitializer).toInt()
+    if (origStartPos < 0 || origStartPos > origEndPos) {
+      return false
+    }
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(origStartPos, origEndPos)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin field={} source={} origStartPos={} origEndPos={} newInitializerLength={} errorType={} errorMessage={}",
+              field.name,
+              fo,
+              origStartPos,
+              origEndPos,
+              newInitializer.length,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val startPos = oldInitializer.pos
+        val buffer = CharArray(startPos + newInitializer.length + 1)
+        Arrays.fill(buffer, ' ')
+        for (index in newInitializer.indices) {
+          buffer[startPos + index] = newInitializer[index]
+        }
+        buffer[startPos + newInitializer.length] = '\u0000'
+
+        val parsed = try {
+          val parser =
+              newParser(
+                  context,
+                  CharBuffer.wrap(buffer, 0, buffer.size - 1),
+                  (cu as JCCompilationUnit).endPositions,
+              )
+          parser.parseExpression()
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse field={} origStartPos={} origEndPos={} newInitializerLength={}",
+              field.name,
+              origStartPos,
+              origEndPos,
+              newInitializer.length,
+              err,
+          )
+          return false
+        }
+
+        val newEndPos = jt.sourcePositions.getEndPosition(cu, parsed).toInt()
+        if (newEndPos != origStartPos + newInitializer.length) {
+          return false
+        }
+
+        // The old initializer may have introduced local or anonymous classes; drop their symbols
+        // before the replacement is attributed again.
+        taskMutated = true
+        ReparserUtils.unenter(context, cu, oldInitializer)
+        TranslatePositionsAfter(
+                (cu as JCCompilationUnit).endPositions, origEndPos, newEndPos - origEndPos)
+            .scan(cu, null)
+
+        field.init = parsed
+        Attr.instance(context).attribExpr(parsed, initEnv, fieldSymbol.type)
+
+        val characters = CharArray(fileContents.length)
+        for (index in fileContents.indices) {
+          characters[index] = fileContents[index]
+        }
+        buildLineMap(cu, characters)
+        dl.endPartialReparse(newEndPos - origEndPos)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the initializer mutation field={} origStartPos={} origEndPos={} newInitializerLength={}",
+          field.name,
+          origStartPos,
+          origEndPos,
+          newInitializer.length,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
+  /**
+   * Replaces a static or instance initializer block in place.
+   *
+   * The new block is re-attributed in the class environment; javac gives class-level blocks their own
+   * BLOCK scope, so the class member table is untouched. Instance/static initializer blocks have no
+   * flow information of their own, so no reflow step is required.
+   */
+  fun reparseInitializerBlock(
+      ci: CompilationInfo,
+      blockPath: TreePath,
+      newBlock: String,
+      fileContents: CharSequence,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    if (blockPath.leaf.kind != BLOCK) {
+      return false
+    }
+    val oldBlock = blockPath.leaf as JCBlock
+    val classPath = blockPath.parentPath ?: return false
+    val classDecl = classPath.leaf as? JCClassDecl ?: return false
+    val classEnv = ci.trees.getScope(classPath)
+    if (classEnv.env.enclClass !== classDecl) {
+      log.debug("Unable to resolve the class environment for an initializer block")
+      return false
+    }
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val jt = JavacTrees.instance(ci.task)
+    val origStartPos = jt.sourcePositions.getStartPosition(cu, oldBlock).toInt()
+    val origEndPos = jt.sourcePositions.getEndPosition(cu, oldBlock).toInt()
+    if (origStartPos < 0 || origStartPos > origEndPos) {
+      return false
+    }
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(origStartPos, origEndPos)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin block=initializer source={} origStartPos={} origEndPos={} newBlockLength={} errorType={} errorMessage={}",
+              fo,
+              origStartPos,
+              origEndPos,
+              newBlock.length,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val startPos = oldBlock.pos
+        val buffer = CharArray(startPos + newBlock.length + 1)
+        Arrays.fill(buffer, ' ')
+        for (index in newBlock.indices) {
+          buffer[startPos + index] = newBlock[index]
+        }
+        buffer[startPos + newBlock.length] = '\u0000'
+
+        val parsed = try {
+          val parser =
+              newParser(
+                  context,
+                  CharBuffer.wrap(buffer, 0, buffer.size - 1),
+                  (cu as JCCompilationUnit).endPositions,
+              )
+          parser.parseStatement()
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse block=initializer origStartPos={} origEndPos={} newBlockLength={}",
+              origStartPos,
+              origEndPos,
+              newBlock.length,
+              err,
+          )
+          return false
+        }
+
+        if (parsed == null || parsed.kind != BLOCK) {
+          return false
+        }
+        val newEndPos = jt.sourcePositions.getEndPosition(cu, parsed).toInt()
+        if (newEndPos != origStartPos + newBlock.length) {
+          return false
+        }
+
+        // The old block may have introduced local or anonymous classes; drop their symbols first.
+        taskMutated = true
+        ReparserUtils.unenter(context, cu, oldBlock)
+        TranslatePositionsAfter(
+                (cu as JCCompilationUnit).endPositions, origEndPos, newEndPos - origEndPos)
+            .scan(cu, null)
+
+        replaceClassMember(classDecl, oldBlock, parsed as JCBlock)
+        Attr.instance(context).attribStat(parsed, classEnv.env)
+
+        val characters = CharArray(fileContents.length)
+        for (index in fileContents.indices) {
+          characters[index] = fileContents[index]
+        }
+        buildLineMap(cu, characters)
+        dl.endPartialReparse(newEndPos - origEndPos)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the initializer block mutation origStartPos={} origEndPos={} newBlockLength={}",
+          origStartPos,
+          origEndPos,
+          newBlock.length,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
+  /** Replaces [oldMember] with [newMember] inside [classDecl], preserving declaration order. */
+  private fun replaceClassMember(classDecl: JCClassDecl, oldMember: JCTree, newMember: JCTree) {
+    var updated: List<JCTree> = List.nil()
+    for (member in classDecl.defs) {
+      updated = updated.append(if (member === oldMember) newMember else member)
+    }
+    classDecl.defs = updated
+  }
+
+  /** Shifts the positions of every node that starts at or after [changedEnd] by [delta]. */
+  private class TranslatePositionsAfter(
+      private val endPositions: EndPosTable,
+      private val changedEnd: Int,
+      private val delta: Int,
+  ) : ErrorAwareTreeScanner<Unit, Unit>() {
+
+    override fun scan(node: Tree?, p: Unit?) {
+      if (node is JCTree && node.pos >= changedEnd) {
+        node.pos += delta
+      }
+      super.scan(node, p)
+      if (node is JCTree) {
+        val end = endPositions.replaceTree(node, null)
+        if (end >= 0) {
+          endPositions.storeEnd(node, if (end >= changedEnd) end + delta else end)
+        }
+      }
+    }
   }
 
   private fun buildLineMap(cu: JCCompilationUnit, arr: CharArray) {
