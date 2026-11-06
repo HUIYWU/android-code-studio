@@ -37,22 +37,29 @@ import openjdk.tools.javac.api.JavacTrees
 import openjdk.tools.javac.code.Flags
 import openjdk.tools.javac.code.Symbol
 import openjdk.tools.javac.code.Symtab
+import openjdk.tools.javac.code.Type
+import openjdk.tools.javac.code.Types
 import openjdk.tools.javac.comp.Attr
 import openjdk.tools.javac.comp.AttrContext
+import openjdk.tools.javac.comp.Check
 import openjdk.tools.javac.comp.Enter
 import openjdk.tools.javac.comp.Env
 import openjdk.tools.javac.comp.Flow
 import openjdk.tools.javac.comp.MemberEnter
 import openjdk.tools.javac.parser.JavacParser
+import openjdk.tools.javac.parser.Lexer
 import openjdk.tools.javac.parser.LazyDocCommentTable.Entry
 import openjdk.tools.javac.parser.ScannerFactory
+import openjdk.tools.javac.parser.Tokens.TokenKind
 import openjdk.tools.javac.tree.DocCommentTable
 import openjdk.tools.javac.tree.EndPosTable
 import openjdk.tools.javac.tree.JCTree
 import openjdk.tools.javac.tree.JCTree.JCBlock
 import openjdk.tools.javac.tree.JCTree.JCClassDecl
 import openjdk.tools.javac.tree.JCTree.JCCompilationUnit
+import openjdk.tools.javac.tree.JCTree.JCExpression
 import openjdk.tools.javac.tree.JCTree.JCMethodDecl
+import openjdk.tools.javac.tree.JCTree.JCModifiers
 import openjdk.tools.javac.tree.JCTree.JCVariableDecl
 import openjdk.tools.javac.tree.TreeInfo
 import openjdk.tools.javac.tree.TreeMaker
@@ -65,14 +72,21 @@ import org.slf4j.LoggerFactory
 /**
  * In-place javac AST and semantic-state mutation for one member at a time.
  *
- * Two reparse units are supported today, both of which leave the enclosing class member table alone:
+ * Seven in-place mutations are supported today, all of which leave the enclosing class member table
+ * alone:
  *
  * - `reparseMethod` replaces a method or constructor body and re-attributes it in the method
  *   environment;
  * - `reparseFieldInitializer` replaces a field initializer expression and re-attributes it in the
- *   field's own environment.
+ *   field's own environment;
+ * - `reparseInitializerBlock` replaces a static or instance initializer block and re-attributes it in
+ *   the class environment;
+ * - `reparseMethodModifiers` rewrites the written modifiers of a method declaration;
+ * - `reparseFieldModifiers` rewrites the written modifiers of a field declaration;
+ * - `reparseClassModifiers` rewrites the written modifiers of a class declaration;
+ * - `reparseThrowsClause` replaces or adds the declared throws types and rebuilds the method type.
  *
- * Both entry points return `false` when the edit cannot be applied safely; callers then fall back to
+ * All entry points return `false` when the edit cannot be applied safely; callers then fall back to
  * a full compilation. `taskMutated` reports whether the cached task was already modified, so a failed
  * attempt can never be retried against the same task.
  */
@@ -87,8 +101,8 @@ class InPlaceReparser {
   companion object {
     private val log = LoggerFactory.getLogger(InPlaceReparser::class.java)
   }
-  fun reparseMethod(
 
+  fun reparseMethod(
       ci: CompilationInfo,
       methodPath: TreePath,
       newBody: String,
@@ -649,6 +663,516 @@ class InPlaceReparser {
     return true
   }
 
+  /**
+   * Replaces the written modifiers of a method or constructor declaration in place.
+   *
+   * The declaration keeps its symbol: only the flag bits that the edit actually changed are rewritten
+   * on [JCMethodDecl.mods] and on [MethodSymbol.flags_field], so parameters, return type, type
+   * parameters, throws clause and body identity stay untouched. Annotations are not re-attributed,
+   * therefore any edit that touches one is rejected instead of silently dropping it.
+   */
+  fun reparseMethodModifiers(
+      ci: CompilationInfo,
+      methodPath: TreePath,
+      newModifiers: String,
+      declarationStart: Int,
+      oldContents: CharSequence,
+      newContents: CharSequence,
+      windowStart: Int,
+      windowEnd: Int,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    if (methodPath.leaf.kind != METHOD) {
+      return false
+    }
+    val method = methodPath.leaf as JCMethodDecl
+    val mods = method.mods ?: return false
+    val symbol = method.sym ?: return false
+    if (declarationStart < 0) {
+      return false
+    }
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val endPositions = (cu as JCCompilationUnit).endPositions
+    val delta = newContents.length - oldContents.length
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(windowStart, windowEnd)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin unit=modifiers windowStart={} windowEnd={} errorType={} errorMessage={}",
+              windowStart,
+              windowEnd,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val parsed = try {
+          parseDeclarationModifiers(context, declarationStart, newModifiers)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse unit=modifiers declarationStart={} newModifiersLength={}",
+              declarationStart,
+              newModifiers.length,
+              err,
+          )
+          return false
+        }
+
+        if (dl.hasPartialReparseErrors()) {
+          return false
+        }
+        if (!annotationsUntouched(ci, cu, mods, parsed, windowStart, windowEnd)) {
+          return false
+        }
+
+        val allowed = (Flags.MethodFlags and (Flags.ABSTRACT or Flags.NATIVE).inv()).toLong()
+        val methodFlags = Flags.MethodFlags.toLong()
+        val changed = (parsed.flags and methodFlags) xor (mods.flags and methodFlags)
+        val added = parsed.flags and mods.flags.inv() and methodFlags.inv()
+        if (added != 0L || (changed and allowed.inv()) != 0L) {
+          return false
+        }
+
+        taskMutated = true
+        symbol.flags_field = (symbol.flags_field and changed.inv()) or (parsed.flags and changed)
+        if (delta != 0) {
+          TranslatePositionsAfter(endPositions, windowStart, delta).scan(cu, null)
+        }
+        mods.flags = (mods.flags and methodFlags.inv()) or (parsed.flags and methodFlags)
+        mods.pos = parsed.pos
+        buildLineMap(cu, charactersOf(newContents))
+        dl.endPartialReparse(delta)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the declaration modifiers declarationStart={} newModifiersLength={} delta={}",
+          declarationStart,
+          newModifiers.length,
+          delta,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
+  /**
+   * Replaces the written modifiers of a class declaration in place.
+   *
+   * Only access, {@code final}, {@code abstract}, {@code static} and {@code strictfp} may change.
+   * Structural bits such as {@code interface}, {@code enum} or {@code record} are rejected, and the
+   * legality of the resulting combination is not re-checked here.
+   */
+  fun reparseClassModifiers(
+      ci: CompilationInfo,
+      classPath: TreePath,
+      newModifiers: String,
+      declarationStart: Int,
+      oldContents: CharSequence,
+      newContents: CharSequence,
+      windowStart: Int,
+      windowEnd: Int,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    val classDecl = classPath.leaf as? JCClassDecl ?: return false
+    val mods = classDecl.mods ?: return false
+    val symbol = classDecl.sym ?: return false
+    if (declarationStart < 0) {
+      return false
+    }
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val endPositions = (cu as JCCompilationUnit).endPositions
+    val delta = newContents.length - oldContents.length
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(windowStart, windowEnd)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin unit=class-modifiers windowStart={} windowEnd={} errorType={} errorMessage={}",
+              windowStart,
+              windowEnd,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val parsed = try {
+          parseDeclarationModifiers(context, declarationStart, newModifiers)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse unit=class-modifiers declarationStart={} newModifiersLength={}",
+              declarationStart,
+              newModifiers.length,
+              err,
+          )
+          return false
+        }
+
+        if (dl.hasPartialReparseErrors()) {
+          return false
+        }
+        if (!annotationsUntouched(ci, cu, mods, parsed, windowStart, windowEnd)) {
+          return false
+        }
+
+        val classFlags =
+            (Flags.AccessFlags or Flags.FINAL or Flags.ABSTRACT or Flags.STATIC or Flags.STRICTFP)
+                .toLong()
+        val changed = (parsed.flags and classFlags) xor (mods.flags and classFlags)
+        val added = parsed.flags and mods.flags.inv() and classFlags.inv()
+        if (added != 0L) {
+          return false
+        }
+
+        taskMutated = true
+        symbol.flags_field = (symbol.flags_field and changed.inv()) or (parsed.flags and changed)
+        if (delta != 0) {
+          TranslatePositionsAfter(endPositions, windowStart, delta).scan(cu, null)
+        }
+        mods.flags = (mods.flags and classFlags.inv()) or (parsed.flags and classFlags)
+        mods.pos = parsed.pos
+        buildLineMap(cu, charactersOf(newContents))
+        dl.endPartialReparse(delta)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the class modifiers declarationStart={} newModifiersLength={} delta={}",
+          declarationStart,
+          newModifiers.length,
+          delta,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
+  /**
+   * Replaces the written modifiers of a class-member field in place.
+   *
+   * Only flags that cannot change initialization semantics are accepted: access, {@code volatile} and
+   * {@code transient}. {@code final} and {@code static} stay rejected because they decide constant
+   * folding and initialization order, which this path does not recompute.
+   */
+  fun reparseFieldModifiers(
+      ci: CompilationInfo,
+      fieldPath: TreePath,
+      newModifiers: String,
+      declarationStart: Int,
+      oldContents: CharSequence,
+      newContents: CharSequence,
+      windowStart: Int,
+      windowEnd: Int,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    if (fieldPath.leaf.kind != VARIABLE) {
+      return false
+    }
+    val field = fieldPath.leaf as JCVariableDecl
+    val mods = field.mods ?: return false
+    val symbol = field.sym ?: return false
+    if (declarationStart < 0) {
+      return false
+    }
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val endPositions = (cu as JCCompilationUnit).endPositions
+    val delta = newContents.length - oldContents.length
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(windowStart, windowEnd)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin unit=field-modifiers windowStart={} windowEnd={} errorType={} errorMessage={}",
+              windowStart,
+              windowEnd,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val parsed = try {
+          parseDeclarationModifiers(context, declarationStart, newModifiers)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse unit=field-modifiers declarationStart={} newModifiersLength={}",
+              declarationStart,
+              newModifiers.length,
+              err,
+          )
+          return false
+        }
+
+        if (dl.hasPartialReparseErrors()) {
+          return false
+        }
+        if (!annotationsUntouched(ci, cu, mods, parsed, windowStart, windowEnd)) {
+          return false
+        }
+
+        val fieldFlags = (Flags.AccessFlags or Flags.VOLATILE or Flags.TRANSIENT).toLong()
+        val changed = (parsed.flags and fieldFlags) xor (mods.flags and fieldFlags)
+        val added = parsed.flags and mods.flags.inv() and fieldFlags.inv()
+        if (added != 0L) {
+          return false
+        }
+
+        taskMutated = true
+        symbol.flags_field = (symbol.flags_field and changed.inv()) or (parsed.flags and changed)
+        if (delta != 0) {
+          TranslatePositionsAfter(endPositions, windowStart, delta).scan(cu, null)
+        }
+        mods.flags = (mods.flags and fieldFlags.inv()) or (parsed.flags and fieldFlags)
+        mods.pos = parsed.pos
+        buildLineMap(cu, charactersOf(newContents))
+        dl.endPartialReparse(delta)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the field modifiers declarationStart={} newModifiersLength={} delta={}",
+          declarationStart,
+          newModifiers.length,
+          delta,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
+  /**
+   * Replaces the throws clause of a method or constructor in place.
+   *
+   * An existing clause is replaced inside its declared types. With [addingClause] the text is an
+   * insertion in front of the body and must start with the {@code throws} keyword, which is how a
+   * clause is added to a declaration that has none.
+   *
+   * Each new thrown type is attributed in the method environment and validated against
+   * `java.lang.Throwable`, then the method type is rebuilt with [Types.createMethodTypeWithThrown].
+   */
+  fun reparseThrowsClause(
+      ci: CompilationInfo,
+      methodPath: TreePath,
+      newThrows: String,
+      throwsStart: Int,
+      oldContents: CharSequence,
+      newContents: CharSequence,
+      windowStart: Int,
+      windowEnd: Int,
+      addingClause: Boolean,
+  ): Boolean {
+    taskMutated = false
+    var committed = false
+    if (!allowPartialReparse) {
+      return false
+    }
+    if (methodPath.leaf.kind != METHOD) {
+      return false
+    }
+    val method = methodPath.leaf as JCMethodDecl
+    val symbol = method.sym ?: return false
+    if (throwsStart < 0) {
+      return false
+    }
+
+    val cu = ci.cu
+    val fo = cu.sourceFile
+    val context = ci.task.context
+    val endPositions = (cu as JCCompilationUnit).endPositions
+    val delta = newContents.length - oldContents.length
+
+    try {
+      val l = com.tom.rv2ide.language.compiler.javac.NBLog.instance(context)
+      l.startPartialReparse(fo)
+      val prevLogged = l.useSource(fo)
+      try {
+        val dl = ci.diagnosticListener as DiagnosticListenerImpl
+        try {
+          dl.startPartialReparse(windowStart, windowEnd)
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=diagnostic-begin unit=throws windowStart={} windowEnd={} errorType={} errorMessage={}",
+              windowStart,
+              windowEnd,
+              err.javaClass.name,
+              err.message,
+              err,
+          )
+          return false
+        }
+
+        val parsed = try {
+          if (addingClause) {
+            parseAddedThrowsClause(context, throwsStart, newThrows)
+          } else {
+            parseThrownTypes(context, throwsStart, newThrows)
+          }
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=parse unit=throws throwsStart={} newThrowsLength={}",
+              throwsStart,
+              newThrows.length,
+              err,
+          )
+          return false
+        }
+
+        if (parsed.isEmpty()) {
+          return false
+        }
+
+        val methodEnv = ci.trees.getScope(methodPath)
+        if (methodEnv.env.enclMethod?.sym !== symbol) {
+          log.debug("Unable to resolve the method environment for {}", method.name)
+          return false
+        }
+
+        val attr = Attr.instance(context)
+        val check = Check.instance(context)
+        val syms = Symtab.instance(context)
+        val types = Types.instance(context)
+        var thrownExprs: List<JCExpression> = List.nil()
+        var thrownTypes: List<Type> = List.nil()
+        try {
+          for (expression in parsed) {
+            val thrownType = attr.attribType(expression, methodEnv.env)
+            if (thrownType.isErroneous || !types.isSubtype(thrownType, syms.throwableType)) {
+              return false
+            }
+            check.checkType(expression.pos(), thrownType, syms.throwableType)
+            thrownExprs = thrownExprs.append(expression)
+            thrownTypes = thrownTypes.append(thrownType)
+          }
+        } catch (err: Throwable) {
+          log.error(
+              "Partial reparse stage failed: stage=attribute unit=throws throwsStart={} newThrowsLength={}",
+              throwsStart,
+              newThrows.length,
+              err,
+          )
+          return false
+        }
+
+        if (dl.hasPartialReparseErrors()) {
+          return false
+        }
+
+        taskMutated = true
+        if (delta != 0) {
+          TranslatePositionsAfter(endPositions, windowStart, delta).scan(cu, null)
+        }
+        method.thrown = thrownExprs
+        symbol.type = types.createMethodTypeWithThrown(symbol.type, thrownTypes)
+        method.type = symbol.type
+        buildLineMap(cu, charactersOf(newContents))
+        dl.endPartialReparse(delta)
+        committed = true
+      } finally {
+        if (!committed) {
+          try {
+            (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
+          } catch (ignored: Throwable) {
+            // Rollback failures must not mask the original stage failure.
+          }
+        }
+        l.endPartialReparse(fo)
+        l.useSource(prevLogged)
+      }
+    } catch (err: Throwable) {
+      log.error(
+          "An error occurred while applying the throws clause throwsStart={} newThrowsLength={} delta={}",
+          throwsStart,
+          newThrows.length,
+          delta,
+          err,
+      )
+      return false
+    }
+
+    return true
+  }
+
   /** Replaces [oldMember] with [newMember] inside [classDecl], preserving declaration order. */
   private fun replaceClassMember(classDecl: JCClassDecl, oldMember: JCTree, newMember: JCTree) {
     var updated: List<JCTree> = List.nil()
@@ -841,5 +1365,128 @@ class InPlaceReparser {
     val enter = Enter.instance(context)
     flow.analyzeTree(enter.getEnv((ownerClass as JCClassDecl).sym), maker)
     return decl.body
+  }
+
+  /** Copies [contents] into the char array the line map is rebuilt from. */
+  private fun charactersOf(contents: CharSequence): CharArray {
+    val characters = CharArray(contents.length)
+    for (index in contents.indices) {
+      characters[index] = contents[index]
+    }
+    return characters
+  }
+
+  /**
+   * Parses the declaration modifiers of [modifiers], padded at [startPos] so that the produced tree
+   * positions are absolute offsets into the document.
+   */
+  private fun parseDeclarationModifiers(
+      context: Context,
+      startPos: Int,
+      modifiers: String,
+  ): JCModifiers = newProbeParser(context, startPos, modifiers).parseModifiers()
+
+  /** Parses a throws clause, starting at its first thrown type. */
+  private fun parseThrownTypes(
+      context: Context,
+      startPos: Int,
+      thrown: String,
+  ) = newProbeParser(context, startPos, thrown).parseThrows()
+
+  /** Parses an inserted throws clause, which must start with the throws keyword. */
+  private fun parseAddedThrowsClause(
+      context: Context,
+      startPos: Int,
+      thrown: String,
+  ) = newProbeParser(context, startPos, thrown).parseAddedThrows()
+
+  /**
+   * Builds a probe parser over [text] padded at [startPos], so that the produced tree positions are
+   * absolute offsets into the document.
+   */
+  private fun newProbeParser(context: Context, startPos: Int, text: String): DeclarationProbeParser {
+    val buffer = CharArray(startPos + text.length + 1)
+    Arrays.fill(buffer, ' ')
+    for (index in text.indices) {
+      buffer[startPos + index] = text[index]
+    }
+    buffer[startPos + text.length] = '\u0000'
+    val factory =
+        com.tom.rv2ide.language.compiler.javac.NBParserFactory.instance(context)
+            as com.tom.rv2ide.language.compiler.javac.NBParserFactory
+    val lexer =
+        ScannerFactory.instance(context)
+            .newScanner(CharBuffer.wrap(buffer, 0, buffer.size - 1), false)
+    val cancelService = com.tom.rv2ide.language.compiler.javac.CancelService.instance(context)
+    return DeclarationProbeParser(factory, lexer, cancelService)
+  }
+
+  /**
+   * True when the edit kept the declaration annotations untouched.
+   *
+   * Annotations are attributed by a dedicated javac phase, so a changed annotation cannot be applied
+   * here. The annotation count must match and the window must not overlap any annotation of the old
+   * tree; an empty window strictly inside an annotation is an insertion into its text and is
+   * rejected as well.
+   */
+  private fun annotationsUntouched(
+      ci: CompilationInfo,
+      cu: CompilationUnitTree,
+      mods: JCModifiers,
+      parsed: JCModifiers,
+      windowStart: Int,
+      windowEnd: Int,
+  ): Boolean {
+    if (mods.annotations.size != parsed.annotations.size) {
+      return false
+    }
+    val positions = ci.trees.sourcePositions
+    for (annotation in mods.annotations) {
+      if (annotation.pos < 0) {
+        return false
+      }
+      val end = positions.getEndPosition(cu, annotation).toInt()
+      if (end <= annotation.pos) {
+        return false
+      }
+      if (windowStart < end && windowEnd > annotation.pos) {
+        return false
+      }
+      if (windowStart == windowEnd && windowStart > annotation.pos && windowStart < end) {
+        return false
+      }
+    }
+    return true
+  }
+
+  /**
+   * Parser for the declaration sub-expressions that are replaced in place. It is built without end
+   * positions, so probing never writes into the compilation unit's end-position table.
+   */
+  private class DeclarationProbeParser(
+      factory: com.tom.rv2ide.language.compiler.javac.NBParserFactory,
+      lexer: Lexer,
+      cancelService: com.tom.rv2ide.language.compiler.javac.CancelService,
+  ) :
+      com.tom.rv2ide.language.compiler.javac.NBParserFactory.NBJavacParser(
+          factory,
+          lexer,
+          false,
+          false,
+          false,
+          false,
+          cancelService,
+      ) {
+    fun parseModifiers(): JCModifiers = modifiersOpt()
+
+    fun parseThrows() = qualidentList(false)
+
+    fun parseAddedThrows(): List<JCExpression> {
+      if (token.kind != TokenKind.THROWS) {
+        return List.nil()
+      }
+      nextToken()
+      return qualidentList(false)
+    }
   }
 }

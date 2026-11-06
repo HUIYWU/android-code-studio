@@ -428,8 +428,7 @@ final long classifyStartedNs = System.nanoTime();
             file,
             contents,
             params.getDocumentVersion(),
-            params.getDocumentRevision(),
-            cursor));
+            params.getDocumentRevision()));
     request.configureContext = ctx -> {
       completionContext[0] = ctx;
       final var config = JavaCompilerConfig.instance(ctx);

@@ -32,6 +32,7 @@ import com.tom.rv2ide.language.services.java.kotlin.KotlinAbiStubJavaFileObject;
 import com.tom.rv2ide.language.compiler.javac.compiler.ReusableBorrow;
 import com.tom.rv2ide.language.compiler.javac.partial.DiagnosticListenerImpl;
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
+import com.tom.rv2ide.language.services.java.visitors.ClassRangeScanner;
 import com.tom.rv2ide.language.services.java.visitors.FieldRangeScanner;
 import com.tom.rv2ide.language.services.java.visitors.InitializerBlockRangeScanner;
 import com.tom.rv2ide.language.services.java.visitors.MethodRangeScanner;
@@ -83,6 +84,8 @@ public class CompileBatch implements AutoCloseable {
   /** Static and instance initializer blocks declared directly in a class body. */
   protected final Map<String, List<Pair<Range, TreePath>>> initializerBlockPositions =
       new HashMap<>();
+  /** Declared classes, used for modifier-only edits of a class declaration header. */
+  protected final Map<String, List<Pair<Range, TreePath>>> classPositions = new HashMap<>();
   protected DiagnosticListenerImpl diagnosticListener;
   private String currentSourceContents;
   private int documentVersion = -1;
@@ -207,6 +210,9 @@ public class CompileBatch implements AutoCloseable {
     final List<Pair<Range, TreePath>> blocks = new ArrayList<>();
     new InitializerBlockRangeScanner(this.task).scan(tree, blocks);
     this.initializerBlockPositions.put(path, blocks);
+    final List<Pair<Range, TreePath>> classes = new ArrayList<>();
+    new ClassRangeScanner(this.task).scan(tree, classes);
+    this.classPositions.put(path, classes);
     if (IdeLogConfig.shouldLogIde()) {
       watch.log();
     }
@@ -369,6 +375,7 @@ public class CompileBatch implements AutoCloseable {
     methodPositions.clear();
     fieldPositions.clear();
     initializerBlockPositions.clear();
+    classPositions.clear();
     roots.clear();
     diagnosticListener = null;
   }

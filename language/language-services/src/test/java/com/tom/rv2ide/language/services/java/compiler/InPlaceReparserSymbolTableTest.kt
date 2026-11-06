@@ -28,11 +28,13 @@ import jdkx.lang.model.element.TypeElement
 import jdkx.lang.model.element.VariableElement
 import jdkx.tools.JavaFileObject
 import jdkx.tools.SimpleJavaFileObject
+import openjdk.source.util.SourcePositions
 import openjdk.source.util.TreePath
 import openjdk.tools.javac.api.JavacTaskImpl
 import openjdk.tools.javac.api.JavacTool
 import openjdk.tools.javac.api.JavacTrees
 import openjdk.tools.javac.code.Symbol.ClassSymbol
+import openjdk.tools.javac.code.Flags
 import openjdk.tools.javac.comp.Check
 import openjdk.tools.javac.tree.JCTree.JCBlock
 import openjdk.tools.javac.tree.JCTree.JCClassDecl
@@ -41,8 +43,10 @@ import openjdk.tools.javac.tree.JCTree.JCMethodDecl
 import openjdk.tools.javac.tree.JCTree.JCVariableDecl
 import openjdk.tools.javac.util.Names
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -342,6 +346,322 @@ class InPlaceReparserSymbolTableTest {
     )
   }
 
+  /**
+   * A method without written modifiers is the hardest header case: `JCModifiers.pos` is `NOPOS`, so
+   * the declaration starts at the return type and the first modifier is a pure insertion there.
+   */
+  @Test
+  fun modifiers_applyInPlaceAndKeepSymbolIdentity() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile()
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+    val body = method.body
+    assertNotNull(body)
+    assertEquals("the fixture method must start without modifiers", 0L, method.mods.flags)
+
+    assertTrue("adding modifiers must succeed", reparseModifiers(fixture, "public static "))
+
+    assertTrue(
+        "PUBLIC must reach the symbol",
+        (symbol.flags() and Flags.PUBLIC.toLong()) != 0L,
+    )
+    assertTrue(
+        "STATIC must reach the symbol",
+        (symbol.flags() and Flags.STATIC.toLong()) != 0L,
+    )
+    assertTrue(
+        "STATIC must reach the tree",
+        (method.mods.flags and Flags.STATIC.toLong()) != 0L,
+    )
+    assertSame("the body tree must stay identical", body, method.body)
+  }
+
+  @Test
+  fun modifiers_rejectAnnotationChanges() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile()
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val original = fixture.source
+
+    assertFalse(
+        "an added annotation must be rejected instead of silently dropped",
+        reparseModifiers(fixture, "@Deprecated "),
+    )
+
+    assertEquals("a rejected edit must not touch the document", original, fixture.source)
+    assertEquals("a rejected edit must not touch the flags", 0L, method.mods.flags)
+  }
+
+  @Test
+  fun throwsClause_replacesThrownTypesInPlace() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture =
+        compile(
+            sourceWithMember(
+                "int run(int value) throws java.io.IOException",
+                "{ return value; }",
+            ),
+        )
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+    val body = method.body
+    assertEquals(
+        "the fixture must declare exactly one thrown type",
+        1,
+        method.getThrows().size,
+    )
+
+    assertTrue(
+        "replacing a thrown type must succeed",
+        reparseThrows(fixture, "java.lang.IllegalStateException"),
+    )
+
+    assertEquals(
+        "the method type must carry exactly one thrown type",
+        1,
+        symbol.type.getThrownTypes().size,
+    )
+    assertEquals(
+        "the method type must carry the new thrown type",
+        "IllegalStateException",
+        symbol.type.getThrownTypes().first().tsym.name.toString(),
+    )
+    assertEquals(
+        "the syntax tree must expose the new thrown type",
+        1,
+        method.getThrows().size,
+    )
+    assertSame("the body tree must stay identical", body, method.body)
+  }
+
+  @Test
+  fun throwsClause_rejectsNonThrowableTypes() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture =
+        compile(
+            sourceWithMember(
+                "int run(int value) throws java.io.IOException",
+                "{ return value; }",
+            ),
+        )
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+
+    assertFalse(
+        "a type outside java.lang.Throwable must be rejected",
+        reparseThrows(fixture, "java.lang.String"),
+    )
+
+    assertEquals(
+        "a rejected edit must keep the thrown type",
+        "IOException",
+        symbol.type.getThrownTypes().first().tsym.name.toString(),
+    )
+  }
+
+  @Test
+  fun throwsClause_canBeAddedInFrontOfTheBody() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile()
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+    val body = method.body
+    assertTrue("the fixture must not declare thrown types", method.getThrows().isEmpty())
+
+    assertTrue(
+        "inserting a throws clause in front of the body must succeed",
+        reparseAddedThrows(fixture, " throws java.io.IOException "),
+    )
+
+    assertEquals("exactly one thrown type is expected", 1, symbol.type.getThrownTypes().size)
+    assertEquals(
+        "the method type must carry the inserted thrown type",
+        "IOException",
+        symbol.type.getThrownTypes().first().tsym.name.toString(),
+    )
+    assertSame("the body tree must stay identical", body, method.body)
+  }
+
+  @Test
+  fun throwsClause_rejectsInsertedTextWithoutThrowsKeyword() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile()
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+
+    assertFalse(
+        "an insertion that is not a throws clause must be rejected",
+        reparseAddedThrows(fixture, " int temporary = 1 "),
+    )
+    assertTrue(
+        "a rejected insertion must keep the method type",
+        symbol.type.getThrownTypes().isEmpty(),
+    )
+  }
+
+  @Test
+  fun throwsClause_canBeAddedToBodylessDeclaration() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile(sourceWithAbstractMethod)
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+    assertNull("the fixture must have no body", method.body)
+
+    assertTrue(
+        "inserting a throws clause before the semicolon must succeed",
+        reparseAddedThrows(fixture, " throws java.io.IOException "),
+    )
+
+    assertEquals("exactly one thrown type is expected", 1, symbol.type.getThrownTypes().size)
+    assertEquals(
+        "the method type must carry the inserted thrown type",
+        "IOException",
+        symbol.type.getThrownTypes().first().tsym.name.toString(),
+    )
+    assertNull("the declaration must stay body-less", method.body)
+  }
+
+  @Test
+  fun modifiers_applyToBodylessDeclaration() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compile(sourceWithAbstractMethod)
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val symbol = method.sym
+    assertNull("the fixture must have no body", method.body)
+
+    assertTrue(
+        "adding a modifier to a body-less declaration must succeed",
+        reparseModifiers(fixture, "protected "),
+    )
+
+    assertTrue(
+        "PROTECTED must reach the symbol",
+        (symbol.flags() and Flags.PROTECTED.toLong()) != 0L,
+    )
+    assertTrue(
+        "ABSTRACT must stay on the symbol",
+        (symbol.flags() and Flags.ABSTRACT.toLong()) != 0L,
+    )
+    assertNull("the declaration must stay body-less", method.body)
+  }
+
+  @Test
+  fun fieldModifiers_applyInPlace() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compileField(sourceWithField, "value")
+    val field = fixture.fieldPath.leaf as JCVariableDecl
+    val symbol = field.sym
+    val initializer = field.init
+    assertEquals("the fixture field must start without modifiers", 0L, field.mods.flags)
+
+    assertTrue(
+        "adding a modifier to a field must succeed",
+        reparseFieldModifiers(fixture, "private "),
+    )
+
+    assertTrue(
+        "PRIVATE must reach the symbol",
+        (symbol.flags() and Flags.PRIVATE.toLong()) != 0L,
+    )
+    assertTrue(
+        "PRIVATE must reach the tree",
+        (field.mods.flags and Flags.PRIVATE.toLong()) != 0L,
+    )
+    assertSame("the initializer tree must stay identical", initializer, field.init)
+  }
+
+  @Test
+  fun fieldModifiers_rejectAnnotationChanges() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compileField(sourceWithField, "value")
+    val field = fixture.fieldPath.leaf as JCVariableDecl
+    val original = fixture.source
+
+    assertFalse(
+        "an added annotation must be rejected instead of silently dropped",
+        reparseFieldModifiers(fixture, "@Deprecated "),
+    )
+
+    assertEquals("a rejected edit must not touch the document", original, fixture.source)
+    assertEquals("a rejected edit must not touch the flags", 0L, field.mods.flags)
+  }
+
+  @Test
+  fun classModifiers_applyInPlace() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compileClass(sourceWithClass)
+    val classDecl = fixture.classPath.leaf as JCClassDecl
+    val symbol = classDecl.sym
+    val memberCount = classDecl.defs.size
+    assertEquals("the fixture class must start without modifiers", 0L, classDecl.mods.flags)
+
+    assertTrue("adding class modifiers must succeed", reparseClassModifiers(fixture, "public final "))
+
+    assertTrue(
+        "PUBLIC must reach the symbol",
+        (symbol.flags() and Flags.PUBLIC.toLong()) != 0L,
+    )
+    assertTrue(
+        "PUBLIC must reach the tree",
+        (classDecl.mods.flags and Flags.PUBLIC.toLong()) != 0L,
+    )
+    assertTrue(
+        "FINAL must reach the tree",
+        (classDecl.mods.flags and Flags.FINAL.toLong()) != 0L,
+    )
+    assertEquals("the member list must stay unchanged", memberCount, classDecl.defs.size)
+  }
+
+  @Test
+  fun classModifiers_rejectAnnotationChanges() {
+    assumeTrue("partial reparse is unavailable on this JDK", ReparserUtils.canReparse())
+    val fixture = compileClass(sourceWithClass)
+    val classDecl = fixture.classPath.leaf as JCClassDecl
+    val original = fixture.source
+
+    assertFalse(
+        "an added annotation must be rejected instead of silently dropped",
+        reparseClassModifiers(fixture, "@Deprecated "),
+    )
+
+    assertEquals("a rejected edit must not touch the document", original, fixture.source)
+    assertEquals("a rejected edit must not touch the flags", 0L, classDecl.mods.flags)
+  }
+
+  /** A class without modifiers: the class declaration header can be edited in place. */
+  private val sourceWithClass =
+      """
+      package fixture;
+
+      class SymbolFixture {
+        int value = 1;
+      }
+      """
+          .trimIndent()
+
+  /** A field with an initializer: modifier edits must not touch the initializer tree. */
+  private val sourceWithField =
+      """
+      package fixture;
+
+      final class SymbolFixture {
+        int value = 1;
+      }
+      """
+          .trimIndent()
+
+  /** A body-less declaration: modifiers are replaced without touching any body tree. */
+  private val sourceWithAbstractMethod =
+      """
+      package fixture;
+
+      abstract class SymbolFixture {
+        abstract int run(int value);
+      }
+      """
+          .trimIndent()
+
   private fun compile(
       source: String = sourceWith(bodyWithAnonymousClass),
       memberName: String = "run",
@@ -457,6 +777,236 @@ class InPlaceReparserSymbolTableTest {
     val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
     val reparsed =
         InPlaceReparser().reparseInitializerBlock(info, fixture.blockPath, newBlock, updated)
+    if (reparsed) {
+      fixture.source = updated
+    }
+    return reparsed
+  }
+
+  /** Mirrors the service class header end: the {@code class} keyword position. */
+  private fun reparseClassModifiers(fixture: ClassFixture, written: String): Boolean {
+    val positions = JavacTrees.instance(fixture.task).sourcePositions
+    val classDecl = fixture.classPath.leaf as JCClassDecl
+    val declarationStart = positions.getStartPosition(fixture.cu, classDecl).toInt()
+    val headerEnd = classDecl.pos
+    if (declarationStart < 0 || headerEnd < 0) {
+      return false
+    }
+    val updated =
+        fixture.source.substring(0, declarationStart) +
+            written +
+            fixture.source.substring(declarationStart)
+    val newModifiers = updated.substring(declarationStart, headerEnd + written.length)
+    val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
+    val reparsed =
+        InPlaceReparser()
+            .reparseClassModifiers(
+                info,
+                fixture.classPath,
+                newModifiers,
+                declarationStart,
+                fixture.source,
+                updated,
+                declarationStart,
+                declarationStart,
+            )
+    if (reparsed) {
+      fixture.source = updated
+    }
+    return reparsed
+  }
+
+  /**
+   * Inserts [written] at the field declaration start: the new modifiers region is the text between
+   * the declaration start and the header end, and the changed window is that empty insertion point.
+   */
+  private fun reparseFieldModifiers(fixture: FieldFixture, written: String): Boolean {
+    val positions = JavacTrees.instance(fixture.task).sourcePositions
+    val field = fixture.fieldPath.leaf as JCVariableDecl
+    val declarationStart = positions.getStartPosition(fixture.cu, field).toInt()
+    if (declarationStart < 0) {
+      return false
+    }
+    val headerEnd = fieldHeaderEnd(positions, fixture.cu, field)
+    if (headerEnd < 0 || headerEnd < declarationStart) {
+      return false
+    }
+    val updated =
+        fixture.source.substring(0, declarationStart) +
+            written +
+            fixture.source.substring(declarationStart)
+    val newModifiers = updated.substring(declarationStart, headerEnd + written.length)
+    val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
+    val reparsed =
+        InPlaceReparser()
+            .reparseFieldModifiers(
+                info,
+                fixture.fieldPath,
+                newModifiers,
+                declarationStart,
+                fixture.source,
+                updated,
+                declarationStart,
+                declarationStart,
+            )
+    if (reparsed) {
+      fixture.source = updated
+    }
+    return reparsed
+  }
+
+  /** Mirrors the service field header end: the earliest of the declared name and the type. */
+  private fun fieldHeaderEnd(
+      positions: SourcePositions,
+      cu: JCCompilationUnit,
+      field: JCVariableDecl,
+  ): Int {
+    var end = field.pos
+    val type = field.vartype
+    if (type != null) {
+      val start = positions.getStartPosition(cu, type).toInt()
+      if (start >= 0) {
+        end = minOf(end, start)
+      }
+    }
+    return end
+  }
+
+  /**
+   * Inserts [written] at the declaration start, exactly as a completion request does: the new
+   * modifiers region is the text between the declaration start and the header end, and the changed
+   * window is that empty insertion point.
+   */
+  private fun reparseModifiers(fixture: Fixture, written: String): Boolean {
+    val positions = JavacTrees.instance(fixture.task).sourcePositions
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val declarationStart = positions.getStartPosition(fixture.cu, method).toInt()
+    if (declarationStart < 0) {
+      return false
+    }
+    val headerEnd = declarationHeaderEnd(positions, fixture.cu, method)
+    if (headerEnd < 0 || headerEnd < declarationStart) {
+      return false
+    }
+    val updated =
+        fixture.source.substring(0, declarationStart) +
+            written +
+            fixture.source.substring(declarationStart)
+    val newModifiers = updated.substring(declarationStart, headerEnd + written.length)
+    val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
+    val reparsed =
+        InPlaceReparser()
+            .reparseMethodModifiers(
+                info,
+                fixture.methodPath,
+                newModifiers,
+                declarationStart,
+                fixture.source,
+                updated,
+                declarationStart,
+                declarationStart,
+            )
+    if (reparsed) {
+      fixture.source = updated
+    }
+    return reparsed
+  }
+
+  /**
+   * Mirrors the service header end: the earliest of the return type, the first type parameter and
+   * the declared name.
+   */
+  private fun declarationHeaderEnd(
+      positions: SourcePositions,
+      cu: JCCompilationUnit,
+      method: JCMethodDecl,
+  ): Int {
+    var end = method.pos
+    val returnType = method.restype
+    if (returnType != null) {
+      val start = positions.getStartPosition(cu, returnType).toInt()
+      if (start >= 0) {
+        end = minOf(end, start)
+      }
+    }
+    if (!method.typarams.isEmpty()) {
+      val start = positions.getStartPosition(cu, method.typarams.head).toInt()
+      if (start >= 0) {
+        end = minOf(end, start)
+      }
+    }
+    return end
+  }
+
+  /**
+   * Replaces the thrown-type list of the fixture method, exactly as a completion request does: the
+   * document is the old text with the new clause text, and the window is the replaced type range.
+   */
+  private fun reparseThrows(fixture: Fixture, newThrows: String): Boolean {
+    val positions = JavacTrees.instance(fixture.task).sourcePositions
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val thrown = method.getThrows()
+    if (thrown.isEmpty()) {
+      return false
+    }
+    val start = positions.getStartPosition(fixture.cu, thrown.first()).toInt()
+    val end = positions.getEndPosition(fixture.cu, thrown.last()).toInt()
+    if (start < 0 || end < start) {
+      return false
+    }
+    val updated = fixture.source.substring(0, start) + newThrows + fixture.source.substring(end)
+    val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
+    val reparsed =
+        InPlaceReparser()
+            .reparseThrowsClause(
+                info,
+                fixture.methodPath,
+                newThrows,
+                start,
+                fixture.source,
+                updated,
+                start,
+                end,
+                false,
+            )
+    if (reparsed) {
+      fixture.source = updated
+    }
+    return reparsed
+  }
+
+  /**
+   * Inserts a throws clause in front of the fixture body, exactly as a completion request does for an
+   * add edit: the window is the empty insertion point and the region is the inserted text.
+   */
+  private fun reparseAddedThrows(fixture: Fixture, clause: String): Boolean {
+    val positions = JavacTrees.instance(fixture.task).sourcePositions
+    val method = fixture.methodPath.leaf as JCMethodDecl
+    val body = method.body
+    val insertion =
+        if (body != null) {
+          positions.getStartPosition(fixture.cu, body).toInt()
+        } else {
+          positions.getEndPosition(fixture.cu, method).toInt() - 1
+        }
+    if (insertion < 0) {
+      return false
+    }
+    val updated = fixture.source.substring(0, insertion) + clause + fixture.source.substring(insertion)
+    val info = CompilationInfo(fixture.task, DiagnosticListenerImpl(null), fixture.cu)
+    val reparsed =
+        InPlaceReparser()
+            .reparseThrowsClause(
+                info,
+                fixture.methodPath,
+                clause,
+                insertion,
+                fixture.source,
+                updated,
+                insertion,
+                insertion,
+                true,
+            )
     if (reparsed) {
       fixture.source = updated
     }
@@ -593,6 +1143,36 @@ class InPlaceReparserSymbolTableTest {
       var source: String,
       val methodPath: TreePath,
   )
+
+  private data class ClassFixture(
+      val task: JavacTaskImpl,
+      val cu: JCCompilationUnit,
+      var source: String,
+      val classPath: TreePath,
+  )
+
+  private fun compileClass(source: String): ClassFixture {
+    val context = ReusableContext(CancelServiceImpl())
+    val task =
+        JavacTool.create()
+            .getTask(
+                null,
+                null,
+                null,
+                emptyList<String>(),
+                emptyList<String>(),
+                listOf(FakeSource(source)),
+                context,
+            ) as JavacTaskImpl
+    val units = task.parse().toList()
+    val cu = units.single() as JCCompilationUnit
+    task.analyze()
+
+    val classDecl = cu.typeDecls.filterIsInstance<JCClassDecl>().single()
+    val classPath =
+        TreePath.getPath(cu, classDecl) ?: error("Unable to resolve the fixture class path")
+    return ClassFixture(task = task, cu = cu, source = source, classPath = classPath)
+  }
 
   private class FakeSource(private val source: String) :
       SimpleJavaFileObject(

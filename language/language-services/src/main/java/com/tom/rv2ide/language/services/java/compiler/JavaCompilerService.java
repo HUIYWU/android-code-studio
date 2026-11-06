@@ -69,10 +69,14 @@ import jdkx.tools.JavaFileObject;
 import jdkx.tools.StandardLocation;
 import openjdk.source.tree.CompilationUnitTree;
 import openjdk.source.tree.BlockTree;
+import openjdk.source.tree.ClassTree;
+import openjdk.source.tree.ExpressionTree;
 import openjdk.source.tree.MethodTree;
 import openjdk.source.tree.VariableTree;
+import openjdk.source.util.SourcePositions;
 import openjdk.source.util.TreePath;
 import openjdk.tools.javac.api.JavacTrees;
+import openjdk.tools.javac.tree.JCTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,8 +98,8 @@ public class JavaCompilerService implements CompilerProvider {
       BootClasspathProvider.getTopLevelClasses(
           Collections.singleton(Environment.ANDROID_JAR.getAbsolutePath()));
   private CompileBatch cachedCompile;
-  /** Set when a failed method reparse has already mutated the cached javac task. */
-  private boolean methodReparseCorruptedTask;
+  /** Set when a failed in-place reparse has already mutated the cached javac task. */
+  private boolean reparseCorruptedTask;
 
   // The module project must not be null
   // It is marked as nullable just for some special cases like tests
@@ -349,7 +353,7 @@ public class JavaCompilerService implements CompilerProvider {
 
 
   /**
-   * Advances the cached semantic task when the strict method-reparse MVP accepts the request;
+   * Advances the cached semantic task when the strict in-place reparse accepts the request;
    * otherwise recompiles the current request on the stable semantic path.
    *
    * <p>This boundary is intentionally conservative and treated as frozen after IDE validation.
@@ -362,12 +366,15 @@ public class JavaCompilerService implements CompilerProvider {
       return;
     }
     ReparseOutcome outcome =
-        methodReparseCorruptedTask ? ReparseOutcome.FAILED_AFTER_MUTATION : tryMethodReparse(request);
+        reparseCorruptedTask ? ReparseOutcome.FAILED_AFTER_MUTATION : tryMethodReparse(request);
     if (outcome == ReparseOutcome.NOT_APPLICABLE) {
       outcome = tryFieldInitializerReparse(request);
     }
     if (outcome == ReparseOutcome.NOT_APPLICABLE) {
       outcome = tryInitializerBlockReparse(request);
+    }
+    if (outcome == ReparseOutcome.NOT_APPLICABLE) {
+      outcome = tryClassModifiersReparse(request);
     }
     if (outcome == ReparseOutcome.SUCCESS) {
       return;
@@ -392,13 +399,19 @@ public class JavaCompilerService implements CompilerProvider {
     if (positions == null) {
       return ReparseOutcome.FAILED;
     }
-
+    final int[] window = ReparseRangeBounds.changedRange(oldContents, plan.contents);
+    if (window == null) {
+      // No textual change: advance the document identity so the next request stays contiguous.
+      cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+      updateModificationCache(request);
+      return ReparseOutcome.SUCCESS;
+    }
     Pair<Range, TreePath> candidate = null;
     for (Pair<Range, TreePath> position : positions) {
       final Range range = position.first;
       final int start = range.getStart().requireIndex();
       final int end = range.getEnd().requireIndex();
-      if (plan.cursor >= start && plan.cursor <= end) {
+      if (ReparseRangeBounds.contains(window, start, end)) {
         candidate = position;
         break;
       }
@@ -410,20 +423,88 @@ public class JavaCompilerService implements CompilerProvider {
       return ReparseOutcome.FAILED;
     }
     final MethodTree method = (MethodTree) candidate.second.getLeaf();
-    if (method.getBody() == null) {
-      return ReparseOutcome.FAILED;
-    }
 
     final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
-    final long bodyStartLong = trees.getSourcePositions().getStartPosition(root, method.getBody());
-    final long bodyEndLong = trees.getSourcePositions().getEndPosition(root, method.getBody());
-    if (bodyStartLong < 0 || bodyEndLong < bodyStartLong) {
+    final boolean hasBody = method.getBody() != null;
+    final long bodyStartLong =
+        hasBody ? trees.getSourcePositions().getStartPosition(root, method.getBody()) : -1L;
+    final long bodyEndLong =
+        hasBody ? trees.getSourcePositions().getEndPosition(root, method.getBody()) : -1L;
+    final int bodyStart = bodyStartLong < 0 ? -1 : (int) bodyStartLong;
+    final int bodyEnd = bodyEndLong < bodyStartLong ? -1 : (int) bodyEndLong;
+    final long declarationStartLong = trees.getSourcePositions().getStartPosition(root, method);
+    if (declarationStartLong < 0) {
       return ReparseOutcome.FAILED;
     }
-    final int bodyStart = (int) bodyStartLong;
-    final int bodyEnd = (int) bodyEndLong;
-    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, bodyStart, bodyEnd)) {
-      return ReparseOutcome.FAILED;
+    final int declarationStart = (int) declarationStartLong;
+    final int headerEnd = methodHeaderEnd(trees, root, method);
+    final List<? extends ExpressionTree> thrown = method.getThrows();
+    int throwsStart = -1;
+    int throwsEnd = -1;
+    if (!thrown.isEmpty()) {
+      final long throwsStartLong = trees.getSourcePositions().getStartPosition(root, thrown.get(0));
+      final long throwsEndLong =
+          trees.getSourcePositions().getEndPosition(root, thrown.get(thrown.size() - 1));
+      if (throwsStartLong >= 0 && throwsEndLong >= throwsStartLong) {
+        throwsStart = (int) throwsStartLong;
+        throwsEnd = (int) throwsEndLong;
+      }
+    }
+
+    final int insertionUpperBound;
+    if (hasBody) {
+      insertionUpperBound = bodyStart;
+    } else {
+      final long methodEnd = trees.getSourcePositions().getEndPosition(root, method);
+      insertionUpperBound = methodEnd < 1 ? -1 : (int) methodEnd - 1;
+    }
+    if (thrown.isEmpty()) {
+      final List<? extends VariableTree> parameters = method.getParameters();
+      final int parametersEnd =
+          parameters.isEmpty()
+              ? headerEnd
+              : (int) trees.getSourcePositions().getEndPosition(root, parameters.get(parameters.size() - 1));
+      if (ReparseUnitSelector.acceptsThrowsInsertion(window, parametersEnd, insertionUpperBound)) {
+        return tryThrowsClauseReparse(
+            request,
+            plan,
+            oldContents,
+            window,
+            root,
+            candidate.second,
+            window[0],
+            window[0],
+            true);
+      }
+    }
+
+    switch (ReparseUnitSelector.select(
+        window, bodyStart, bodyEnd, declarationStart, headerEnd, throwsStart, throwsEnd)) {
+      case METHOD_MODIFIERS:
+        return tryMethodModifiersReparse(
+            request,
+            plan,
+            oldContents,
+            window,
+            root,
+            candidate.second,
+            declarationStart,
+            headerEnd);
+      case THROWS_CLAUSE:
+        return tryThrowsClauseReparse(
+            request,
+            plan,
+            oldContents,
+            window,
+            root,
+            candidate.second,
+            throwsStart,
+            throwsEnd,
+            false);
+      case METHOD_BODY:
+        break;
+      default:
+        return ReparseOutcome.FAILED;
     }
     final int newBodyEnd = bodyEnd + plan.contents.length() - oldContents.length();
 
@@ -437,7 +518,7 @@ public class JavaCompilerService implements CompilerProvider {
     final boolean success = reparser.reparseMethod(info, candidate.second, newBody, plan.contents);
     if (!success) {
       if (reparser.getTaskMutated()) {
-        methodReparseCorruptedTask = true;
+        reparseCorruptedTask = true;
         return ReparseOutcome.FAILED_AFTER_MUTATION;
       }
       return ReparseOutcome.FAILED;
@@ -448,7 +529,141 @@ public class JavaCompilerService implements CompilerProvider {
     return ReparseOutcome.SUCCESS;
   }
 
-  /** Result of one method-reparse attempt as far as the compiler cache is concerned. */
+  /**
+   * Applies a modifier-only change to one method declaration in place.
+   *
+   * <p>Only the declaration header may change, and only flags that do not decide body legality:
+   * annotations, parameters, return type, type parameters and the throws clause must stay untouched.
+   * Everything else falls back to a full compilation.
+   */
+  private ReparseOutcome tryMethodModifiersReparse(
+      CompilationRequest request,
+      ReparsePlan plan,
+      String oldContents,
+      int[] window,
+      CompilationUnitTree root,
+      TreePath methodPath,
+      int declarationStart,
+      int headerEnd) {
+    final int delta = plan.contents.length() - oldContents.length();
+    final int newHeaderEnd = headerEnd + delta;
+    if (newHeaderEnd < declarationStart || newHeaderEnd > plan.contents.length()) {
+      return ReparseOutcome.FAILED;
+    }
+    final String newModifiers = plan.contents.substring(declarationStart, newHeaderEnd);
+
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final boolean success =
+        reparser.reparseMethodModifiers(
+            info,
+            methodPath,
+            newModifiers,
+            declarationStart,
+            oldContents,
+            plan.contents,
+            window[0],
+            window[1]);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        reparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * Replaces or adds a throws clause in place.
+   *
+   * <p>Each new thrown type is attributed in the method environment and validated against {@code
+   * java.lang.Throwable}; the method type is then rebuilt with {@code
+   * Types.createMethodTypeWithThrown}. Adding a clause is only accepted as an insertion in front of
+   * the body that starts with the {@code throws} keyword.
+   */
+  private ReparseOutcome tryThrowsClauseReparse(
+      CompilationRequest request,
+      ReparsePlan plan,
+      String oldContents,
+      int[] window,
+      CompilationUnitTree root,
+      TreePath methodPath,
+      int throwsStart,
+      int throwsEnd,
+      boolean addingClause) {
+    final int delta = plan.contents.length() - oldContents.length();
+    final int newThrowsEnd = throwsEnd + delta;
+    if (newThrowsEnd < throwsStart || newThrowsEnd > plan.contents.length()) {
+      return ReparseOutcome.FAILED;
+    }
+    final String newThrows = plan.contents.substring(throwsStart, newThrowsEnd);
+
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final boolean success =
+        reparser.reparseThrowsClause(
+            info,
+            methodPath,
+            newThrows,
+            throwsStart,
+            oldContents,
+            plan.contents,
+            window[0],
+            window[1],
+            addingClause);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        reparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * End offset of a method declaration header: the earliest of the return type, the first type
+   * parameter and the declared name.
+   *
+   * <p>{@code JCMethodDecl.pos} is the position of the declared name, and a method without written
+   * modifiers has no position on its {@code JCModifiers} node (the parser stores
+   * {@code Position.NOPOS}), so the header end must be derived from the children instead.
+   */
+  private static int methodHeaderEnd(JavacTrees trees, CompilationUnitTree root, MethodTree method) {
+    final SourcePositions positions = trees.getSourcePositions();
+    long headerEnd = ((JCTree) method).pos;
+    if (method.getReturnType() != null) {
+      final long returnTypeStart = positions.getStartPosition(root, method.getReturnType());
+      if (returnTypeStart < 0) {
+        return -1;
+      }
+      headerEnd = headerEnd < 0 ? returnTypeStart : Math.min(headerEnd, returnTypeStart);
+    }
+    if (!method.getTypeParameters().isEmpty()) {
+      final long typeParameterStart = positions.getStartPosition(root, method.getTypeParameters().get(0));
+      if (typeParameterStart < 0) {
+        return -1;
+      }
+      headerEnd = headerEnd < 0 ? typeParameterStart : Math.min(headerEnd, typeParameterStart);
+    }
+    return headerEnd < 0 ? -1 : (int) headerEnd;
+  }
+
   /**
    * Returns the previous document text when this request may mutate the cached task in place, or
    * {@code null} when the strict document identity is not established.
@@ -457,7 +672,7 @@ public class JavaCompilerService implements CompilerProvider {
     if (plan == null || cachedCompile == null || cachedCompile.closed) {
       return null;
     }
-    if (request.sources.size() != 1 || plan.contents == null || plan.cursor < 0) {
+    if (request.sources.size() != 1 || plan.contents == null) {
       return null;
     }
     final JavaFileObject requestedSource = request.sources.iterator().next();
@@ -503,12 +718,19 @@ public class JavaCompilerService implements CompilerProvider {
     if (positions == null) {
       return ReparseOutcome.FAILED;
     }
+    final int[] window = ReparseRangeBounds.changedRange(oldContents, plan.contents);
+    if (window == null) {
+      // No textual change: advance the document identity so the next request stays contiguous.
+      cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+      updateModificationCache(request);
+      return ReparseOutcome.SUCCESS;
+    }
     Pair<Range, TreePath> candidate = null;
     for (Pair<Range, TreePath> position : positions) {
       final Range range = position.first;
       final int start = range.getStart().requireIndex();
       final int end = range.getEnd().requireIndex();
-      if (plan.cursor >= start && plan.cursor <= end) {
+      if (ReparseRangeBounds.contains(window, start, end)) {
         candidate = position;
         break;
       }
@@ -520,21 +742,38 @@ public class JavaCompilerService implements CompilerProvider {
       return ReparseOutcome.FAILED;
     }
     final VariableTree field = (VariableTree) candidate.second.getLeaf();
-    if (field.getInitializer() == null) {
-      return ReparseOutcome.FAILED;
-    }
     final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
-    final long initStartLong =
-        trees.getSourcePositions().getStartPosition(root, field.getInitializer());
-    final long initEndLong =
-        trees.getSourcePositions().getEndPosition(root, field.getInitializer());
-    if (initStartLong < 0 || initEndLong < initStartLong) {
+    final long declarationStartLong = trees.getSourcePositions().getStartPosition(root, field);
+    if (declarationStartLong < 0) {
       return ReparseOutcome.FAILED;
     }
-    final int initStart = (int) initStartLong;
-    final int initEnd = (int) initEndLong;
-    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, initStart, initEnd)) {
-      return ReparseOutcome.FAILED;
+    final int declarationStart = (int) declarationStartLong;
+    final int headerEnd = fieldHeaderEnd(trees, root, field);
+
+    final boolean hasInitializer = field.getInitializer() != null;
+    final long initStartLong =
+        hasInitializer ? trees.getSourcePositions().getStartPosition(root, field.getInitializer()) : -1L;
+    final long initEndLong =
+        hasInitializer ? trees.getSourcePositions().getEndPosition(root, field.getInitializer()) : -1L;
+    final int initStart = initStartLong < 0 ? -1 : (int) initStartLong;
+    final int initEnd = initEndLong < initStartLong ? -1 : (int) initEndLong;
+
+    switch (ReparseUnitSelector.selectField(
+        window, initStart, initEnd, declarationStart, headerEnd)) {
+      case FIELD_MODIFIERS:
+        return tryFieldModifiersReparse(
+            request,
+            plan,
+            oldContents,
+            window,
+            root,
+            candidate.second,
+            declarationStart,
+            headerEnd);
+      case FIELD_INITIALIZER:
+        break;
+      default:
+        return ReparseOutcome.FAILED;
     }
     final int newInitEnd = initEnd + plan.contents.length() - oldContents.length();
     if (request.configureContext != null) {
@@ -548,7 +787,7 @@ public class JavaCompilerService implements CompilerProvider {
         reparser.reparseFieldInitializer(info, candidate.second, newInitializer, plan.contents);
     if (!success) {
       if (reparser.getTaskMutated()) {
-        methodReparseCorruptedTask = true;
+        reparseCorruptedTask = true;
         return ReparseOutcome.FAILED_AFTER_MUTATION;
       }
       return ReparseOutcome.FAILED;
@@ -557,6 +796,77 @@ public class JavaCompilerService implements CompilerProvider {
     cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
     updateModificationCache(request);
     return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * Applies a modifier-only change to one class-member field.
+   *
+   * <p>Only access, {@code volatile} and {@code transient} may change: {@code final} and {@code
+   * static} decide constant folding and initialization order, which this path does not recompute.
+   */
+  private ReparseOutcome tryFieldModifiersReparse(
+      CompilationRequest request,
+      ReparsePlan plan,
+      String oldContents,
+      int[] window,
+      CompilationUnitTree root,
+      TreePath fieldPath,
+      int declarationStart,
+      int headerEnd) {
+    final int delta = plan.contents.length() - oldContents.length();
+    final int newHeaderEnd = headerEnd + delta;
+    if (newHeaderEnd < declarationStart || newHeaderEnd > plan.contents.length()) {
+      return ReparseOutcome.FAILED;
+    }
+    final String newModifiers = plan.contents.substring(declarationStart, newHeaderEnd);
+
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final boolean success =
+        reparser.reparseFieldModifiers(
+            info,
+            fieldPath,
+            newModifiers,
+            declarationStart,
+            oldContents,
+            plan.contents,
+            window[0],
+            window[1]);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        reparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * End offset of a field declaration header: the earliest of the declared name and the type.
+   *
+   * <p>{@code JCVariableDecl.pos} is the position of the declared name, and a field without written
+   * modifiers has no position on its {@code JCModifiers} node, so the header end must be derived from
+   * the declared type instead.
+   */
+  private static int fieldHeaderEnd(JavacTrees trees, CompilationUnitTree root, VariableTree field) {
+    final SourcePositions positions = trees.getSourcePositions();
+    long headerEnd = ((JCTree) field).pos;
+    if (field.getType() != null) {
+      final long typeStart = positions.getStartPosition(root, field.getType());
+      if (typeStart < 0) {
+        return -1;
+      }
+      headerEnd = headerEnd < 0 ? typeStart : Math.min(headerEnd, typeStart);
+    }
+    return headerEnd < 0 ? -1 : (int) headerEnd;
   }
 
   /**
@@ -580,18 +890,25 @@ public class JavaCompilerService implements CompilerProvider {
     if (positions == null) {
       return ReparseOutcome.FAILED;
     }
+    final int[] window = ReparseRangeBounds.changedRange(oldContents, plan.contents);
+    if (window == null) {
+      // No textual change: advance the document identity so the next request stays contiguous.
+      cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+      updateModificationCache(request);
+      return ReparseOutcome.SUCCESS;
+    }
     Pair<Range, TreePath> candidate = null;
     for (Pair<Range, TreePath> position : positions) {
       final Range range = position.first;
       final int start = range.getStart().requireIndex();
       final int end = range.getEnd().requireIndex();
-      if (plan.cursor >= start && plan.cursor <= end) {
+      if (ReparseRangeBounds.contains(window, start, end)) {
         candidate = position;
         break;
       }
     }
     if (candidate == null) {
-      return ReparseOutcome.FAILED;
+      return ReparseOutcome.NOT_APPLICABLE;
     }
     if (!(candidate.second.getLeaf() instanceof BlockTree)) {
       return ReparseOutcome.FAILED;
@@ -605,7 +922,7 @@ public class JavaCompilerService implements CompilerProvider {
     }
     final int blockStart = (int) blockStartLong;
     final int blockEnd = (int) blockEndLong;
-    if (!ReparseRangeBounds.staysInsideRange(oldContents, plan.contents, blockStart, blockEnd)) {
+    if (!ReparseRangeBounds.contains(window, blockStart, blockEnd)) {
       return ReparseOutcome.FAILED;
     }
     final int newBlockEnd = blockEnd + plan.contents.length() - oldContents.length();
@@ -620,7 +937,7 @@ public class JavaCompilerService implements CompilerProvider {
         reparser.reparseInitializerBlock(info, candidate.second, newBlock, plan.contents);
     if (!success) {
       if (reparser.getTaskMutated()) {
-        methodReparseCorruptedTask = true;
+        reparseCorruptedTask = true;
         return ReparseOutcome.FAILED_AFTER_MUTATION;
       }
       return ReparseOutcome.FAILED;
@@ -631,18 +948,119 @@ public class JavaCompilerService implements CompilerProvider {
     return ReparseOutcome.SUCCESS;
   }
 
+  /**
+   * Applies a modifier-only change to one class declaration header.
+   *
+   * <p>Only access, {@code final}, {@code abstract}, {@code static} and {@code strictfp} may change;
+   * structural bits and the legality of the resulting combination are left to a full compilation.
+   */
+  private ReparseOutcome tryClassModifiersReparse(CompilationRequest request) {
+    final ReparsePlan plan = request.reparsePlan;
+    final String oldContents = validatedContents(request, plan);
+    if (oldContents == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final CompilationUnitTree root = cachedCompile.root(plan.file);
+    if (root == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final List<Pair<Range, TreePath>> positions =
+        cachedCompile.classPositions.get(plan.file.toAbsolutePath().toString());
+    if (positions == null) {
+      return ReparseOutcome.FAILED;
+    }
+    final int[] window = ReparseRangeBounds.changedRange(oldContents, plan.contents);
+    if (window == null) {
+      // No textual change: advance the document identity so the next request stays contiguous.
+      cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+      updateModificationCache(request);
+      return ReparseOutcome.SUCCESS;
+    }
+    Pair<Range, TreePath> candidate = null;
+    for (Pair<Range, TreePath> position : positions) {
+      final Range range = position.first;
+      final int start = range.getStart().requireIndex();
+      final int end = range.getEnd().requireIndex();
+      if (ReparseRangeBounds.contains(window, start, end)) {
+        candidate = position;
+        break;
+      }
+    }
+    if (candidate == null) {
+      return ReparseOutcome.NOT_APPLICABLE;
+    }
+    if (!(candidate.second.getLeaf() instanceof ClassTree)) {
+      return ReparseOutcome.FAILED;
+    }
+    final ClassTree classTree = (ClassTree) candidate.second.getLeaf();
+    final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
+    final long declarationStartLong = trees.getSourcePositions().getStartPosition(root, classTree);
+    if (declarationStartLong < 0) {
+      return ReparseOutcome.FAILED;
+    }
+    final int declarationStart = (int) declarationStartLong;
+    final int headerEnd = classHeaderEnd(classTree);
+    if (ReparseUnitSelector.selectClass(window, declarationStart, headerEnd)
+        != ReparseUnit.CLASS_MODIFIERS) {
+      return ReparseOutcome.FAILED;
+    }
+    final int delta = plan.contents.length() - oldContents.length();
+    final int newHeaderEnd = headerEnd + delta;
+    if (newHeaderEnd < declarationStart || newHeaderEnd > plan.contents.length()) {
+      return ReparseOutcome.FAILED;
+    }
+    final String newModifiers = plan.contents.substring(declarationStart, newHeaderEnd);
+
+    if (request.configureContext != null) {
+      request.configureContext.accept(cachedCompile.task.getContext());
+    }
+    final InPlaceReparser reparser = new InPlaceReparser();
+    final CompilationInfo info =
+        new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
+    final boolean success =
+        reparser.reparseClassModifiers(
+            info,
+            candidate.second,
+            newModifiers,
+            declarationStart,
+            oldContents,
+            plan.contents,
+            window[0],
+            window[1]);
+    if (!success) {
+      if (reparser.getTaskMutated()) {
+        reparseCorruptedTask = true;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
+      }
+      return ReparseOutcome.FAILED;
+    }
+    cachedCompile.updatePositions(root, true);
+    cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
+    updateModificationCache(request);
+    return ReparseOutcome.SUCCESS;
+  }
+
+  /**
+   * Start of the {@code class}/{@code interface}/{@code enum} keyword, which is where the modifier
+   * region of a class declaration ends.
+   */
+  private static int classHeaderEnd(ClassTree classTree) {
+    final int pos = ((JCTree) classTree).pos;
+    return pos < 0 ? -1 : pos;
+  }
+
   private enum ReparseOutcome {
     SUCCESS,
     FAILED,
     FAILED_AFTER_MUTATION,
-    /** The cursor is not inside a method body, so member-level reparse may take over. */
+    /** The edited window is outside every unit of this kind, so a narrower unit may take over. */
     NOT_APPLICABLE,
   }
 
 
   private synchronized void recompile(CompilationRequest request) {
     close();
-    methodReparseCorruptedTask = false;
+    reparseCorruptedTask = false;
     this.cachedCompile = performCompilation(request);
     updateModificationCache(request);
   }
@@ -651,10 +1069,10 @@ public class JavaCompilerService implements CompilerProvider {
     if (cachedCompile != null) {
      cachedCompile.close();
      cachedCompile.borrow.close();
-     cachedCompile = null;
-   }
-   methodReparseCorruptedTask = false;
- }
+    cachedCompile = null;
+    }
+    reparseCorruptedTask = false;
+  }
 
 
   private void updateModificationCache(final CompilationRequest request) {

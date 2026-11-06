@@ -16,107 +16,117 @@
  */
 package com.tom.rv2ide.language.services.java.compiler
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Bounds contract for in-place replacement of a reparse range (method body or field initializer).
+ * Contract for selecting a reparse unit from the edited text window.
  *
- * The reparse path may only mutate the cached task when every change sits inside that range: the
- * declaration, other members and imports must be byte-identical. The contract accepts any number of
- * disjoint edits inside the range, which is what lets a formatter or a batch replacement stay
- * incremental.
+ * Units are chosen by the window that actually changed between two document revisions, not by the
+ * caret, so a caret that moved after the edit cannot select the wrong member.
  */
 class ReparseRangeBoundsTest {
 
-  private val bodyText = "{ return value; }"
-  private val source = "class A {\n  int run(int value) $bodyText\n}"
-  private val bodyStart = source.indexOf(bodyText)
-  private val bodyEnd = bodyStart + bodyText.length
+  private val body = "{ return value; }"
+  private val source = "class A {\n  int run(int value) $body\n}"
+  private val bodyStart = source.indexOf(body)
+  private val bodyEnd = bodyStart + body.length
 
   @Test
-  fun acceptsSingleEditInsideBody() {
-    val updated = source.replace("return value;", "return value + 1;")
-    assertTrue(
-        "a single in-body edit must stay incremental",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
-    )
+  fun changedRange_isNullForIdenticalTexts() {
+    assertNull(ReparseRangeBounds.changedRange(source, source))
+    assertNull(ReparseRangeBounds.changedRange(null, source))
+    assertNull(ReparseRangeBounds.changedRange(source, null))
   }
 
   @Test
-  fun acceptsDisjointEditsInsideBody() {
-    // Two independent whitespace insertions around the unchanged statement: two diff hunks.
-    val updated = source.replace(bodyText, "{  return value;  }")
-    assertTrue(
-        "disjoint in-body edits must stay incremental",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
-    )
+  fun changedRange_reportsInsertionPointForPureInsertion() {
+    // The inserted ` +1` sits before the unchanged `; }` suffix, so the old window is empty.
+    val updated = source.replace("return value;", "return value +1;")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertEquals("a pure insertion has an empty old window", window[0].toLong(), window[1].toLong())
+    assertEquals(source.indexOf(';').toLong(), window[0].toLong())
+    assertTrue(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
   }
 
   @Test
-  fun acceptsUnchangedContents() {
-    assertTrue(ReparseRangeBounds.staysInsideRange(source, source, bodyStart, bodyEnd))
+  fun changedRange_coversReplacedText() {
+    val updated = source.replace("return value;", "return compute();")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertEquals("value", source.substring(window[0], window[1]))
+    assertTrue(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
   }
 
   @Test
-  fun acceptsInsertionBeforeClosingBrace() {
-    val updated = source.replace(bodyText, "{ return value; int extra = 1; }")
-    assertTrue(
-        "inserting a statement before the closing brace must stay incremental",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
-    )
+  fun changedRange_spansDisjointEditsInsideOneUnit() {
+    // Two whitespace insertions around the unchanged statement: two diff hunks, one window.
+    val updated = source.replace(body, "{  return value;  }")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertTrue(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
   }
 
   @Test
-  fun acceptsWholeRangeReplacement() {
-    // A field initializer replaced by a completely different expression: the divergent window reaches
-    // the range end, which is exactly the case that whole-range replacement must accept.
-    val source = "class A { Runnable r = new Runnable() {}; }"
-    val initializer = "new Runnable() {}"
-    val start = source.indexOf(initializer)
-    val end = start + initializer.length
-    assertTrue(
-        "replacing a whole initializer must stay incremental",
-        ReparseRangeBounds.staysInsideRange(source, source.replace(initializer, "null"), start, end),
-    )
+  fun contains_acceptsInsertionBeforeClosingBrace() {
+    val updated = source.replace(body, "{ return value; int extra = 1; }")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertTrue(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
   }
 
   @Test
-  fun rejectsEditInMethodDeclaration() {
+  fun contains_acceptsWholeUnitReplacement() {
+    val updated = source.replace(body, "{ }")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertTrue(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
+  }
+
+  @Test
+  fun contains_rejectsEditInDeclaration() {
     val updated = source.replace("int run(int value)", "int run(int other)")
-    assertFalse(
-        "declaration edits must fall back to a full compile",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
-    )
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
+    assertFalse(ReparseRangeBounds.contains(window, bodyStart, bodyEnd))
   }
 
   @Test
-  fun rejectsEditAfterBody() {
+  fun contains_rejectsInsertionAtUnitEnd() {
     val updated = source.replace("\n}", "\n  int other;\n}")
+    val window = ReparseRangeBounds.changedRange(source, updated)!!
     assertFalse(
-        "member edits after the body must fall back to a full compile",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
+        "an insertion that starts at the unit end would be swallowed into the replacement text",
+        ReparseRangeBounds.contains(window, bodyStart, bodyEnd),
     )
   }
 
   @Test
-  fun rejectsBodyRemoval() {
-    val updated = source.replace(bodyText, "")
-    assertFalse(
-        "removing the body entirely must fall back to a full compile",
-        ReparseRangeBounds.staysInsideRange(source, updated, bodyStart, bodyEnd),
-    )
+  fun contains_rejectsInvalidWindows() {
+    assertFalse(ReparseRangeBounds.contains(null, bodyStart, bodyEnd))
+    assertFalse(ReparseRangeBounds.contains(intArrayOf(0), bodyStart, bodyEnd))
+    assertFalse(ReparseRangeBounds.contains(intArrayOf(bodyStart, bodyEnd), -1, bodyEnd))
+    assertFalse(ReparseRangeBounds.contains(intArrayOf(bodyStart, bodyEnd), bodyEnd, bodyStart))
   }
 
   @Test
-  fun rejectsInvalidRangesAndNulls() {
-    assertFalse(ReparseRangeBounds.staysInsideRange(null, source, bodyStart, bodyEnd))
-    assertFalse(ReparseRangeBounds.staysInsideRange(source, null, bodyStart, bodyEnd))
-    assertFalse(ReparseRangeBounds.staysInsideRange(source, source, -1, bodyEnd))
-    assertFalse(ReparseRangeBounds.staysInsideRange(source, source, bodyEnd, bodyStart))
-    assertFalse(
-        ReparseRangeBounds.staysInsideRange(source, source, 0, source.length + 1),
-    )
+  fun within_acceptsWindowsEndingAtTheUnitEnd() {
+    assertTrue(ReparseRangeBounds.within(intArrayOf(5, 9), 5, 9))
+    assertTrue(ReparseRangeBounds.within(intArrayOf(5, 5), 5, 9))
+  }
+
+  @Test
+  fun within_acceptsInsertionExactlyAtTheUnitEnd() {
+    // Adding the first modifier inserts right in front of the return type, which is the header end.
+    assertTrue(ReparseRangeBounds.within(intArrayOf(9, 9), 5, 9))
+  }
+
+  @Test
+  fun within_rejectsWindowsOutsideTheUnit() {
+    assertFalse(ReparseRangeBounds.within(intArrayOf(4, 4), 5, 9))
+    assertFalse(ReparseRangeBounds.within(intArrayOf(10, 10), 5, 9))
+    assertFalse(ReparseRangeBounds.within(intArrayOf(5, 10), 5, 9))
+    assertFalse(ReparseRangeBounds.within(null, 5, 9))
+    assertFalse(ReparseRangeBounds.within(intArrayOf(0), 5, 9))
+    assertFalse(ReparseRangeBounds.within(intArrayOf(5, 9), -1, 9))
+    assertFalse(ReparseRangeBounds.within(intArrayOf(5, 9), 9, 5))
   }
 }

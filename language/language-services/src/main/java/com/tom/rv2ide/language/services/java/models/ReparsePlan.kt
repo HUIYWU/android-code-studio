@@ -31,5 +31,4 @@ data class ReparsePlan(
     @JvmField val contents: String,
     @JvmField val documentVersion: Int,
     @JvmField val documentRevision: Long,
-    @JvmField val cursor: Long,
 )

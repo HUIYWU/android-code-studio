@@ -17,42 +17,31 @@
 package com.tom.rv2ide.language.services.java.compiler;
 
 /**
- * Bounds contract for in-place replacement of a method body or a field initializer.
+ * Bounds contract for in-place replacement of one reparse unit (method body, method declaration
+ * header, throws clause, field initializer or initializer block).
+ *
+ * Reparse units are selected by the edited text window, not by the caret: the window is exactly the
+ * text that changed between two document revisions, so a caret that moved after the edit cannot pick
+ * the wrong unit.
  *
  * Kept outside {@link JavaCompilerService} on purpose: that class has Android-dependent static state,
- * while this check is a pure text-range predicate that must stay usable from plain JVM tests.
+ * while these are pure text predicates that must stay usable from plain JVM tests.
  */
 final class ReparseRangeBounds {
 
   private ReparseRangeBounds() {}
 
   /**
-   * True when every change between {@code oldContents} and {@code newContents} lies inside the range
-   * {@code [start, end)}, so that range can be replaced in place.
+   * Returns {@code {oldWindowStart, oldWindowEnd}} describing the minimal divergent window between
+   * {@code oldContents} and {@code newContents}, or {@code null} when the texts are identical.
    *
-   * <p>The check compares the minimal divergent window of the two texts. Shared prefix and shifted
-   * suffix alone are not sufficient: inserting a member directly after the range keeps both equal, yet
-   * the inserted text would be swallowed into the replacement text.
-   *
-   * <p>Replacing the whole range, delimiters included, is accepted: only insertions that start at or
-   * after the range end are rejected.
+   * <p>A pure insertion yields an empty old window ({@code start == end}); a pure deletion yields an
+   * empty new window. The returned offsets are indices into {@code oldContents}.
    */
-  static boolean staysInsideRange(
-      String oldContents, String newContents, int start, int end) {
+  static int[] changedRange(String oldContents, String newContents) {
     if (oldContents == null || newContents == null) {
-      return false;
+      return null;
     }
-    if (start < 0 || end < start || end > oldContents.length()) {
-      return false;
-    }
-    final int newEnd = end + newContents.length() - oldContents.length();
-    if (newEnd > newContents.length() || newEnd <= start) {
-      return false;
-    }
-    if (oldContents.contentEquals(newContents)) {
-      return true;
-    }
-
     final int oldLength = oldContents.length();
     final int newLength = newContents.length();
     int prefix = 0;
@@ -60,16 +49,56 @@ final class ReparseRangeBounds {
     while (prefix < maxPrefix && oldContents.charAt(prefix) == newContents.charAt(prefix)) {
       prefix++;
     }
-    int oldWindowEnd = oldLength;
-    int newWindowEnd = newLength;
-    while (oldWindowEnd > prefix
-        && newWindowEnd > prefix
-        && oldContents.charAt(oldWindowEnd - 1) == newContents.charAt(newWindowEnd - 1)) {
-      oldWindowEnd--;
-      newWindowEnd--;
+    if (prefix == oldLength && prefix == newLength) {
+      return null;
     }
-    // Requiring "prefix < end" keeps insertions that start exactly at the range end out of the
-    // replacement text, while "<=" still allows replacing the whole range including its delimiters.
-    return prefix >= start && prefix < end && oldWindowEnd <= end && newWindowEnd <= newEnd;
+    int oldEnd = oldLength;
+    int newEnd = newLength;
+    while (oldEnd > prefix
+        && newEnd > prefix
+        && oldContents.charAt(oldEnd - 1) == newContents.charAt(newEnd - 1)) {
+      oldEnd--;
+      newEnd--;
+    }
+    return new int[] {prefix, oldEnd};
+  }
+
+  /**
+   * True when [window] lies strictly inside the unit range {@code [start, end)}.
+   *
+   * <p>"Strictly" means the window starts inside the unit and ends before the unit end, so an
+   * insertion that starts exactly at the unit end is rejected: it would otherwise be swallowed into
+   * the replacement text. Replacing the whole unit, delimiters included, is still accepted.
+   */
+  static boolean contains(int[] window, int start, int end) {
+    if (window == null || window.length != 2) {
+      return false;
+    }
+    if (start < 0 || end < start) {
+      return false;
+    }
+    final int windowStart = window[0];
+    final int windowEnd = window[1];
+    return windowStart >= start && windowStart < end && windowEnd <= end;
+  }
+
+  /**
+   * True when [window] lies entirely inside {@code [start, end]}, both ends included.
+   *
+   * Unlike {@link #contains}, an empty window sited exactly at {@code end} is accepted: that is an
+   * insertion right after the last character of the unit, which still belongs to it. Method
+   * declaration headers need this, because adding the first modifier inserts in front of the return
+   * type, which is the header end.
+   */
+  static boolean within(int[] window, int start, int end) {
+    if (window == null || window.length != 2) {
+      return false;
+    }
+    if (start < 0 || end < start) {
+      return false;
+    }
+    final int windowStart = window[0];
+    final int windowEnd = window[1];
+    return windowStart >= start && windowStart <= windowEnd && windowEnd <= end;
   }
 }

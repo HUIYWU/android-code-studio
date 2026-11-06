@@ -28,10 +28,10 @@ import openjdk.source.util.Trees
 import openjdk.tools.javac.api.JavacTaskImpl
 
 /**
- * Records the source range of every class-member field that has an initializer.
+ * Records the source range of every class-member field.
  *
- * Fields of local and anonymous classes are skipped on purpose: their declarations are replaced as
- * part of the enclosing method body, not as standalone members.
+ * A field without an initializer is still recorded: its declaration header can be edited in place,
+ * while the initializer unit only applies when an initializer exists.
  */
 class FieldRangeScanner(val task: JavacTaskImpl) :
     TreePathScanner<Unit, MutableList<Pair<Range, TreePath>>>() {
@@ -49,7 +49,7 @@ class FieldRangeScanner(val task: JavacTaskImpl) :
 
   override fun visitVariable(node: VariableTree?, list: MutableList<Pair<Range, TreePath>>) {
     val root = this.root ?: return
-    if (node == null || node.initializer == null) {
+    if (node == null) {
       return
     }
     if (!isMemberField()) {
