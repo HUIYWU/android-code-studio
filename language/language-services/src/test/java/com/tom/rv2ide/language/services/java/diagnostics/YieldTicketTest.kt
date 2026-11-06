@@ -14,7 +14,7 @@
  *  You should have received a copy of the GNU General Public License
  *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.tom.rv2ide.language.services.java.providers
+package com.tom.rv2ide.language.services.java.diagnostics
 
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import java.nio.file.Paths
@@ -22,42 +22,42 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class DiagnosticInteractiveYieldStateTest {
+class YieldTicketTest {
 
   @Test
   fun yieldedNoUpdate_requestsExactlyOneRetry() {
-    val state = DiagnosticInteractiveYieldState()
+    val state = YieldTicket()
     state.markYielded()
 
-    assertTrue(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
-    assertFalse(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
+    assertTrue(state.consumeOnce(DiagnosticResult.NO_UPDATE))
+    assertFalse(state.consumeOnce(DiagnosticResult.NO_UPDATE))
   }
 
   @Test
   fun ordinaryNoUpdate_neverRequestsRetry() {
-    val state = DiagnosticInteractiveYieldState()
+    val state = YieldTicket()
 
-    assertFalse(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
+    assertFalse(state.consumeOnce(DiagnosticResult.NO_UPDATE))
   }
 
   @Test
   fun nonNoUpdate_doesNotConsumeYieldUntilNoUpdateArrives() {
-    val state = DiagnosticInteractiveYieldState()
+    val state = YieldTicket()
     state.markYielded()
     val completedResult = DiagnosticResult(Paths.get("Sample.java"), emptyList())
 
-    assertFalse(state.consumeRetryAfter(completedResult))
-    assertTrue(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
+    assertFalse(state.consumeOnce(completedResult))
+    assertTrue(state.consumeOnce(DiagnosticResult.NO_UPDATE))
   }
 
   @Test
   fun repeatedYields_coalesceIntoOneRetry() {
-    val state = DiagnosticInteractiveYieldState()
+    val state = YieldTicket()
 
     state.markYielded()
     state.markYielded()
 
-    assertTrue(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
-    assertFalse(state.consumeRetryAfter(DiagnosticResult.NO_UPDATE))
+    assertTrue(state.consumeOnce(DiagnosticResult.NO_UPDATE))
+    assertFalse(state.consumeOnce(DiagnosticResult.NO_UPDATE))
   }
 }

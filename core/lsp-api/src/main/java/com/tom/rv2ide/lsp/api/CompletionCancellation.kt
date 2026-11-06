@@ -14,8 +14,9 @@
  *  You should have received a copy of the GNU General Public License
  *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
+package com.tom.rv2ide.lsp.api
 
-package com.tom.rv2ide.progress
+import com.tom.rv2ide.progress.ICancelChecker
 
 /**
  * Thread-scoped cancellation context for a completion computation.
@@ -24,6 +25,9 @@ package com.tom.rv2ide.progress
  * safely represent their independent UI cancellation states: concurrent requests could overwrite
  * or unregister one another's checker. This context is deliberately limited to the synchronous
  * completion call stack and must always be restored by the caller.
+ *
+ * It lives in the LSP API module because that is the contract boundary: editors install the
+ * checker, providers read it, and neither side owns the other.
  */
 object CompletionCancellation {
   private val currentChecker = ThreadLocal<ICancelChecker?>()

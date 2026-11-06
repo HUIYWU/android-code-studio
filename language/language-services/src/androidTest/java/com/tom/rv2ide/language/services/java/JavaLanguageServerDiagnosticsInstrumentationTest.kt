@@ -19,6 +19,7 @@ package com.tom.rv2ide.language.services.java
 import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.tom.rv2ide.eventbus.events.editor.DocumentOpenEvent
+import com.tom.rv2ide.language.services.java.diagnostics.DiagnosticsAttempt
 import com.tom.rv2ide.lsp.api.ILanguageClient
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.lsp.models.DiagnosticResult
@@ -42,8 +43,8 @@ import org.junit.runner.RunWith
 /**
  * Verifies the Android-only diagnostics scheduling boundary.
  *
- * Tooling workspace discovery and the real JavaDiagnosticProvider/javac path are covered by the JVM
- * workspace integration test. This test instead verifies that a real Handler-backed AnalyzeTimer
+ * Tooling workspace discovery and the real JavaDiagnosticsAnalyzer/javac path are covered by the JVM
+ * workspace integration test. This test instead verifies that a real debounce timer
  * retries one yielded attempt and publishes only the later result on Android's main thread.
  */
 @RunWith(AndroidJUnit4::class)
@@ -58,13 +59,13 @@ class JavaLanguageServerDiagnosticsInstrumentationTest {
     var publishedOnMainThread = false
     val server = JavaLanguageServer()
 
-    server.scheduledDiagnosticAttemptOverride = {
+    server.diagnosticsAttemptOverride = {
       when (attempts.incrementAndGet()) {
-        1 -> ScheduledDiagnosticAttempt(DiagnosticResult.NO_UPDATE, retryAfterInteractiveYield = true)
+        1 -> DiagnosticsAttempt(DiagnosticResult.NO_UPDATE, retryAfterYield = true)
         2 ->
-            ScheduledDiagnosticAttempt(
+            DiagnosticsAttempt(
                 DiagnosticResult(file, emptyList(), documentVersion = 3, documentRevision = 9L),
-                retryAfterInteractiveYield = false,
+                retryAfterYield = false,
             )
         else -> error("Unexpected diagnostics attempt after final publication")
       }

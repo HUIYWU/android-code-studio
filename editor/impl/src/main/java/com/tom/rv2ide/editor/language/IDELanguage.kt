@@ -21,7 +21,7 @@ import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.editor.ui.IDECompletionPublisher
 import com.tom.rv2ide.lsp.api.ILanguageServer
 import com.tom.rv2ide.preferences.internal.EditorPreferences
-import com.tom.rv2ide.progress.CompletionCancellation
+import com.tom.rv2ide.lsp.api.CompletionCancellation
 import com.tom.rv2ide.progress.ICancelChecker
 import io.github.rosemoe.sora.lang.Language
 import io.github.rosemoe.sora.lang.completion.CompletionCancelledException

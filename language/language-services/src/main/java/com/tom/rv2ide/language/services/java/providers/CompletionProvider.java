@@ -103,7 +103,7 @@ public class CompletionProvider extends AbstractServiceProvider implements IComp
         return busyFallback;
       }
       if (IdeLogConfig.shouldLogWarn()) {
-        LOG.warn(
+        LOG.debug(
             "Completion busy and no fallback result is available file={} cursor={} prefix={} version={} revision={} compilerHash={} cachePresent={} providerScoped=true",
             params.getFile(),
             params.getPosition().requireIndex(),
@@ -123,8 +123,8 @@ public class CompletionProvider extends AbstractServiceProvider implements IComp
       return completeInternal(params);
     } catch (Throwable err) {
       if (CancelChecker.isCancelled(err)) {
-        if (IdeLogConfig.shouldLogIde()) {
-          LOG.info("Completion request cancelled");
+        if (IdeLogConfig.shouldLogDebug()) {
+          LOG.debug("Completion request cancelled");
         }
       } else {
         final Path file = params.getFile();
@@ -284,8 +284,8 @@ final long classifyStartedNs = System.nanoTime();
     pipelineTiming.classifyUs = elapsedUs(classifyStartedNs);
     if (suppressionReason != TSCompletionSuppressionReason.NONE) {
       pipelineTiming.logContextOutcome(file, cursor, suppressionReason, "EARLY_EMPTY_LITERAL_OR_COMMENT");
-      if (IdeLogConfig.shouldLogInfo()) {
-        LOG.info("Skipping Java completion in comment or literal context file={} cursor={} reason={}",
+      if (IdeLogConfig.shouldLogDebug()) {
+        LOG.debug("Skipping Java completion in comment or literal context file={} cursor={} reason={}",
             file,
             cursor,
             suppressionReason);
@@ -326,7 +326,7 @@ final long classifyStartedNs = System.nanoTime();
       result = CompletionResult.EMPTY;
     }
     if (result.getItems().isEmpty()) {
-      LOG.warn(
+      LOG.debug(
           "Completion provider produced no items file={} cursor={} prefix={} version={} revision={} contextPresent={}",
           file,
           cursor,
@@ -519,7 +519,7 @@ final long classifyStartedNs = System.nanoTime();
         klass = QualifiedNewClassCompletionProvider.class;
         break;
       case MEMBER_REFERENCE:
-        LOG.warn(
+        LOG.debug(
             "Skipping member reference completion file={} cursor={} leafKind={} partial={} endsWithParen={} reason=temporarily disabled to avoid repeated full fallback and memory pressure",
             file,
             cursor,
@@ -545,8 +545,8 @@ final long classifyStartedNs = System.nanoTime();
     if (provider instanceof ImportCompletionProvider) {
       final String importPath = qualifiedPartialIdentifier(contents, (int) cursor);
       ((ImportCompletionProvider) provider).setImportPath(importPath);
-      if (IdeLogConfig.shouldLogInfo()) {
-        LOG.info("Routing completion to ImportCompletionProvider file={} cursor={} leafKind={} importPath={}",
+      if (IdeLogConfig.shouldLogDebug()) {
+        LOG.debug("Routing completion to ImportCompletionProvider file={} cursor={} leafKind={} importPath={}",
             file,
             cursor,
             path.getLeaf().getKind(),

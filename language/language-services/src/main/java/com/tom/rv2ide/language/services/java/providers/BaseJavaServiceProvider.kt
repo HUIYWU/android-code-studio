@@ -19,7 +19,7 @@ package com.tom.rv2ide.language.services.java.providers
 
 import com.tom.rv2ide.lsp.api.IServerSettings
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
-import com.tom.rv2ide.progress.CompletionCancellation
+import com.tom.rv2ide.lsp.api.CompletionCancellation
 import java.nio.file.Path
 
 /**

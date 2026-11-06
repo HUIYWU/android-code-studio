@@ -18,7 +18,6 @@
 package com.tom.rv2ide.language.compiler.javac.partial;
 
 import androidx.annotation.Nullable;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -54,14 +53,6 @@ public class DiagnosticListenerImpl implements DiagnosticListener<JavaFileObject
   public DiagnosticListenerImpl(@Nullable final JavaFileObject jfo) {
     this.jfo = jfo;
     this.source2Errors = new HashMap<>();
-  }
-
-  public final JavaFileObject jfoForDebug() {
-    return jfo;
-  }
-
-  public final URI sourceUriForDebug() {
-    return jfo == null ? null : jfo.toUri().normalize();
   }
 
   @Override

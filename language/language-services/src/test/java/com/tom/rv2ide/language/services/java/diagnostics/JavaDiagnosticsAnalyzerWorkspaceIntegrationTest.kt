@@ -14,9 +14,9 @@
  *  You should have received a copy of the GNU General Public License
  *   along with AndroidCodeStudio.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.tom.rv2ide.language.services.java.providers
+package com.tom.rv2ide.language.services.java.diagnostics
 
-import com.tom.rv2ide.language.services.java.JavaSemanticSessions
+import com.tom.rv2ide.language.services.java.semantic.JavaModuleScopes
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.lsp.testing.LspWorkspaceTestSupport
@@ -33,18 +33,18 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Exercises the real Tooling-derived module and javac provider boundary.
+ * Exercises the real Tooling-derived module and javac analyzer boundary.
  *
  * This is intentionally below JavaLanguageServer: JUnit/Robolectric is a JVM environment, where
- * JavaLanguageServer deliberately bypasses AnalyzeTimer. It verifies provider yield and subsequent
- * direct analysis only; Android Handler retry and publishDiagnostics require instrumentation.
+ * JavaLanguageServer deliberately bypasses the debounce timer. It verifies analyzer yield and subsequent
+ * direct analysis only; Android debounce retry and publishDiagnostics require instrumentation.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = BaseApplication::class)
-class JavaDiagnosticProviderWorkspaceIntegrationTest {
+class JavaDiagnosticsAnalyzerWorkspaceIntegrationTest {
 
   @Test
-  fun interactiveLease_yieldsThenReleasedLeaseAnalyzesCurrentDocument() {
+  fun foregroundLease_yieldsThenReleasedLeaseAnalyzesCurrentDocument() {
     val file =
         FileProvider.testProjectRoot()
             .resolve("app/src/main/java/com/tom/rv2ide/testing/fixture/DiagnosticFixture.java")
@@ -54,21 +54,21 @@ class JavaDiagnosticProviderWorkspaceIntegrationTest {
     LspWorkspaceTestSupport.withWorkspace {
       openDocument(file, contents, version = 23, revision = 41L)
       val module = requireNotNull(workspace.findModuleForFile(file, checkExistance = true))
-      val session = JavaSemanticSessions.forModule(module)
-      val provider = JavaDiagnosticProvider()
+      val session = JavaModuleScopes.forModule(module)
+      val analyzer = JavaDiagnosticsAnalyzer()
 
-      val lease = session.beginInteractiveRequest()
+      val lease = session.beginForegroundSemantic()
       try {
-        val yielded = provider.analyze(file)
+        val yielded = analyzer.analyze(file)
         assertSame("interactive work must make speculative diagnostics yield", DiagnosticResult.NO_UPDATE, yielded)
-        assertTrue("one yielded analysis must request exactly one later retry", provider.consumeInteractiveYield(yielded))
-        assertFalse("the yielded retry token is one-shot", provider.consumeInteractiveYield(yielded))
+        assertTrue("one yielded analysis must request exactly one later retry", analyzer.consumeYieldRetry(yielded))
+        assertFalse("the yielded retry token is one-shot", analyzer.consumeYieldRetry(yielded))
       } finally {
         lease.close()
       }
 
-      val analyzed = provider.analyze(file)
-      assertFalse("released interactive lease must let provider enter real analysis", analyzed === DiagnosticResult.NO_UPDATE)
+      val analyzed = analyzer.analyze(file)
+      assertFalse("released interactive lease must let analyzer enter real analysis", analyzed === DiagnosticResult.NO_UPDATE)
       assertEquals(file, analyzed.file)
       assertEquals(23, analyzed.documentVersion)
       assertEquals(41L, analyzed.documentRevision)

@@ -86,7 +86,6 @@ class MethodReparse : PartialReparse {
     var partialReparseCommitted = false
 
     if (!allowPartialReparse) {
-      log.debug("Partial reparse is disabled")
       return false
     }
 
@@ -116,7 +115,6 @@ class MethodReparse : PartialReparse {
     val fav = FindAnonymousVisitor()
     fav.scan(method.body, null)
     if (fav.hasLocalClass) {
-      log.debug("Skipped reparse method. Old local classes: {}", fo)
       return false
     }
 
@@ -128,19 +126,16 @@ class MethodReparse : PartialReparse {
       l.startPartialReparse(fo)
       val prevLogged = l.useSource(fo)
       val block: JCBlock?
-
       try {
         val dl = ci.diagnosticListener as DiagnosticListenerImpl
         try {
           dl.startPartialReparse(origStartPos, origEndPos)
         } catch (err: Throwable) {
           log.error(
-              "Partial reparse stage failed: stage=diagnostic-begin method={} source={} sourceUri={} listenerSource={} listenerSourceUri={} origStartPos={} origEndPos={} newBodyLength={} errorType={} errorMessage={}",
+              "Partial reparse stage failed: stage=diagnostic-begin method={} source={} sourceUri={} origStartPos={} origEndPos={} newBodyLength={} errorType={} errorMessage={}",
               method.name,
               fo,
               fo.toUri(),
-              dl.jfoForDebug(),
-              dl.sourceUriForDebug(),
               origStartPos,
               origEndPos,
               newBody.length,
@@ -151,7 +146,6 @@ class MethodReparse : PartialReparse {
           return false
         }
         val docComments = HashMap<JCTree, Entry>()
-        log.debug("Reparse method...")
         block = try {
           reparseMethodBody(context, cu, method, newBody, docComments)
         } catch (err: Throwable) {
@@ -167,25 +161,12 @@ class MethodReparse : PartialReparse {
         }
         val endPosTable = (cu as JCCompilationUnit).endPositions
         if (block == null) {
-          log.debug(
-              "Skipped legacy AST mutation because the parsed body position is invalid; newBodyLength={}",
-              newBody.length,
-          )
           return false
         }
 
         val sourcePositions = jt.sourcePositions
         val newEndPos = sourcePositions.getEndPosition(cu, block).toInt()
         if (newEndPos != origStartPos + newBody.length) {
-          log.warn(
-              "Invalid position in reparsed method method={} origStartPos={} origEndPos={} newEndPos={} newBodyLength={} expectedEndPos={}",
-              method.name,
-              origStartPos,
-              origEndPos,
-              newEndPos,
-              newBody.length,
-              origStartPos + newBody.length,
-          )
           return false
         }
 
@@ -194,23 +175,12 @@ class MethodReparse : PartialReparse {
 
         val newNoInner = fav.noInner
         if (fav.hasLocalClass || noInner != newNoInner) {
-          log.debug("Skipped method reparse (new local class): {}", fo)
           return false
         }
         // End positions/doc-comments/unenter have already started mutating the cached task.
         taskMutated = true
         val cuDocComments = cu.docComments
-        if (cuDocComments == null) {
-          log.debug(
-              "Skipping doc-comments update because compilation unit has no docComments table method={} origStartPos={} origEndPos={} newBodyLength={} addedDocComments={} removedOwners={}",
-              method.name,
-              origStartPos,
-              origEndPos,
-              newBody.length,
-              docComments.size,
-              fav.docOwners.size,
-          )
-        } else {
+        if (cuDocComments != null) {
           val docCommentsTable = try {
             getLazyDocCommentsTable(cuDocComments)
           } catch (err: Throwable) {
@@ -297,8 +267,6 @@ class MethodReparse : PartialReparse {
         // From this point the cached task is no longer safely retryable as the old task.
         method.body = block
         taskMutated = true
-
-        log.debug("ReAttr method...")
         try {
           reAttrMethodBody(context, methodScope, method, block)
         } catch (err: Throwable) {
@@ -316,7 +284,6 @@ class MethodReparse : PartialReparse {
         if (!dl.hasPartialReparseErrors()) {
           val fl = JavacFlowListener.instance(context)
           if (fl != null && fl.hasFlowCompleted(cu.sourceFile)) {
-            log.debug("Reflow method...")
             val tp = TreePath.getPath(cu, method)
             val t = tp.parentPath.leaf as ClassTree
             try {
@@ -373,7 +340,6 @@ class MethodReparse : PartialReparse {
           try {
             (ci.diagnosticListener as? DiagnosticListenerImpl)?.abortPartialReparse()
           } catch (ignored: Throwable) {
-            log.debug("Unable to rollback partial diagnostics", ignored)
           }
         }
         l.endPartialReparse(cu.sourceFile)
@@ -435,8 +401,6 @@ class MethodReparse : PartialReparse {
       docComments.putAll(getLazyDocCommentsTable(getParserDocComments(parser)))
       return statement as JCBlock
     }
-
-    log.warn("JavacParser parsed invalid statment. Block statement was expected...")
     return null
   }
 

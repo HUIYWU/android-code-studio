@@ -17,6 +17,7 @@
 package com.tom.rv2ide.language.services.java
 
 import com.tom.rv2ide.builder.model.IJavaCompilerSettings
+import com.tom.rv2ide.language.services.java.semantic.JavaModuleScope
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.projects.ModuleProject
@@ -31,15 +32,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Deterministic lifecycle tests for strict-key semantic in-flight state without starting javac. */
-class JavaSemanticSessionInFlightTest {
+class JavaModuleScopeInFlightTest {
 
   @Test
   fun completion_sameKey_joinsOneActiveState() {
     val session = newSession()
     val key = completionKey()
 
-    val (leader, leaderCreated) = session.acquireInFlightCompletion(key)
-    val (follower, followerCreated) = session.acquireInFlightCompletion(key)
+    val (leader, leaderCreated) = session.acquireCompletion(key)
+    val (follower, followerCreated) = session.acquireCompletion(key)
 
     assertTrue(leaderCreated)
     assertFalse(followerCreated)
@@ -51,8 +52,8 @@ class JavaSemanticSessionInFlightTest {
     val session = newSession()
     val key = signatureKey()
 
-    val (leader, leaderCreated) = session.acquireInFlightSignatureHelp(key)
-    val (follower, followerCreated) = session.acquireInFlightSignatureHelp(key)
+    val (leader, leaderCreated) = session.acquireSignatureHelp(key)
+    val (follower, followerCreated) = session.acquireSignatureHelp(key)
 
     assertTrue(leaderCreated)
     assertFalse(followerCreated)
@@ -63,9 +64,9 @@ class JavaSemanticSessionInFlightTest {
   fun completion_differentRevision_doesNotJoinActiveState() {
     val session = newSession()
     val (first, firstCreated) =
-        session.acquireInFlightCompletion(completionKey(documentRevision = 1L))
+        session.acquireCompletion(completionKey(documentRevision = 1L))
     val (second, secondCreated) =
-        session.acquireInFlightCompletion(completionKey(documentRevision = 2L))
+        session.acquireCompletion(completionKey(documentRevision = 2L))
 
     assertTrue(firstCreated)
     assertTrue(secondCreated)
@@ -78,8 +79,8 @@ class JavaSemanticSessionInFlightTest {
     val firstKey = completionKey(prefix = "value")
     val secondKey = completionKey(prefix = "values")
 
-    val (first, firstCreated) = session.acquireInFlightCompletion(firstKey)
-    val (second, secondCreated) = session.acquireInFlightCompletion(secondKey)
+    val (first, firstCreated) = session.acquireCompletion(firstKey)
+    val (second, secondCreated) = session.acquireCompletion(secondKey)
 
     assertTrue(firstCreated)
     assertTrue(secondCreated)
@@ -90,9 +91,9 @@ class JavaSemanticSessionInFlightTest {
   fun signature_differentRevision_doesNotJoinActiveState() {
     val session = newSession()
     val (first, firstCreated) =
-        session.acquireInFlightSignatureHelp(signatureKey(documentRevision = 1L))
+        session.acquireSignatureHelp(signatureKey(documentRevision = 1L))
     val (second, secondCreated) =
-        session.acquireInFlightSignatureHelp(signatureKey(documentRevision = 2L))
+        session.acquireSignatureHelp(signatureKey(documentRevision = 2L))
 
     assertTrue(firstCreated)
     assertTrue(secondCreated)
@@ -105,8 +106,8 @@ class JavaSemanticSessionInFlightTest {
     val canonical = completionKey(file = TEST_FILE)
     val equivalent = completionKey(file = TEST_PROJECT_DIR.toPath().resolve("nested/../Sample.java"))
 
-    val (leader, leaderCreated) = session.acquireInFlightCompletion(canonical)
-    val (follower, followerCreated) = session.acquireInFlightCompletion(equivalent)
+    val (leader, leaderCreated) = session.acquireCompletion(canonical)
+    val (follower, followerCreated) = session.acquireCompletion(equivalent)
 
     assertTrue(leaderCreated)
     assertFalse(followerCreated)
@@ -117,9 +118,9 @@ class JavaSemanticSessionInFlightTest {
   fun completion_differentEnvironmentGeneration_doesNotJoinActiveState() {
     val session = newSession()
     val (first, firstCreated) =
-        session.acquireInFlightCompletion(completionKey(environmentGeneration = 1L))
+        session.acquireCompletion(completionKey(epoch = 1L))
     val (second, secondCreated) =
-        session.acquireInFlightCompletion(completionKey(environmentGeneration = 2L))
+        session.acquireCompletion(completionKey(epoch = 2L))
 
     assertTrue(firstCreated)
     assertTrue(secondCreated)
@@ -130,9 +131,9 @@ class JavaSemanticSessionInFlightTest {
   fun signature_differentEnvironmentGeneration_doesNotJoinActiveState() {
     val session = newSession()
     val (first, firstCreated) =
-        session.acquireInFlightSignatureHelp(signatureKey(environmentGeneration = 1L))
+        session.acquireSignatureHelp(signatureKey(epoch = 1L))
     val (second, secondCreated) =
-        session.acquireInFlightSignatureHelp(signatureKey(environmentGeneration = 2L))
+        session.acquireSignatureHelp(signatureKey(epoch = 2L))
 
     assertTrue(firstCreated)
     assertTrue(secondCreated)
@@ -142,7 +143,7 @@ class JavaSemanticSessionInFlightTest {
   @Test
   fun completion_detachingLastSubscriber_cancelsWorker() {
     val session = newSession()
-    val (state, _) = session.acquireInFlightCompletion(completionKey())
+    val (state, _) = session.acquireCompletion(completionKey())
     val subscriber = state.attachSubscriber()
 
     subscriber.close()
@@ -155,7 +156,7 @@ class JavaSemanticSessionInFlightTest {
   @Test
   fun completion_detachingOneOfTwoSubscribers_keepsWorkerAlive() {
     val session = newSession()
-    val (state, _) = session.acquireInFlightCompletion(completionKey())
+    val (state, _) = session.acquireCompletion(completionKey())
     val first = state.attachSubscriber()
     val second = state.attachSubscriber()
 
@@ -172,7 +173,7 @@ class JavaSemanticSessionInFlightTest {
   @Test
   fun signature_detachingOneOfTwoSubscribers_keepsWorkerAlive() {
     val session = newSession()
-    val (state, _) = session.acquireInFlightSignatureHelp(signatureKey())
+    val (state, _) = session.acquireSignatureHelp(signatureKey())
     val first = state.attachSubscriber()
     val second = state.attachSubscriber()
 
@@ -193,11 +194,11 @@ class JavaSemanticSessionInFlightTest {
     val olderKey = completionKey(documentRevision = 1L)
     val currentKey = completionKey(documentRevision = 2L)
     val otherFileKey = completionKey(file = TEST_OTHER_FILE, documentRevision = 1L)
-    val (older, _) = session.acquireInFlightCompletion(olderKey)
-    val (current, _) = session.acquireInFlightCompletion(currentKey)
-    val (otherFile, _) = session.acquireInFlightCompletion(otherFileKey)
+    val (older, _) = session.acquireCompletion(olderKey)
+    val (current, _) = session.acquireCompletion(currentKey)
+    val (otherFile, _) = session.acquireCompletion(otherFileKey)
 
-    session.cancelInFlightCompletionsOlderThan(TEST_FILE, revision = 2L)
+    session.cancelOlderThan(TEST_FILE, revision = 2L)
 
     assertTrue(older.workerCancelChecker.isCancelled())
     assertFalse(current.workerCancelChecker.isCancelled())
@@ -210,11 +211,11 @@ class JavaSemanticSessionInFlightTest {
     val olderKey = signatureKey(documentRevision = 1L)
     val currentKey = signatureKey(documentRevision = 2L)
     val otherFileKey = signatureKey(file = TEST_OTHER_FILE, documentRevision = 1L)
-    val (older, _) = session.acquireInFlightSignatureHelp(olderKey)
-    val (current, _) = session.acquireInFlightSignatureHelp(currentKey)
-    val (otherFile, _) = session.acquireInFlightSignatureHelp(otherFileKey)
+    val (older, _) = session.acquireSignatureHelp(olderKey)
+    val (current, _) = session.acquireSignatureHelp(currentKey)
+    val (otherFile, _) = session.acquireSignatureHelp(otherFileKey)
 
-    session.cancelInFlightCompletionsOlderThan(TEST_FILE, revision = 2L)
+    session.cancelOlderThan(TEST_FILE, revision = 2L)
 
     assertTrue(older.workerCancelChecker.isCancelled())
     assertFalse(current.workerCancelChecker.isCancelled())
@@ -224,12 +225,12 @@ class JavaSemanticSessionInFlightTest {
   @Test
   fun fileClose_cancelsCompletionAndSignatureForThatFileOnly() {
     val session = newSession()
-    val (completion, _) = session.acquireInFlightCompletion(completionKey())
-    val (signature, _) = session.acquireInFlightSignatureHelp(signatureKey())
+    val (completion, _) = session.acquireCompletion(completionKey())
+    val (signature, _) = session.acquireSignatureHelp(signatureKey())
     val (otherFileCompletion, _) =
-        session.acquireInFlightCompletion(completionKey(file = TEST_OTHER_FILE))
+        session.acquireCompletion(completionKey(file = TEST_OTHER_FILE))
 
-    session.cancelInFlightCompletionsForFile(TEST_FILE)
+    session.cancelForFile(TEST_FILE)
 
     assertTrue(completion.workerCancelChecker.isCancelled())
     assertTrue(signature.workerCancelChecker.isCancelled())
@@ -239,13 +240,13 @@ class JavaSemanticSessionInFlightTest {
   @Test
   fun environmentInvalidation_cancelsAllStatesAndAdvancesGeneration() {
     val session = newSession()
-    val (completion, _) = session.acquireInFlightCompletion(completionKey())
-    val (signature, _) = session.acquireInFlightSignatureHelp(signatureKey())
+    val (completion, _) = session.acquireCompletion(completionKey())
+    val (signature, _) = session.acquireSignatureHelp(signatureKey())
 
-    val nextGeneration = session.invalidateEnvironment()
+    val nextEpoch = session.invalidateEpoch()
 
-    assertEquals(2L, nextGeneration)
-    assertEquals(nextGeneration, session.environmentGeneration)
+    assertEquals(2L, nextEpoch)
+    assertEquals(nextEpoch, session.epoch)
     assertTrue(completion.workerCancelChecker.isCancelled())
     assertTrue(signature.workerCancelChecker.isCancelled())
   }
@@ -254,12 +255,12 @@ class JavaSemanticSessionInFlightTest {
   fun completion_terminalState_isReplacedWithoutOldRemovalDeletingNewState() {
     val session = newSession()
     val key = completionKey()
-    val (oldState, _) = session.acquireInFlightCompletion(key)
+    val (oldState, _) = session.acquireCompletion(key)
     oldState.cancelWorker()
 
-    val (replacement, replacementCreated) = session.acquireInFlightCompletion(key)
-    session.removeInFlightCompletion(oldState)
-    val (joinedReplacement, joinedCreated) = session.acquireInFlightCompletion(key)
+    val (replacement, replacementCreated) = session.acquireCompletion(key)
+    session.removeCompletion(oldState)
+    val (joinedReplacement, joinedCreated) = session.acquireCompletion(key)
 
     assertTrue(replacementCreated)
     assertFalse(joinedCreated)
@@ -270,12 +271,12 @@ class JavaSemanticSessionInFlightTest {
   fun completion_completedState_isReplacedWithoutOldRemovalDeletingNewState() {
     val session = newSession()
     val key = completionKey()
-    val (oldState, _) = session.acquireInFlightCompletion(key)
+    val (oldState, _) = session.acquireCompletion(key)
     oldState.complete(CompletionResult.EMPTY)
 
-    val (replacement, replacementCreated) = session.acquireInFlightCompletion(key)
-    session.removeInFlightCompletion(oldState)
-    val (joinedReplacement, joinedCreated) = session.acquireInFlightCompletion(key)
+    val (replacement, replacementCreated) = session.acquireCompletion(key)
+    session.removeCompletion(oldState)
+    val (joinedReplacement, joinedCreated) = session.acquireCompletion(key)
 
     assertTrue(replacementCreated)
     assertFalse(joinedCreated)
@@ -286,12 +287,12 @@ class JavaSemanticSessionInFlightTest {
   fun signature_completedState_isReplacedWithoutOldRemovalDeletingNewState() {
     val session = newSession()
     val key = signatureKey()
-    val (oldState, _) = session.acquireInFlightSignatureHelp(key)
+    val (oldState, _) = session.acquireSignatureHelp(key)
     oldState.complete(SignatureHelp(emptyList(), -1, -1))
 
-    val (replacement, replacementCreated) = session.acquireInFlightSignatureHelp(key)
-    session.removeInFlightSignatureHelp(oldState)
-    val (joinedReplacement, joinedCreated) = session.acquireInFlightSignatureHelp(key)
+    val (replacement, replacementCreated) = session.acquireSignatureHelp(key)
+    session.removeSignatureHelp(oldState)
+    val (joinedReplacement, joinedCreated) = session.acquireSignatureHelp(key)
 
     assertTrue(replacementCreated)
     assertFalse(joinedCreated)
@@ -302,12 +303,12 @@ class JavaSemanticSessionInFlightTest {
   fun signature_terminalState_isReplacedWithoutOldRemovalDeletingNewState() {
     val session = newSession()
     val key = signatureKey()
-    val (oldState, _) = session.acquireInFlightSignatureHelp(key)
+    val (oldState, _) = session.acquireSignatureHelp(key)
     oldState.cancelWorker()
 
-    val (replacement, replacementCreated) = session.acquireInFlightSignatureHelp(key)
-    session.removeInFlightSignatureHelp(oldState)
-    val (joinedReplacement, joinedCreated) = session.acquireInFlightSignatureHelp(key)
+    val (replacement, replacementCreated) = session.acquireSignatureHelp(key)
+    session.removeSignatureHelp(oldState)
+    val (joinedReplacement, joinedCreated) = session.acquireSignatureHelp(key)
 
     assertTrue(replacementCreated)
     assertFalse(joinedCreated)
@@ -322,20 +323,20 @@ class JavaSemanticSessionInFlightTest {
     assertTrue("expected CancellationException but was $error", current is CancellationException)
   }
 
-  private fun newSession(): JavaSemanticSession =
-      JavaSemanticSession(testModule(), nextEnvironmentGeneration = { 2L }, initialEnvironmentGeneration = 1L)
+  private fun newSession(): JavaModuleScope =
+      JavaModuleScope(testModule(), nextEpoch = { 2L }, initialEpoch = 1L)
 
   private fun completionKey(
       file: Path = TEST_FILE,
       documentRevision: Long = 1L,
-      environmentGeneration: Long = 1L,
+      epoch: Long = 1L,
       prefix: String = "value",
-  ): JavaSemanticSession.CompletionRequestKey =
-      JavaSemanticSession.CompletionRequestKey.create(
+  ): JavaModuleScope.CompletionRequestKey =
+      JavaModuleScope.CompletionRequestKey.create(
           file,
           documentVersion = 1,
           documentRevision = documentRevision,
-          environmentGeneration = environmentGeneration,
+          epoch = epoch,
           cursorIndex = 10L,
           prefix = prefix,
       )
@@ -343,13 +344,13 @@ class JavaSemanticSessionInFlightTest {
   private fun signatureKey(
       file: Path = TEST_FILE,
       documentRevision: Long = 1L,
-      environmentGeneration: Long = 1L,
-  ): JavaSemanticSession.SignatureRequestKey =
-      JavaSemanticSession.SignatureRequestKey.create(
+      epoch: Long = 1L,
+  ): JavaModuleScope.SignatureRequestKey =
+      JavaModuleScope.SignatureRequestKey.create(
           file,
           documentVersion = 1,
           documentRevision = documentRevision,
-          environmentGeneration = environmentGeneration,
+          epoch = epoch,
           cursorIndex = 10L,
       )
 

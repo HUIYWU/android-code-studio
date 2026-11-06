@@ -24,7 +24,6 @@ import com.tom.rv2ide.common.logging.IdeLogConfig;
 import com.tom.rv2ide.language.compiler.javac.compiler.ReusableCompiler;
 import com.tom.rv2ide.language.compiler.javac.partial.CompilationInfo;
 import com.tom.rv2ide.language.compiler.javac.partial.MethodReparse;
-import com.tom.rv2ide.language.compiler.javac.partial.PartialReparse;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinSourceStubProvider;
@@ -356,122 +355,72 @@ public class JavaCompilerService implements CompilerProvider {
    * containment, mutation-failure isolation, or partial-diagnostic rollback.
    */
   private synchronized void reparseOrRecompile(CompilationRequest request) {
-    final long strategyStartedNs = System.nanoTime();
     if (request.methodReparsePlan == null) {
-      if (IdeLogConfig.shouldLogDebug()) {
-        LOG.debug(
-            "MethodReparse skip requestHash={} reason=NO_PLAN sourceCount={} strategyDurationUs={}",
-            System.identityHashCode(request),
-            request.sources.size(),
-            (System.nanoTime() - strategyStartedNs) / 1_000L);
-      }
-      recompile(request, MethodReparseResult.NO_PLAN);
+      recompile(request);
       return;
     }
-    if (IdeLogConfig.shouldLogDebug()) {
-      LOG.debug(
-          "MethodReparse attempt requestHash={} cachedTaskHash={} sourceCount={} planPresent={} cachedVersion={} requestedVersion={} cachedRevision={} requestedRevision={}",
-          System.identityHashCode(request),
-          cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task),
-          request.sources.size(),
-          request.methodReparsePlan != null,
-          cachedCompile == null ? -1 : cachedCompile.documentVersion(),
-          request.methodReparsePlan == null ? -1 : request.methodReparsePlan.documentVersion,
-          cachedCompile == null ? -1 : cachedCompile.documentRevision(),
-          request.methodReparsePlan == null ? -1 : request.methodReparsePlan.documentRevision);
-    }
-    final MethodReparseResult reparseResult =
-        methodReparseCorruptedTask
-            ? MethodReparseResult.TASK_CORRUPTED
-            : tryMethodReparse(request);
-    if (reparseResult == MethodReparseResult.SUCCESS) {
-      if (IdeLogConfig.shouldLogDebug()) {
-        LOG.debug(
-            "MethodReparse success requestHash={} taskHash={} source={}",
-            System.identityHashCode(request),
-            cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task),
-            request.methodReparsePlan.file);
-        LOG.debug(
-            "JAVAC_METHOD_REPARSE_SUCCESS taskHash={} source={} version={} revision={}",
-            cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task),
-            request.methodReparsePlan.file,
-            request.methodReparsePlan.documentVersion,
-            request.methodReparsePlan.documentRevision);
-      }
+    final ReparseOutcome outcome =
+        methodReparseCorruptedTask ? ReparseOutcome.FAILED_AFTER_MUTATION : tryMethodReparse(request);
+    if (outcome == ReparseOutcome.SUCCESS) {
       return;
-    }
-    if (IdeLogConfig.shouldLogDebug()) {
-      LOG.debug(
-          "MethodReparse fallback requestHash={} reason={} corrupted={} cachedTaskHash={}",
-          System.identityHashCode(request),
-          reparseResult,
-          methodReparseCorruptedTask,
-          cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task));
-      LOG.info(
-          "JAVAC_METHOD_REPARSE_FALLBACK reason={} corrupted={} source={} version={} revision={}",
-          reparseResult,
-          methodReparseCorruptedTask,
-          request.methodReparsePlan.file,
-          request.methodReparsePlan.documentVersion,
-          request.methodReparsePlan.documentRevision);
     }
     // A failed in-place mutation must never be reused. recompile() closes and replaces it.
-    recompile(request, reparseResult);
+    recompile(request);
   }
 
-  private MethodReparseResult tryMethodReparse(CompilationRequest request) {
+  private ReparseOutcome tryMethodReparse(CompilationRequest request) {
     final MethodReparsePlan plan = request.methodReparsePlan;
     if (plan == null) {
-      return MethodReparseResult.NO_PLAN;
+      return ReparseOutcome.FAILED;
     }
     if (cachedCompile == null) {
-      return MethodReparseResult.NO_CACHE;
+      return ReparseOutcome.FAILED;
     }
     if (cachedCompile.closed) {
-      return MethodReparseResult.CACHE_CLOSED;
+      return ReparseOutcome.FAILED;
     }
     if (request.sources.size() != 1) {
-      return MethodReparseResult.MULTIPLE_SOURCES;
+      return ReparseOutcome.FAILED;
     }
     if (plan.contents == null || plan.cursor < 0) {
-      return MethodReparseResult.INVALID_PLAN;
+      return ReparseOutcome.FAILED;
     }
     final JavaFileObject requestedSource = request.sources.iterator().next();
     if (!requestedSource.toUri().normalize().equals(plan.file.toUri().normalize())) {
-      return MethodReparseResult.SOURCE_MISMATCH;
+      return ReparseOutcome.FAILED;
     }
     final String oldContents = cachedCompile.currentSourceContents();
     if (oldContents == null) {
-      return MethodReparseResult.NO_CACHED_CONTENTS;
+      return ReparseOutcome.FAILED;
     }
     // The MVP requires an explicit contiguous document identity. A task produced by
     // Diagnostics or another request without version metadata must be re-established first;
     // otherwise we could mutate a task whose source snapshot is only approximately known.
     if (cachedCompile.documentVersion() < 0 || plan.documentVersion < 0) {
-      return MethodReparseResult.VERSION_UNKNOWN;
+      return ReparseOutcome.FAILED;
     }
     if (plan.documentVersion != cachedCompile.documentVersion() + 1) {
-      return MethodReparseResult.VERSION_GAP;
+      return ReparseOutcome.FAILED;
     }
     if (cachedCompile.documentRevision() < 0 || plan.documentRevision < 0) {
-      return MethodReparseResult.REVISION_UNKNOWN;
+      return ReparseOutcome.FAILED;
     }
     if (plan.documentRevision <= cachedCompile.documentRevision()) {
-      return MethodReparseResult.REVISION_NOT_NEWER;
+      return ReparseOutcome.FAILED;
     }
 
     final SingleTextEdit edit = SingleTextEdit.compute(oldContents, plan.contents);
     if (edit == null) {
-      return MethodReparseResult.INVALID_EDIT;
+      return ReparseOutcome.FAILED;
     }
     final CompilationUnitTree root = cachedCompile.root(plan.file);
     if (root == null) {
-      return MethodReparseResult.NO_ROOT;
+      return ReparseOutcome.FAILED;
     }
     final List<Pair<Range, TreePath>> positions =
         cachedCompile.methodPositions.get(plan.file.toAbsolutePath().toString());
     if (positions == null) {
-      return MethodReparseResult.NO_METHOD_INDEX;
+      return ReparseOutcome.FAILED;
     }
 
     Pair<Range, TreePath> candidate = null;
@@ -485,83 +434,61 @@ public class JavaCompilerService implements CompilerProvider {
       }
     }
     if (candidate == null) {
-      return MethodReparseResult.CURSOR_OUTSIDE_METHOD;
+      return ReparseOutcome.FAILED;
     }
     if (!(candidate.second.getLeaf() instanceof MethodTree)) {
-      return MethodReparseResult.INVALID_METHOD_PATH;
+      return ReparseOutcome.FAILED;
     }
     final MethodTree method = (MethodTree) candidate.second.getLeaf();
     if (method.getBody() == null) {
-      return MethodReparseResult.NO_METHOD_BODY;
+      return ReparseOutcome.FAILED;
     }
     if (method.getName().contentEquals("<init>")) {
-      return MethodReparseResult.CONSTRUCTOR;
+      return ReparseOutcome.FAILED;
     }
 
     final JavacTrees trees = JavacTrees.instance(cachedCompile.task);
     final long bodyStartLong = trees.getSourcePositions().getStartPosition(root, method.getBody());
     final long bodyEndLong = trees.getSourcePositions().getEndPosition(root, method.getBody());
     if (bodyStartLong < 0 || bodyEndLong < bodyStartLong) {
-      return MethodReparseResult.INVALID_BODY_POSITION;
+      return ReparseOutcome.FAILED;
     }
     final int bodyStart = (int) bodyStartLong;
     final int bodyEnd = (int) bodyEndLong;
     if (edit.start <= bodyStart || edit.oldEnd >= bodyEnd) {
-      return MethodReparseResult.EDIT_OUTSIDE_BODY;
+      return ReparseOutcome.FAILED;
     }
     final int newBodyEnd = bodyEnd + edit.delta();
     if (newBodyEnd > plan.contents.length() || newBodyEnd <= bodyStart) {
-      return MethodReparseResult.INVALID_NEW_BODY_RANGE;
+      return ReparseOutcome.FAILED;
     }
 
     if (request.configureContext != null) {
       request.configureContext.accept(cachedCompile.task.getContext());
     }
-    final PartialReparse reparser = new MethodReparse();
+    final MethodReparse reparser = new MethodReparse();
     final CompilationInfo info =
         new CompilationInfo(cachedCompile.task, cachedCompile.diagnosticListener, root);
     final String newBody = plan.contents.substring(bodyStart, newBodyEnd);
     final boolean success = reparser.reparseMethod(info, candidate.second, newBody, plan.contents);
     if (!success) {
-      if (reparser instanceof MethodReparse
-          && ((MethodReparse) reparser).getTaskMutated()) {
+      if (reparser.getTaskMutated()) {
         methodReparseCorruptedTask = true;
-        return MethodReparseResult.REPARSE_FAILED_AFTER_MUTATION;
+        return ReparseOutcome.FAILED_AFTER_MUTATION;
       }
-      return MethodReparseResult.REPARSE_FAILED_BEFORE_MUTATION;
+      return ReparseOutcome.FAILED;
     }
     cachedCompile.updatePositions(root, true);
     cachedCompile.updateDocumentState(plan.contents, plan.documentVersion, plan.documentRevision);
     updateModificationCache(request);
-    return MethodReparseResult.SUCCESS;
+    return ReparseOutcome.SUCCESS;
   }
 
-  private enum MethodReparseResult {
+  /** Result of one method-reparse attempt as far as the compiler cache is concerned. */
+  private enum ReparseOutcome {
     SUCCESS,
-    NO_PLAN,
-    NO_CACHE,
-    CACHE_CLOSED,
-    MULTIPLE_SOURCES,
-    INVALID_PLAN,
-    SOURCE_MISMATCH,
-    NO_CACHED_CONTENTS,
-    VERSION_UNKNOWN,
-    VERSION_GAP,
-    REVISION_UNKNOWN,
-    REVISION_NOT_NEWER,
-    INVALID_EDIT,
-    NO_ROOT,
-    NO_METHOD_INDEX,
-    CURSOR_OUTSIDE_METHOD,
-    INVALID_METHOD_PATH,
-    NO_METHOD_BODY,
-    CONSTRUCTOR,
-    INVALID_BODY_POSITION,
-    EDIT_OUTSIDE_BODY,
-    INVALID_NEW_BODY_RANGE,
-    REPARSE_FAILED_BEFORE_MUTATION,
-    REPARSE_FAILED_AFTER_MUTATION,
-    TASK_CORRUPTED
+    FAILED,
+    FAILED_AFTER_MUTATION,
   }
 
   private static final class SingleTextEdit {
@@ -596,26 +523,11 @@ public class JavaCompilerService implements CompilerProvider {
     }
   }
 
-  private synchronized void recompile(
-      CompilationRequest request, MethodReparseResult reason) {
-    final int previousTaskHash =
-        cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task);
+  private synchronized void recompile(CompilationRequest request) {
     close();
     methodReparseCorruptedTask = false;
-    final long startedNs = System.nanoTime();
     this.cachedCompile = performCompilation(request);
     updateModificationCache(request);
-    if (IdeLogConfig.shouldLogDebug()) {
-      LOG.info(
-          "JAVAC_FULL_COMPILE_COMPLETE reason={} previousTaskHash={} taskHash={} source={} sourceCount={} durationMs={} planPresent={}",
-          reason,
-          previousTaskHash,
-          cachedCompile == null ? 0 : System.identityHashCode(cachedCompile.task),
-          request.sources.size() == 1 ? request.sources.iterator().next().toUri() : null,
-          request.sources.size(),
-          (System.nanoTime() - startedNs) / 1_000_000L,
-          request.methodReparsePlan != null);
-    }
   }
 
   public synchronized void close() {

@@ -40,7 +40,6 @@ import com.tom.rv2ide.lsp.models.CompletionParams;
 import com.tom.rv2ide.lsp.models.CompletionResult;
 import com.tom.rv2ide.lsp.models.CompletionsKt;
 import com.tom.rv2ide.lsp.models.MatchLevel;
-import com.tom.rv2ide.progress.CompletionCancellation;
 import java.nio.file.Files;
 import java.nio.file.Path;
 

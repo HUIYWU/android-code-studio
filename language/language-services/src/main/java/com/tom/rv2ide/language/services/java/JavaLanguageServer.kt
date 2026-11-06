@@ -41,14 +41,18 @@ import com.tom.rv2ide.language.services.java.models.JavaServerSettings
 import com.tom.rv2ide.language.services.java.providers.CodeFormatProvider
 import com.tom.rv2ide.language.services.java.providers.CompletionProvider
 import com.tom.rv2ide.language.services.java.providers.DefinitionProvider
-import com.tom.rv2ide.language.services.java.providers.JavaDiagnosticProvider
+import com.tom.rv2ide.language.services.java.diagnostics.DiagnosticsAttempt
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsAnalyzer
+import com.tom.rv2ide.language.services.java.diagnostics.PublishDecision
 import com.tom.rv2ide.language.services.java.providers.JavaHoverProvider
 import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
 import com.tom.rv2ide.language.services.java.providers.ReferenceProvider
 import com.tom.rv2ide.language.services.java.providers.SignatureProvider
 import com.tom.rv2ide.language.services.java.providers.snippet.JavaSnippetRepository.init
-import com.tom.rv2ide.language.services.java.utils.AnalyzeTimer
-import com.tom.rv2ide.progress.CompletionCancellation
+import com.tom.rv2ide.language.services.java.diagnostics.DebounceTimer
+import com.tom.rv2ide.language.services.java.semantic.JavaModuleScope
+import com.tom.rv2ide.language.services.java.semantic.JavaModuleScopes
+import com.tom.rv2ide.lsp.api.CompletionCancellation
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.language.services.java.utils.CancelChecker.Companion.isCancelled
 import com.tom.rv2ide.lsp.models.CodeFormatResult
@@ -78,7 +82,6 @@ import com.tom.rv2ide.utils.DocumentUtils
 import com.tom.rv2ide.utils.VMUtils
 import java.nio.file.Path
 import java.util.Objects
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
@@ -96,18 +99,15 @@ import org.slf4j.LoggerFactory
 
 class JavaLanguageServer : ILanguageServer {
 
-  private val diagnosticProvider: JavaDiagnosticProvider?
+  private val diagnosticsAnalyzer: JavaDiagnosticsAnalyzer
   private var lastHeavyModuleCleanupAt: Long = 0L
   override var client: ILanguageClient? = null
     private set
 
   private var _settings: IServerSettings? = null
-  private var selectedFile: Path? = null
-  private val timer = AnalyzeTimer { analyzeSelected() }
-  private val analyzeGeneration = AtomicLong(0)
-  private val analyzeLaunchInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-  private val analyzeRerunRequested = java.util.concurrent.atomic.AtomicBoolean(false)
-  private val lastInteractiveRequestAt = AtomicLong(0)
+  @Volatile private var selectedFile: Path? = null
+  private val timer = DebounceTimer { runScheduledAnalysis() }
+  private val analysisRunning = AtomicBoolean(false)
 
   /**
    * Instrumentation-only seam for the scheduling boundary.
@@ -117,9 +117,9 @@ class JavaLanguageServer : ILanguageServer {
    * coupling those timing assertions to Tooling/javac setup, which is covered separately on JVM.
    */
   @RestrictTo(RestrictTo.Scope.TESTS)
-  internal var scheduledDiagnosticAttemptOverride: (suspend (Path) -> ScheduledDiagnosticAttempt)? = null
+  internal var diagnosticsAttemptOverride: (suspend (Path) -> DiagnosticsAttempt)? = null
   private val cachedCompletion = AtomicReference(CachedCompletion.EMPTY)
-  private var lastJavaChangeDelta = 0
+  private var lastChangeDelta = 0
 
   val settings: IServerSettings
     get() {
@@ -133,13 +133,15 @@ class JavaLanguageServer : ILanguageServer {
     const val SERVER_ID = "ide.lsp.java"
     private const val LARGE_CHANGE_DELTA_FOR_DIAGNOSTIC_DEBOUNCE = 2_000
     private const val LARGE_CHANGE_ANALYZE_INTERVAL_MS = 1_500L
-    private const val SIGNATURE_HELP_DIAGNOSTIC_GRACE_MS = 1_200L
+
+    /** Short re-arm used after a pass yielded, so diagnostics retry without a full debounce cycle. */
+    private const val RETRY_DELAY_MS = 150L
     private const val HEAVY_COMPOSITE_IDLE_EVICTION_MS = 5 * 60_000L
     private val log = LoggerFactory.getLogger(JavaLanguageServer::class.java)
   }
 
   init {
-    diagnosticProvider = JavaDiagnosticProvider()
+    diagnosticsAnalyzer = JavaDiagnosticsAnalyzer()
 
     applySettings(JavaServerSettings.getInstance())
 
@@ -151,14 +153,14 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override fun shutdown() {
-    JavaSemanticSessions.destroyAll()
+    JavaModuleScopes.destroyAll()
     SourceFileManager.clearCache()
     KotlinJvmTypeIndex.clear()
     KotlinClassOutputProvider.clearCache()
     CacheFSInfoSingleton.clearCache()
     clearCache()
     EventBus.getDefault().unregister(this)
-    timer.cancel()
+    timer.close()
   }
 
   override fun connectClient(client: ILanguageClient?) {
@@ -189,8 +191,9 @@ class JavaLanguageServer : ILanguageServer {
 
     // Clear module semantic sessions and their cached reusable compilers. Completion candidates are
     // classpath-sensitive as well, so no cached result may cross a workspace environment reset.
-    JavaSemanticSessions.destroyAll()
+    JavaModuleScopes.destroyAll()
     cachedCompletion.set(CachedCompletion.EMPTY)
+    diagnosticsAnalyzer.clear()
 
     // Cache classpath locations for eagerly active modules only.
     for (subModule in workspace.getSubProjects()) {
@@ -203,10 +206,9 @@ class JavaLanguageServer : ILanguageServer {
       }
       SourceFileManager.forModule(subModule)
     }
-    startOrRestartAnalyzeTimer()
+    scheduleDiagnostics()
   }
   override fun complete(params: CompletionParams?): CompletionResult {
-    lastInteractiveRequestAt.set(System.currentTimeMillis())
     val request = params ?: return CompletionResult.EMPTY
     if (!isCurrentDocument(request.file, request.documentVersion, request.documentRevision)) {
       log.warn(
@@ -230,33 +232,33 @@ class JavaLanguageServer : ILanguageServer {
       return CompletionResult.EMPTY
     }
 
-    val semanticSession = getSemanticSession(request.file)
+    val semanticSession = getModuleScope(request.file)
     // No module session means there is no stable environment generation to put in a share key.
     // Preserve the old synchronous NO_MODULE_COMPILER behavior for that exceptional path.
     if (semanticSession == null) {
       return executeCompletion(request, null, null)
     }
 
-    val environmentGeneration = semanticSession.environmentGeneration
+    val epoch = semanticSession.epoch
     val key =
-        JavaSemanticSession.CompletionRequestKey.create(
+        JavaModuleScope.CompletionRequestKey.create(
             request.file,
             request.documentVersion,
             request.documentRevision,
-            environmentGeneration,
+            epoch,
             request.position.requireIndex().toLong(),
             request.prefix,
         )
-    val (state, created) = semanticSession.acquireInFlightCompletion(key)
+    val (state, created) = semanticSession.acquireCompletion(key)
     val subscriberLease = state.attachSubscriber()
     if (IdeLogConfig.shouldLogInfo()) {
       log.info(
-          "Completion in-flight {} file={} version={} revision={} environmentGeneration={} cursor={} prefixLength={} subscribers={}",
+          "Completion in-flight {} file={} version={} revision={} epoch={} cursor={} prefixLength={} subscribers={}",
           if (created) "leader" else "follower",
           key.file,
           key.documentVersion,
           key.documentRevision,
-          key.environmentGeneration,
+          key.epoch,
           key.cursorIndex,
           key.prefix.length,
           state.subscriberCount,
@@ -273,15 +275,15 @@ class JavaLanguageServer : ILanguageServer {
         val previousChecker = CompletionCancellation.install(state.workerCancelChecker)
         try {
           state.workerCancelChecker.abortIfCancelled()
-          val result = executeCompletion(workerRequest, semanticSession, environmentGeneration)
+          val result = executeCompletion(workerRequest, semanticSession, epoch)
           state.complete(result)
           if (IdeLogConfig.shouldLogInfo()) {
             log.info(
-                "Completion worker terminal=completed file={} version={} revision={} environmentGeneration={} cursor={} itemCount={} durationMs={}",
+                "Completion worker terminal=completed file={} version={} revision={} epoch={} cursor={} itemCount={} durationMs={}",
                 key.file,
                 key.documentVersion,
                 key.documentRevision,
-                key.environmentGeneration,
+                key.epoch,
                 key.cursorIndex,
                 result.items.size,
                 System.currentTimeMillis() - startedAt,
@@ -293,12 +295,12 @@ class JavaLanguageServer : ILanguageServer {
             // Subscriber-driven cancellation is an expected terminal state during rapid edits,
             // not a provider/compiler failure. Keep it distinct for pressure-test metrics.
             log.info(
-                "Completion worker terminal={} file={} version={} revision={} environmentGeneration={} cursor={} errorType={} durationMs={}",
+                "Completion worker terminal={} file={} version={} revision={} epoch={} cursor={} errorType={} durationMs={}",
                 if (isCancelled(error)) "cancelled" else "failed",
                 key.file,
                 key.documentVersion,
                 key.documentRevision,
-                key.environmentGeneration,
+                key.epoch,
                 key.cursorIndex,
                 error.javaClass.simpleName,
                 System.currentTimeMillis() - startedAt,
@@ -306,7 +308,7 @@ class JavaLanguageServer : ILanguageServer {
           }
         } finally {
           CompletionCancellation.restore(previousChecker)
-          semanticSession.removeInFlightCompletion(state)
+          semanticSession.removeCompletion(state)
         }
       }
     }
@@ -316,30 +318,30 @@ class JavaLanguageServer : ILanguageServer {
   /** Runs only on the independent completion worker (or the legacy no-module fallback path). */
   private fun executeCompletion(
       request: CompletionParams,
-      semanticSession: JavaSemanticSession?,
-      environmentGeneration: Long?,
+      semanticSession: JavaModuleScope?,
+      epoch: Long?,
   ): CompletionResult {
-    val interactiveLease = semanticSession?.beginInteractiveRequest()
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
-      if (diagnosticProvider!!.isAnalyzing()) {
-        diagnosticProvider.cancel()
+      if (diagnosticsAnalyzer.isAnalyzing()) {
+        diagnosticsAnalyzer.cancel()
       }
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       val completionProvider =
           CompletionProvider(compiler, settings, cachedCompletion.get()) { completion ->
-            updateCachedCompletion(completion, request, semanticSession, environmentGeneration)
+            updateCachedCompletion(completion, request, semanticSession, epoch)
           }
       val result = completionProvider.complete(request)
       val currentDocument =
           isCurrentDocument(request.file, request.documentVersion, request.documentRevision)
-      val currentSession = isCurrentSemanticSession(semanticSession, environmentGeneration)
+      val currentSession = isCurrentScope(semanticSession, epoch)
       if (!currentDocument || !currentSession) {
         log.warn(
-            "Completion dropped after execution file={} version={} revision={} environmentGeneration={} documentCurrent={} sessionCurrent={} itemCount={} cached={}",
+            "Completion dropped after execution file={} version={} revision={} epoch={} documentCurrent={} sessionCurrent={} itemCount={} cached={}",
             request.file,
             request.documentVersion,
             request.documentRevision,
-            environmentGeneration,
+            epoch,
             currentDocument,
             currentSession,
             result.items.size,
@@ -349,19 +351,19 @@ class JavaLanguageServer : ILanguageServer {
       }
       if (result.items.isEmpty()) {
         log.warn(
-            "Completion produced no items file={} cursor={} prefix={} version={} revision={} environmentGeneration={} cached={}",
+            "Completion produced no items file={} cursor={} prefix={} version={} revision={} epoch={} cached={}",
             request.file,
             request.position.requireIndex(),
             request.prefix,
             request.documentVersion,
             request.documentRevision,
-            environmentGeneration,
+            epoch,
             result.isCached,
         )
       }
       return result
     } finally {
-      interactiveLease?.close()
+      foregroundLease?.close()
     }
   }
 
@@ -391,8 +393,8 @@ class JavaLanguageServer : ILanguageServer {
     if (!settings.referencesEnabled()) {
       return ReferenceResult(emptyList())
     }
-    val semanticSession = getSemanticSession(params.file)
-    val foregroundLease = semanticSession?.beginUserActionRequest()
+    val semanticSession = getModuleScope(params.file)
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       return ReferenceProvider(compiler, params.cancelChecker).findReferences(params)
@@ -405,8 +407,8 @@ class JavaLanguageServer : ILanguageServer {
     if (!settings.definitionsEnabled()) {
       return DefinitionResult(emptyList())
     }
-    val semanticSession = getSemanticSession(params.file)
-    val foregroundLease = semanticSession?.beginUserActionRequest()
+    val semanticSession = getModuleScope(params.file)
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       return DefinitionProvider(compiler, settings, params.cancelChecker).findDefinition(params)
@@ -419,8 +421,8 @@ class JavaLanguageServer : ILanguageServer {
     if (!settings.smartSelectionsEnabled()) {
       return params.selection
     }
-    val semanticSession = getSemanticSession(params.file)
-    val foregroundLease = semanticSession?.beginUserActionRequest()
+    val semanticSession = getModuleScope(params.file)
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       return JavaSelectionProvider(compiler).expandSelection(params)
@@ -430,14 +432,13 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override suspend fun signatureHelp(params: SignatureHelpParams): SignatureHelp {
-    lastInteractiveRequestAt.set(System.currentTimeMillis())
     if (
         !settings.signatureHelpEnabled() ||
             !isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
     ) {
       return SignatureHelp(emptyList(), -1, -1)
     }
-    val semanticSession = getSemanticSession(params.file)
+    val semanticSession = getModuleScope(params.file)
     // Preserve legacy behavior where no module session/environment identity is available. Unknown
     // document stamps are likewise kept on the non-shared compatibility path: a strict key must
     // never merge requests whose source snapshot cannot be proven identical.
@@ -447,28 +448,28 @@ class JavaLanguageServer : ILanguageServer {
             params.documentRevision < 0L ||
             params.position.requireIndex() < 0
     ) {
-      return executeSignatureHelp(params, semanticSession, semanticSession?.environmentGeneration)
+      return executeSignatureHelp(params, semanticSession, semanticSession?.epoch)
     }
 
-    val environmentGeneration = semanticSession.environmentGeneration
+    val epoch = semanticSession.epoch
     val key =
-        JavaSemanticSession.SignatureRequestKey.create(
+        JavaModuleScope.SignatureRequestKey.create(
             params.file,
             params.documentVersion,
             params.documentRevision,
-            environmentGeneration,
+            epoch,
             params.position.requireIndex().toLong(),
         )
-    val (state, created) = semanticSession.acquireInFlightSignatureHelp(key)
+    val (state, created) = semanticSession.acquireSignatureHelp(key)
     val subscriberLease = state.attachSubscriber()
     if (IdeLogConfig.shouldLogInfo()) {
       log.info(
-          "Signature Help in-flight {} file={} version={} revision={} environmentGeneration={} cursor={} subscribers={}",
+          "Signature Help in-flight {} file={} version={} revision={} epoch={} cursor={} subscribers={}",
           if (created) "leader" else "follower",
           key.file,
           key.documentVersion,
           key.documentRevision,
-          key.environmentGeneration,
+          key.epoch,
           key.cursorIndex,
           state.subscriberCount,
       )
@@ -479,15 +480,15 @@ class JavaLanguageServer : ILanguageServer {
         val startedAt = System.currentTimeMillis()
         try {
           state.workerCancelChecker.abortIfCancelled()
-          val result = executeSignatureHelp(workerParams, semanticSession, environmentGeneration)
+          val result = executeSignatureHelp(workerParams, semanticSession, epoch)
           state.complete(result)
           if (IdeLogConfig.shouldLogInfo()) {
             log.info(
-                "Signature Help worker terminal=completed file={} version={} revision={} environmentGeneration={} cursor={} signatureCount={} durationMs={}",
+                "Signature Help worker terminal=completed file={} version={} revision={} epoch={} cursor={} signatureCount={} durationMs={}",
                 key.file,
                 key.documentVersion,
                 key.documentRevision,
-                key.environmentGeneration,
+                key.epoch,
                 key.cursorIndex,
                 result.signatures.size,
                 System.currentTimeMillis() - startedAt,
@@ -498,19 +499,19 @@ class JavaLanguageServer : ILanguageServer {
           if (IdeLogConfig.shouldLogInfo()) {
             // Keep expected coroutine/subscriber cancellation separate from a semantic failure.
             log.info(
-                "Signature Help worker terminal={} file={} version={} revision={} environmentGeneration={} cursor={} errorType={} durationMs={}",
+                "Signature Help worker terminal={} file={} version={} revision={} epoch={} cursor={} errorType={} durationMs={}",
                 if (isCancelled(error)) "cancelled" else "failed",
                 key.file,
                 key.documentVersion,
                 key.documentRevision,
-                key.environmentGeneration,
+                key.epoch,
                 key.cursorIndex,
                 error.javaClass.simpleName,
                 System.currentTimeMillis() - startedAt,
             )
           }
         } finally {
-          semanticSession.removeInFlightSignatureHelp(state)
+          semanticSession.removeSignatureHelp(state)
         }
       }
     }
@@ -540,23 +541,23 @@ class JavaLanguageServer : ILanguageServer {
 
   private fun executeSignatureHelp(
       params: SignatureHelpParams,
-      semanticSession: JavaSemanticSession?,
-      environmentGeneration: Long?,
+      semanticSession: JavaModuleScope?,
+      epoch: Long?,
   ): SignatureHelp {
-    val interactiveLease = semanticSession?.beginInteractiveRequest()
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       val result = SignatureProvider(compiler, params.cancelChecker).signatureHelp(params)
       return if (
           isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
-              isCurrentSemanticSession(semanticSession, environmentGeneration)
+              isCurrentScope(semanticSession, epoch)
       ) {
         result
       } else {
         SignatureHelp(emptyList(), -1, -1)
       }
     } finally {
-      interactiveLease?.close()
+      foregroundLease?.close()
     }
   }
 
@@ -596,8 +597,8 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override suspend fun hover(params: DefinitionParams): com.tom.rv2ide.lsp.models.MarkupContent {
-    val semanticSession = getSemanticSession(params.file)
-    val foregroundLease = semanticSession?.beginUserActionRequest()
+    val semanticSession = getModuleScope(params.file)
+    val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
       return JavaHoverProvider(compiler, params.cancelChecker).hover(params)
@@ -623,7 +624,7 @@ class JavaLanguageServer : ILanguageServer {
       return DiagnosticResult.NO_UPDATE
     }
 
-    return diagnosticProvider!!.analyze(file)
+    return diagnosticsAnalyzer.analyze(file)
   }
 
   override fun formatCode(params: FormatCodeParams?): CodeFormatResult {
@@ -636,40 +637,40 @@ class JavaLanguageServer : ILanguageServer {
         if (isCancelled(failure.error)) {
           return true
         }
-        JavaSemanticSessions.destroyAll()
+        JavaModuleScopes.destroyAll()
         true
       }
     }
   }
 
-  private fun getSemanticSession(file: Path?): JavaSemanticSession? {
+  private fun getModuleScope(file: Path?): JavaModuleScope? {
     if (!DocumentUtils.isJavaFile(file)) {
       return null
     }
     val workspace = getInstance().getWorkspace() ?: return null
     val module = workspace.findModuleForFile(file!!) ?: return null
     workspace.ensureModuleActivated(module)
-    return JavaSemanticSessions.forModule(module)
+    return JavaModuleScopes.forModule(module)
   }
 
-  private fun isCurrentSemanticSession(
-      session: JavaSemanticSession?,
-      environmentGeneration: Long?,
+  private fun isCurrentScope(
+      session: JavaModuleScope?,
+      epoch: Long?,
   ): Boolean {
     return session == null ||
-        (environmentGeneration != null && JavaSemanticSessions.isCurrent(session, environmentGeneration))
+        (epoch != null && JavaModuleScopes.isCurrent(session, epoch))
   }
 
   @RestrictTo(RestrictTo.Scope.LIBRARY_GROUP)
   fun getCompiler(file: Path?): JavaCompilerService {
-    return getSemanticSession(file)?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
+    return getModuleScope(file)?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
   }
 
   private fun updateCachedCompletion(
       completion: CachedCompletion,
       request: CompletionParams,
-      session: JavaSemanticSession?,
-      environmentGeneration: Long?,
+      session: JavaModuleScope?,
+      epoch: Long?,
   ) {
     Objects.requireNonNull(completion)
     // CompletionProvider invokes this callback before complete() returns. Recheck request identity
@@ -677,14 +678,14 @@ class JavaLanguageServer : ILanguageServer {
     // editor version.
     if (
         !isCurrentDocument(request.file, request.documentVersion, request.documentRevision) ||
-            !isCurrentSemanticSession(session, environmentGeneration)
+            !isCurrentScope(session, epoch)
     ) {
       log.info(
-          "Completion cache write skipped for stale request file={} version={} revision={} environmentGeneration={}",
+          "Completion cache write skipped for stale request file={} version={} revision={} epoch={}",
           request.file,
           request.documentVersion,
           request.documentRevision,
-          environmentGeneration,
+          epoch,
       )
       return
     }
@@ -709,47 +710,28 @@ class JavaLanguageServer : ILanguageServer {
       }
   }
 
-  private fun shouldForceAnalyzeTimerRestart(): Boolean {
-    val sinceInteractive = System.currentTimeMillis() - lastInteractiveRequestAt.get()
-    return sinceInteractive < 0 || sinceInteractive >= SIGNATURE_HELP_DIAGNOSTIC_GRACE_MS
-  }
-
-  private fun startOrRestartAnalyzeTimer(forceRestart: Boolean = true) {
+  private fun scheduleDiagnostics() {
     if (VMUtils.isJvm()) {
       return
     }
-    val nextGeneration = analyzeGeneration.incrementAndGet()
-    val baseInterval =
-        if (abs(lastJavaChangeDelta) >= LARGE_CHANGE_DELTA_FOR_DIAGNOSTIC_DEBOUNCE) {
+    // Pure debounce: every scheduled change pushes the deadline out, and a pass that is still
+    // running simply re-arms the timer. No extra request state is involved.
+    timer.interval =
+        if (abs(lastChangeDelta) >= LARGE_CHANGE_DELTA_FOR_DIAGNOSTIC_DEBOUNCE) {
           LARGE_CHANGE_ANALYZE_INTERVAL_MS
         } else {
-          AnalyzeTimer.DEFAULT_INTERVAL
+          DebounceTimer.DEFAULT_INTERVAL_MS
         }
-    val now = System.currentTimeMillis()
-    val sinceInteractive = now - lastInteractiveRequestAt.get()
-    val interactiveDelay =
-        when {
-          sinceInteractive < 0 -> 0L
-          sinceInteractive < SIGNATURE_HELP_DIAGNOSTIC_GRACE_MS ->
-              SIGNATURE_HELP_DIAGNOSTIC_GRACE_MS - sinceInteractive
-          else -> 0L
-        }
-    val schedule =
-        AnalyzeScheduleDecision.decide(
-            timerStarted = timer.isStarted,
-            currentIntervalMs = timer.interval,
-            baseIntervalMs = baseInterval.toLong(),
-            interactiveDelayMs = interactiveDelay,
-            forceRestart = forceRestart,
-        )
-    if (timer.interval != schedule.intervalMs) {
-      timer.interval = schedule.intervalMs
+    timer.restart()
+  }
+
+  /** Re-arms the timer with a short delay after a pass yielded to foreground work. */
+  private fun scheduleRetry() {
+    if (VMUtils.isJvm()) {
+      return
     }
-    when (schedule.action) {
-      AnalyzeScheduleDecision.Action.START -> timer.start()
-      AnalyzeScheduleDecision.Action.RESTART -> timer.restart()
-      AnalyzeScheduleDecision.Action.KEEP -> Unit
-    }
+    timer.interval = RETRY_DELAY_MS
+    timer.restart()
   }
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
@@ -762,13 +744,13 @@ class JavaLanguageServer : ILanguageServer {
     if (!DocumentUtils.isJavaFile(event.changedFile)) {
       return
     }
-    lastJavaChangeDelta = event.changeDelta
+    lastChangeDelta = event.changeDelta
 
     // EventBus delivery is asynchronous. Cancel only states whose event revision is provably
     // older than this change; a delayed older event must not kill a newer completion worker.
     // This does not need module resolution, which may temporarily fail during close/rename flows.
-    JavaSemanticSessions.cancelInFlightCompletionsOlderThan(event.changedFile, event.revision)
-    startOrRestartAnalyzeTimer(forceRestart = shouldForceAnalyzeTimerRestart())
+    JavaModuleScopes.cancelOlderThan(event.changedFile, event.revision)
+    scheduleDiagnostics()
   }
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
@@ -779,15 +761,15 @@ class JavaLanguageServer : ILanguageServer {
     // open Java file, force a full diagnostics pass so stale Kotlin ABI/classpath state is never
     // retained merely because no Java document change was made.
     if (DocumentUtils.isJavaFile(event.selectedFile)) {
-      lastJavaChangeDelta = 0
-      startOrRestartAnalyzeTimer(forceRestart = true)
+      lastChangeDelta = 0
+      scheduleDiagnostics()
     }
   }
   @Subscribe(threadMode = ThreadMode.ASYNC)
   @Suppress("unused")
   fun onFileOpened(event: DocumentOpenEvent) {
     selectedFile = event.openedFile
-    lastJavaChangeDelta = 0
+    lastChangeDelta = 0
 
     // Some editor flows intentionally omit the eager text payload for very large files to avoid an
     // additional full-buffer String allocation during open. Recover the initial snapshot from the
@@ -796,15 +778,15 @@ class JavaLanguageServer : ILanguageServer {
       event.text = com.tom.rv2ide.projects.FileManager.getDocumentContents(event.openedFile)
     }
 
-    startOrRestartAnalyzeTimer(forceRestart = shouldForceAnalyzeTimerRestart())
+    scheduleDiagnostics()
   }
 
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
   @Suppress("unused")
   fun onFileClosed(event: DocumentCloseEvent) {
-    JavaSemanticSessions.cancelInFlightCompletionsForFile(event.closedFile)
-    diagnosticProvider?.clearTimestamp(event.closedFile)
+    JavaModuleScopes.cancelForFile(event.closedFile)
+    diagnosticsAnalyzer.forget(event.closedFile)
 
     if (getActiveDocumentCount() == 0) {
       selectedFile = null
@@ -823,7 +805,7 @@ class JavaLanguageServer : ILanguageServer {
       return
     }
     log.info("Re-analyzing selected file after lazy module activation: module={} file={}", event.module.path, fileToAnalyze)
-    analyzeSelected()
+    runScheduledAnalysis()
   }
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
@@ -861,12 +843,12 @@ class JavaLanguageServer : ILanguageServer {
         ?: workspace?.findModuleForFile(kotlinFile.toFile(), true)
     if (module != null) {
       KotlinJvmTypeIndex.invalidate(module)
-      JavaSemanticSessions.destroy(module)
+      JavaModuleScopes.destroy(module)
     } else {
       // A deletion is commonly delivered after its file can no longer be resolved to a module.
       // Prefer a conservative global reset over retaining an ABI stub for a deleted Kotlin type.
       KotlinJvmTypeIndex.clear()
-      JavaSemanticSessions.destroyAll()
+      JavaModuleScopes.destroyAll()
     }
     KotlinClassOutputProvider.clearCache()
     cachedCompletion.set(CachedCompletion.EMPTY)
@@ -878,204 +860,84 @@ class JavaLanguageServer : ILanguageServer {
         && DocumentUtils.isJavaFile(currentJavaFile)
         && (module == null || module.isFromThisModule(currentJavaFile))
     if (schedulesJavaDiagnostics) {
-      lastJavaChangeDelta = 0
-      startOrRestartAnalyzeTimer(forceRestart = true)
+      lastChangeDelta = 0
+      scheduleDiagnostics()
     }
   }
 
   @Subscribe(threadMode = ThreadMode.ASYNC)
   @Suppress("unused")
   fun onLazyModuleEvicted(event: LazyModuleEvictedEvent) {
-    JavaSemanticSessions.destroy(event.module)
+    JavaModuleScopes.destroy(event.module)
     // Cached completion candidates may depend on the evicted module's classpath/type index.
     cachedCompletion.set(CachedCompletion.EMPTY)
   }
 
-  private fun analyzeSelected() {
-    val fileToAnalyze = selectedFile
-    if (fileToAnalyze == null || client == null) {
+  private fun runScheduledAnalysis() {
+    val fileToAnalyze = selectedFile ?: return
+    if (client == null) {
       return
     }
-    val now = System.currentTimeMillis()
-    val sinceInteractive = now - lastInteractiveRequestAt.get()
-    if (sinceInteractive in 0 until SIGNATURE_HELP_DIAGNOSTIC_GRACE_MS) {
-      startOrRestartAnalyzeTimer(forceRestart = false)
-      return
-    }
-    val requestedGeneration = analyzeGeneration.get()
-    if (!analyzeLaunchInFlight.compareAndSet(false, true)) {
-      analyzeRerunRequested.set(true)
+    // The debounce timer is the queue: a schedule that fires while a pass is running re-arms the
+    // timer instead of being tracked by a second flag, so no trailing-request state is needed.
+    if (!analysisRunning.compareAndSet(false, true)) {
       if (IdeLogConfig.shouldLogInfo()) {
-        log.info(
-          "Analyze coalesced while in flight requestedGeneration={} currentGeneration={} file={}",
-          requestedGeneration,
-          analyzeGeneration.get(),
-          fileToAnalyze,
-        )
+        log.info("Analyze coalesced while running file={}", fileToAnalyze)
       }
+      scheduleDiagnostics()
       return
     }
     CoroutineScope(Dispatchers.Default).launch {
       try {
-        if (requestedGeneration != analyzeGeneration.get()) {
-          if (IdeLogConfig.shouldLogInfo()) {
-            log.info(
-              "Analyze skipped before start due to newer request requestedGeneration={} currentGeneration={} file={}",
-              requestedGeneration,
-              analyzeGeneration.get(),
-              fileToAnalyze,
-            )
-          }
-          return@launch
-        }
         maybeEvictIdleHeavyCompositeModules()
-        if (requestedGeneration != analyzeGeneration.get()) {
-          if (IdeLogConfig.shouldLogInfo()) {
-            log.info(
-              "Analyze skipped after pre-work due to newer request requestedGeneration={} currentGeneration={} file={}",
-              requestedGeneration,
-              analyzeGeneration.get(),
-              fileToAnalyze,
-            )
-          }
-          return@launch
-        }
         val attempt =
-            scheduledDiagnosticAttemptOverride?.invoke(fileToAnalyze)
+            diagnosticsAttemptOverride?.invoke(fileToAnalyze)
                 ?: run {
                   val result = analyze(fileToAnalyze)
-                  ScheduledDiagnosticAttempt(
+                  DiagnosticsAttempt(
                       result = result,
-                      retryAfterInteractiveYield = diagnosticProvider?.consumeInteractiveYield(result) == true,
+                      retryAfterYield = diagnosticsAnalyzer.consumeYieldRetry(result),
                   )
                 }
         val result = attempt.result
-        val currentGeneration = analyzeGeneration.get()
-        // A stale attempt must not consume a yield belonging to the latest diagnostics generation.
-        val retryAfterInteractiveYield =
-            requestedGeneration == currentGeneration && attempt.retryAfterInteractiveYield
+        val isCurrentTarget = selectedFile == fileToAnalyze
         val dispatch =
-            DiagnosticDispatchDecision.decide(
+            PublishDecision.decide(
                 result = result,
-                requestedGeneration = requestedGeneration,
-                currentGeneration = currentGeneration,
-                retryAfterInteractiveYield = retryAfterInteractiveYield,
+                isCurrentTarget = isCurrentTarget,
+                retryAfterYield = attempt.retryAfterYield,
             )
         if (IdeLogConfig.shouldLogInfo()) {
           log.info(
-              "Diagnostics dispatch action={} file={} requestedGeneration={} currentGeneration={} resultKind={} retryAfterInteractiveYield={}",
+              "Diagnostics dispatch action={} file={} currentTarget={} resultKind={} retryAfterYield={}",
               dispatch,
               fileToAnalyze,
-              requestedGeneration,
-              currentGeneration,
+              isCurrentTarget,
               if (result == DiagnosticResult.NO_UPDATE) "no-update" else "result",
-              retryAfterInteractiveYield,
+              attempt.retryAfterYield,
           )
         }
         when (dispatch) {
-          DiagnosticDispatchDecision.Action.DROP -> return@launch
-          DiagnosticDispatchDecision.Action.RETRY -> {
+          PublishDecision.Action.DROP -> return@launch
+          PublishDecision.Action.RETRY -> {
             if (IdeLogConfig.shouldLogInfo()) {
-              log.info(
-                  "Analyze retry scheduled after interactive yield requestedGeneration={} file={}",
-                  requestedGeneration,
-                  fileToAnalyze,
-              )
+              log.info("Analyze retry scheduled after foreground yield file={}", fileToAnalyze)
             }
-            startOrRestartAnalyzeTimer(forceRestart = true)
+            scheduleRetry()
             return@launch
           }
-          DiagnosticDispatchDecision.Action.PUBLISH -> Unit
+          PublishDecision.Action.PUBLISH -> Unit
         }
         withContext(Dispatchers.Main) {
-          if (requestedGeneration == analyzeGeneration.get()) {
+          if (selectedFile == fileToAnalyze) {
             client?.publishDiagnostics(result)
           } else if (IdeLogConfig.shouldLogInfo()) {
-            log.info(
-              "Analyze publish skipped due to newer request requestedGeneration={} currentGeneration={} file={}",
-              requestedGeneration,
-              analyzeGeneration.get(),
-              fileToAnalyze,
-            )
+            log.info("Analyze publish skipped because the target changed file={}", fileToAnalyze)
           }
         }
       } finally {
-        analyzeLaunchInFlight.set(false)
-        if (analyzeRerunRequested.compareAndSet(true, false)) {
-          if (IdeLogConfig.shouldLogInfo()) {
-            log.info(
-              "Analyze trailing rerun requested currentGeneration={} selectedFile={}",
-              analyzeGeneration.get(),
-              selectedFile,
-            )
-          }
-          analyzeSelected()
-        }
+        analysisRunning.set(false)
       }
     }
-  }
-}
-
-/** One scheduled diagnostics execution and whether it yielded a one-shot retry request. */
-@RestrictTo(RestrictTo.Scope.TESTS)
-internal data class ScheduledDiagnosticAttempt(
-    val result: DiagnosticResult,
-    val retryAfterInteractiveYield: Boolean,
-)
-
-/**
- * Pure result dispatch decision kept beside the server that owns generation and debounce state.
- */
-internal object DiagnosticDispatchDecision {
-  enum class Action {
-    DROP,
-    RETRY,
-    PUBLISH,
-  }
-
-  fun decide(
-      result: DiagnosticResult,
-      requestedGeneration: Long,
-      currentGeneration: Long,
-      retryAfterInteractiveYield: Boolean,
-  ): Action =
-      when {
-        requestedGeneration != currentGeneration -> Action.DROP
-        result == DiagnosticResult.NO_UPDATE && retryAfterInteractiveYield -> Action.RETRY
-        result == DiagnosticResult.NO_UPDATE -> Action.DROP
-        else -> Action.PUBLISH
-      }
-}
-
-/** Platform-independent debounce choice kept beside the server that owns AnalyzeTimer. */
-internal object AnalyzeScheduleDecision {
-  enum class Action {
-    KEEP,
-    START,
-    RESTART,
-  }
-
-  data class Plan(
-      val intervalMs: Long,
-      val action: Action,
-  )
-
-  fun decide(
-      timerStarted: Boolean,
-      currentIntervalMs: Long,
-      baseIntervalMs: Long,
-      interactiveDelayMs: Long,
-      forceRestart: Boolean,
-  ): Plan {
-    require(baseIntervalMs > 0L) { "baseIntervalMs must be positive" }
-    require(interactiveDelayMs >= 0L) { "interactiveDelayMs must not be negative" }
-    val intervalMs = maxOf(baseIntervalMs, interactiveDelayMs)
-    val action =
-        when {
-          !timerStarted -> Action.START
-          forceRestart || currentIntervalMs < intervalMs -> Action.RESTART
-          else -> Action.KEEP
-        }
-    return Plan(intervalMs, action)
   }
 }
