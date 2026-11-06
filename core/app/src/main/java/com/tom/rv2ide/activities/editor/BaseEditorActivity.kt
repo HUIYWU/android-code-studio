@@ -25,6 +25,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Process
 import android.text.SpannableStringBuilder
+import android.util.Log
 import android.widget.FrameLayout
 import android.text.Spanned
 import android.text.TextUtils
@@ -34,6 +35,7 @@ import android.text.style.ClickableSpan
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver.OnGlobalLayoutListener
+import android.view.ViewTreeObserver.OnPreDrawListener
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -1345,7 +1347,11 @@ abstract class BaseEditorActivity :
     editorBottomSheet = BottomSheetBehavior.from<View>(content.bottomSheet)
     editorBottomSheet?.addBottomSheetCallback(
         object : BottomSheetCallback() {
+          // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
           override fun onStateChanged(bottomSheet: View, newState: Int) {
+            Log.d(
+                "ACS_BS",
+                "state=$newState sheetTop=${bottomSheet.top} fileTabsAlpha=${content.tabs.alpha} fileTabsTop=${content.tabs.top} fileTabsBottom=${content.tabs.bottom} appBarTop=${content.editorAppBarLayout.top} headerHeight=${content.bottomSheet.binding.headerContainer.height}")
             if (newState == BottomSheetBehavior.STATE_EXPANDED) {
               val editor = provideCurrentEditor()
               editor?.editor?.ensureWindowsDismissed()
@@ -1353,12 +1359,73 @@ abstract class BaseEditorActivity :
           }
 
           override fun onSlide(bottomSheet: View, slideOffset: Float) {
+            Log.d(
+                "ACS_BS",
+                "slide=$slideOffset sheetTop=${bottomSheet.top} fileTabsAlpha=${content.tabs.alpha} fileTabsTop=${content.tabs.top} fileTabsBottom=${content.tabs.bottom} appBarTop=${content.editorAppBarLayout.top} headerHeight=${content.bottomSheet.binding.headerContainer.height}")
             content.apply {
               val editorScale = 1 - slideOffset * (1 - EDITOR_CONTAINER_SCALE_FACTOR)
               this.bottomSheet.onSlide(slideOffset)
               this.viewContainer.scaleX = editorScale
               this.viewContainer.scaleY = editorScale
             }
+          }
+        }
+    )
+
+    // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
+    Log.d(
+        "ACS_BS",
+        "appBarLiftConfig liftOnScroll=${content.editorAppBarLayout.isLiftOnScroll}")
+    content.tabs.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+      Log.d(
+          "ACS_BS",
+          "fileTabsLayout top=$top bottom=$bottom height=${bottom - top} oldTop=$oldTop oldBottom=$oldBottom oldHeight=${oldBottom - oldTop} alpha=${content.tabs.alpha}")
+    }
+    content.editorAppBarLayout.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+      Log.d(
+          "ACS_BS",
+          "appBarLayout top=$top bottom=$bottom height=${bottom - top} oldTop=$oldTop oldBottom=$oldBottom oldHeight=${oldBottom - oldTop}")
+    }
+    content.bottomSheet.binding.tabs.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+      Log.d(
+          "ACS_BS",
+          "sheetTabsLayout top=$top bottom=$bottom height=${bottom - top} oldTop=$oldTop oldBottom=$oldBottom oldHeight=${oldBottom - oldTop}")
+    }
+
+    // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
+    var lastFileTabsTop = Int.MIN_VALUE
+    var lastFileTabsAlpha = -1f
+    content.realContainer.viewTreeObserver.addOnPreDrawListener(
+        object : OnPreDrawListener {
+          private var lastAppBarElevation = Float.NaN
+          private var lastAppBarZ = Float.NaN
+          private var lastAppBarLifted = false
+
+          override fun onPreDraw(): Boolean {
+            val appBarElevation = content.editorAppBarLayout.elevation
+            val appBarZ = content.editorAppBarLayout.translationZ
+            val appBarLifted = content.editorAppBarLayout.isLifted
+            if (appBarElevation != lastAppBarElevation ||
+                appBarZ != lastAppBarZ ||
+                appBarLifted != lastAppBarLifted) {
+              Log.d(
+                  "ACS_BS",
+                  "appBarLift lifted=$appBarLifted elevation=$appBarElevation z=$appBarZ sheetTop=${content.bottomSheet.top} fileTabsTop=${content.editorAppBarLayout.top + content.tabs.top}")
+              lastAppBarElevation = appBarElevation
+              lastAppBarZ = appBarZ
+              lastAppBarLifted = appBarLifted
+            }
+
+            val fileTabsTop = content.editorAppBarLayout.top + content.tabs.top
+            val fileTabsAlpha = content.tabs.alpha
+            if (fileTabsTop != lastFileTabsTop || fileTabsAlpha != lastFileTabsAlpha) {
+              Log.d(
+                  "ACS_BS",
+                  "preDraw fileTabsTop=$fileTabsTop fileTabsBottom=${content.editorAppBarLayout.top + content.tabs.bottom} alpha=$fileTabsAlpha fileElevation=${content.tabs.elevation} fileZ=${content.tabs.translationZ} appBarElevation=${content.editorAppBarLayout.elevation} sheetTop=${content.bottomSheet.top} sheetElevation=${content.bottomSheet.elevation} sheetZ=${content.bottomSheet.translationZ}")
+              lastFileTabsTop = fileTabsTop
+              lastFileTabsAlpha = fileTabsAlpha
+            }
+            return true
           }
         }
     )

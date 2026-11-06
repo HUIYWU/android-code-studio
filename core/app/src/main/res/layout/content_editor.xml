@@ -28,8 +28,11 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@android:color/transparent"
+    android:elevation="0dp"
     android:fitsSystemWindows="false"
-    app:layout_behavior="com.google.android.material.appbar.AppBarLayout$Behavior">
+    android:stateListAnimator="@null"
+    app:layout_behavior="com.google.android.material.appbar.AppBarLayout$Behavior"
+    app:liftOnScroll="false">
 
     <com.tom.rv2ide.ui.ExtendedMenuToolbar
       android:id="@+id/editor_toolbar"

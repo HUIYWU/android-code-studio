@@ -21,7 +21,9 @@ import android.app.Activity
 import android.content.Context
 import android.text.TextUtils
 import android.util.AttributeSet
+import android.util.Log
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -116,6 +118,38 @@ constructor(
   }
 
   private fun initialize(context: FragmentActivity) {
+
+    // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
+    binding.headerContainer.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+      Log.d(
+          "ACS_BS",
+          "headerLayout top=$top bottom=$bottom height=${bottom - top} oldTop=$oldTop oldBottom=$oldBottom oldHeight=${oldBottom - oldTop}")
+    }
+    addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+      Log.d(
+          "ACS_BS",
+          "sheetLayout top=$top bottom=$bottom height=${bottom - top} oldTop=$oldTop oldBottom=$oldBottom oldHeight=${oldBottom - oldTop}")
+    }
+
+    // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
+    viewTreeObserver.addOnPreDrawListener(
+        object : ViewTreeObserver.OnPreDrawListener {
+          private var lastTop = Int.MIN_VALUE
+          private var lastTabsTop = Int.MIN_VALUE
+
+          override fun onPreDraw(): Boolean {
+            val tabsScreenTop = top + binding.tabs.top
+            if (top != lastTop || tabsScreenTop != lastTabsTop) {
+              Log.d(
+                  "ACS_BS",
+                  "preDraw sheetTop=$top sheetBottom=$bottom sheetTabsScreenTop=$tabsScreenTop sheetTabsScreenBottom=${top + binding.tabs.bottom} headerHeight=${binding.headerContainer.height} sheetElevation=$elevation sheetZ=$translationZ rootTop=${binding.root.top} rootBottom=${binding.root.bottom} rootOpaque=${binding.root.isOpaque} rootBg=${binding.root.background} rootLp=${binding.root.layoutParams} sheetOpaque=$isOpaque sheetBg=$background")
+              lastTop = top
+              lastTabsTop = tabsScreenTop
+            }
+            return true
+          }
+        }
+    )
 
     val mediator =
       TabLayoutMediator(binding.tabs, binding.pager, true, true) { tab, position ->
@@ -219,6 +253,7 @@ constructor(
         override fun onGlobalLayout() {
           view.viewTreeObserver.removeOnGlobalLayoutListener(this)
           anchorOffset = view.height + SizeUtils.dp2px(1f)
+          Log.d("ACS_BS", "anchor appBarHeight=${view.height} anchorOffset=$anchorOffset")
 
           behavior.peekHeight = collapsedHeight.roundToInt()
           behavior.expandedOffset = anchorOffset
@@ -251,14 +286,31 @@ constructor(
     }
 
     val padding = insetBottom * paddingScale
+    val targetHeaderHeight = ((collapsedHeight + padding) * heightScale).roundToInt()
     binding.headerContainer.apply {
       updateLayoutParams<ViewGroup.LayoutParams> {
-        height = ((collapsedHeight + padding) * heightScale).roundToInt()
+        height = targetHeaderHeight
       }
       updatePaddingRelative(
         bottom = padding.roundToInt()
       )
     }
+
+    Log.d(
+        "ACS_BS",
+        "sheetSlide offset=$sheetOffset sheetTop=$top headerHeight=${binding.headerContainer.height} targetHeaderHeight=$targetHeaderHeight headerPadBottom=${binding.headerContainer.paddingBottom} sheetTabsTop=${binding.tabs.top} sheetTabsBottom=${binding.tabs.bottom}")
+  }
+
+  // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
+  override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+    if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
+        ev.actionMasked == MotionEvent.ACTION_UP ||
+        ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+      Log.d(
+          "ACS_BS",
+          "touch action=${ev.actionMasked} y=${ev.y} state=${behavior.state} sheetTop=$top pagerTop=${binding.pager.top} pagerBottom=${binding.pager.bottom}")
+    }
+    return super.dispatchTouchEvent(ev)
   }
 
   fun showChild(index: Int) {
