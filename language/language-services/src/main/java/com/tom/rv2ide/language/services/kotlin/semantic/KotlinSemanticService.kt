@@ -4,6 +4,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.analysisExceptio
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.isRequestCancellation
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.CompletionParams
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionParams
 import com.tom.rv2ide.lsp.models.DefinitionResult
@@ -31,9 +32,15 @@ internal class KotlinSemanticService(
     closed.set(true)
   }
 
-  suspend fun complete(params: CompletionParams): CompletionResult =
-      execute(params.file, params.position, params.documentVersion, params.documentRevision,
-          params.cancelChecker, { CompletionResult(emptyList()) }, params.prefix) { backend.complete(it) }
+  suspend fun complete(params: CompletionParams): CompletionResult {
+    val content = params.content ?: FileManager.getActiveDocumentSnapshot(params.file)?.content
+    if (content != null &&
+        shouldSkipCompletionAfterWhitespace(content, params.position, params.prefix)) {
+      return CompletionResult(emptyList())
+    }
+    return execute(params.file, params.position, params.documentVersion, params.documentRevision,
+        params.cancelChecker, { CompletionResult(emptyList()) }, params.prefix) { backend.complete(it) }
+  }
 
   suspend fun hover(params: DefinitionParams): MarkupContent =
       execute(params.file, params.position, params.documentVersion, params.documentRevision,

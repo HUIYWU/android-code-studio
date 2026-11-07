@@ -18,6 +18,8 @@
 package com.tom.rv2ide.editor.language.treesitter
 
 import android.content.Context
+import com.tom.rv2ide.editor.language.newline.TSBracketsHandler
+import com.tom.rv2ide.editor.language.newline.TSCStyleBracketsHandler
 import com.tom.rv2ide.editor.language.treesitter.TreeSitterLanguage.Factory
 import com.tom.rv2ide.lsp.api.ILanguageServer
 import com.tom.rv2ide.lsp.api.ILanguageServerRegistry
@@ -48,6 +50,9 @@ open class KotlinLanguage(context: Context) :
   override fun checkIsCompletionChar(c: Char): Boolean {
     return MyCharacter.isJavaIdentifierPart(c) || c == '.'
   }
+
+  override fun createNewlineHandlers(): Array<TSBracketsHandler> =
+      arrayOf(TSCStyleBracketsHandler(this))
 
   override fun getInterruptionLevel(): Int {
     return INTERRUPTION_LEVEL_NONE

@@ -1378,7 +1378,7 @@ abstract class BaseEditorActivity :
         }
 
     content.apply {
-      bottomSheet.setOffsetAnchor(editorAppBarLayout)
+      bottomSheet.setOffsetAnchor(editorAppBarLayout, tabs)
       viewContainer.viewTreeObserver.addOnGlobalLayoutListener(observer)
     }
   }

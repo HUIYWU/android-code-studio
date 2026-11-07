@@ -50,9 +50,7 @@
       android:id="@+id/progress_indicator"
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
-      android:indeterminate="true"
-      app:waveAmplitude="1dp"
-      app:wavelength="20dp" />
+      android:indeterminate="true"/>
 
     <com.google.android.material.tabs.TabLayout
       android:id="@+id/tabs"

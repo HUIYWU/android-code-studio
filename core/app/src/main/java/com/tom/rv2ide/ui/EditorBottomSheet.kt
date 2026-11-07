@@ -24,13 +24,13 @@ import android.util.AttributeSet
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.widget.RelativeLayout
 import androidx.annotation.GravityInt
 import androidx.appcompat.widget.TooltipCompat
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnLayout
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.core.view.updatePaddingRelative
@@ -213,28 +213,40 @@ constructor(
     behavior.isGestureInsetBottomIgnored = isVisible
   }
 
-  fun setOffsetAnchor(view: View) {
+  fun setOffsetAnchor(view: View, excludedChild: View) {
+    fun updateAnchor() {
+      val excludedHeight =
+          if (excludedChild.visibility != View.GONE) excludedChild.height else 0
+      anchorOffset = (view.height - excludedHeight) + SizeUtils.dp2px(1f)
+
+      behavior.peekHeight = collapsedHeight.roundToInt()
+      behavior.expandedOffset = anchorOffset
+      behavior.isGestureInsetBottomIgnored = isImeVisible
+
+      binding.root.updatePadding(bottom = anchorOffset + insetBottom)
+      val sheetOffset =
+          when (behavior.state) {
+            BottomSheetBehavior.STATE_EXPANDED -> 1f
+            BottomSheetBehavior.STATE_COLLAPSED -> 0f
+            else -> behavior.calculateSlideOffset()
+          }
+      onSlide(sheetOffset)
+
+      if (behavior.state == BottomSheetBehavior.STATE_EXPANDED) {
+        requestLayout()
+      }
+    }
+
     val listener =
-      object : ViewTreeObserver.OnGlobalLayoutListener {
-        override fun onGlobalLayout() {
-          view.viewTreeObserver.removeOnGlobalLayoutListener(this)
-          anchorOffset = view.height + SizeUtils.dp2px(1f)
-
-          behavior.peekHeight = collapsedHeight.roundToInt()
-          behavior.expandedOffset = anchorOffset
-          behavior.isGestureInsetBottomIgnored = isImeVisible
-
-          binding.root.updatePadding(bottom = anchorOffset + insetBottom)
-          binding.headerContainer.apply {
-            updatePaddingRelative(bottom = paddingBottom + insetBottom)
-            updateLayoutParams<ViewGroup.LayoutParams> {
-              height = (collapsedHeight + insetBottom).roundToInt()
-            }
+        View.OnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+          if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+            updateAnchor()
           }
         }
-      }
 
-    view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+    view.addOnLayoutChangeListener(listener)
+    excludedChild.addOnLayoutChangeListener(listener)
+    view.doOnLayout { updateAnchor() }
   }
 
   fun onSlide(sheetOffset: Float) {
