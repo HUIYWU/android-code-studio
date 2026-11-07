@@ -23,16 +23,22 @@
   android:layout_height="match_parent"
   android:animateLayoutChanges="true">
 
+  <!--
+    These three attributes must stay together:
+    - android:elevation="0dp": keeps the AppBar at Z=0 so it cannot draw above the bottom sheet.
+    - android:stateListAnimator="@": removes Material3's elevation animator; without it, liftOnScroll=false falls through to the default 3dp elevation branch.
+    - app:liftOnScroll="false": prevents the AppBar from entering the lifted state while the editor list scrolls, which would raise it above the sheet and expose file tabs over the sheet tabs.
+  -->
   <com.google.android.material.appbar.AppBarLayout
     android:id="@+id/editor_appBarLayout"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@android:color/transparent"
-    android:elevation="0dp"
     android:fitsSystemWindows="false"
+    android:elevation="0dp"
     android:stateListAnimator="@null"
-    app:layout_behavior="com.google.android.material.appbar.AppBarLayout$Behavior"
-    app:liftOnScroll="false">
+    app:liftOnScroll="false"
+    app:layout_behavior="com.google.android.material.appbar.AppBarLayout$Behavior">
 
     <com.tom.rv2ide.ui.ExtendedMenuToolbar
       android:id="@+id/editor_toolbar"

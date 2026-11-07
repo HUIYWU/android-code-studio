@@ -18,7 +18,6 @@
 package com.tom.rv2ide.fragments
 
 import android.os.Bundle
-import android.util.Log
 import android.view.View
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -48,22 +47,6 @@ abstract class RecyclerViewFragment<A : RecyclerView.Adapter<*>> :
     binding.root.apply {
       layoutManager = onCreateLayoutManager()
       adapter = unsavedAdapter ?: onCreateAdapter()
-
-      // TODO(BS-FLICKER-EXPERIMENT) temporary logcat instrumentation.
-      addOnScrollListener(
-          object : RecyclerView.OnScrollListener() {
-            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
-              Log.d("ACS_BS", "rvScrollState state=$newState")
-            }
-
-            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-              val manager = recyclerView.layoutManager as? LinearLayoutManager
-              Log.d(
-                  "ACS_BS",
-                  "rvScroll dx=$dx dy=$dy first=${manager?.findFirstVisibleItemPosition()} last=${manager?.findLastVisibleItemPosition()} count=${recyclerView.childCount} canUp=${recyclerView.canScrollVertically(-1)} canDown=${recyclerView.canScrollVertically(1)}")
-            }
-          }
-      )
     }
   }
 
