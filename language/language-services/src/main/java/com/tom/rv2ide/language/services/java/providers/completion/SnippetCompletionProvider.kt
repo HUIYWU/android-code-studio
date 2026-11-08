@@ -26,8 +26,6 @@ import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.lsp.snippets.ISnippet
-import com.tom.rv2ide.preferences.internal.EditorPreferences
-import io.github.rosemoe.sora.text.TextUtils
 import java.nio.file.Path
 import openjdk.source.tree.ClassTree
 import openjdk.source.tree.CompilationUnitTree
@@ -53,7 +51,6 @@ class SnippetCompletionProvider(
       endsWithParen: Boolean,
   ): CompletionResult {
     val scope = findSnippetScope(path) ?: return CompletionResult.EMPTY
-    val indent = spacesBeforeCursor(task.root(file).sourceFile.getCharContent(true))
     val snippets = mutableListOf<ISnippet>()
 
     val repository = try {
@@ -85,26 +82,10 @@ class SnippetCompletionProvider(
         continue
       }
 
-      items.add(snippetItem(snippet, matchLevel, partial, indent))
+      items.add(snippetItem(snippet, matchLevel))
     }
 
     return CompletionResult(items)
-  }
-
-  private fun spacesBeforeCursor(charContent: CharSequence?): Int {
-    charContent ?: return 0
-    var start = cursor.toInt()
-    while (start >= 0) {
-      val c = charContent[start]
-      if (c == '\n' || !c.isWhitespace()) {
-        break
-      }
-      --start
-    }
-    return TextUtils.countLeadingSpaceCount(
-        charContent.substring(start, cursor.toInt()),
-        EditorPreferences.tabSize,
-    )
   }
 
   private fun findSnippetScope(path: TreePath?): TreePath? {

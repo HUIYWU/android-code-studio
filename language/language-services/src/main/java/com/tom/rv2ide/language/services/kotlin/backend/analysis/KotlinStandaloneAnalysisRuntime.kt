@@ -237,7 +237,7 @@ internal class KotlinStandaloneAnalysisRuntime(
                     (candidate.ideLabel to candidate.completionKind.unimportedShadowingKind()) in visibleKeys
                   }
                 }
-            val snippetItems = snippetCompletionItems(clientPrefix, file, offset, element)
+            val snippetItems = snippetCompletionItems(file, offset, element)
             val symbolAndSnippets =
                 if (snippetItems.isEmpty()) {
                   symbolItems
@@ -258,7 +258,7 @@ internal class KotlinStandaloneAnalysisRuntime(
                   symbolAndSnippets
                 } else {
                   symbolAndSnippets + keywordItems.filterNot { keyword ->
-                    keyword.ideLabel in snippetLabels ||
+                    (clientPrefix.isNotEmpty() && keyword.ideLabel in snippetLabels) ||
                         symbolItems.any {
                           it.ideLabel == keyword.ideLabel && it.completionKind == keyword.completionKind
                         }

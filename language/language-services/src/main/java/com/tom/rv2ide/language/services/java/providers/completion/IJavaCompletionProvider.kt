@@ -42,6 +42,7 @@ import com.tom.rv2ide.lsp.models.ICompletionData
 import com.tom.rv2ide.lsp.models.InsertTextFormat.SNIPPET
 import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.lsp.models.MethodCompletionData
+import com.tom.rv2ide.lsp.models.SnippetDescription
 import com.tom.rv2ide.lsp.snippets.ISnippet
 import com.tom.rv2ide.preferences.utils.indentationString
 import com.tom.rv2ide.progress.ProgressManager.Companion.abortIfCancelled
@@ -305,8 +306,6 @@ abstract class IJavaCompletionProvider(
   protected open fun snippetItem(
       snippet: ISnippet,
       matchLevel: MatchLevel,
-      partial: String,
-      indent: Int,
   ): CompletionItem {
     return JavaCompletionItem().apply {
       this.ideLabel = snippet.prefix
@@ -314,15 +313,11 @@ abstract class IJavaCompletionProvider(
       this.completionKind = CompletionItemKind.SNIPPET
       this.matchLevel = matchLevel
       this.ideSortText = "00000${snippet.prefix}"
-      this.snippetDescription = describeSnippet(partial)
+      this.snippetDescription = SnippetDescription(selectedLength = 0, deleteSelected = true)
 
-      val indentation = indentationString(indent)
       this.insertTextFormat = SNIPPET
       this.insertText =
-          snippet.body
-              .joinToString(separator = "\n")
-              .replace("\t", indentationString)
-              .replace("\n", "\n${indentation}")
+          snippet.body.joinToString(separator = "\n").replace("\t", indentationString)
     }
   }
 

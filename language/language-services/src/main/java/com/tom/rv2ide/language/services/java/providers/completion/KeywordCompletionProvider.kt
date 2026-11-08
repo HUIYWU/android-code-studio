@@ -55,12 +55,13 @@ class KeywordCompletionProvider(
     }
 
     val level: Tree = findKeywordLevel(path)
-    var keywords = arrayOf<String>()
-    when (level) {
-      is CompilationUnitTree -> keywords = TOP_LEVEL_KEYWORDS
-      is ClassTree -> keywords = CLASS_BODY_KEYWORDS
-      is MethodTree -> keywords = METHOD_BODY_KEYWORDS
-    }
+    val keywords =
+        when (level) {
+          is CompilationUnitTree -> UNRESOLVED_KEYWORDS
+          is ClassTree -> CLASS_BODY_KEYWORDS
+          is MethodTree -> METHOD_BODY_KEYWORDS
+          else -> EMPTY_KEYWORDS
+        }
 
     abortIfCancelled()
     abortCompletionIfCancelled()
@@ -160,5 +161,12 @@ class KeywordCompletionProvider(
             "false",
             "null",
         )
+
+    private val UNRESOLVED_KEYWORDS =
+        (TOP_LEVEL_KEYWORDS.asList() + CLASS_BODY_KEYWORDS.asList() + METHOD_BODY_KEYWORDS.asList())
+            .distinct()
+            .toTypedArray()
+
+    private val EMPTY_KEYWORDS = emptyArray<String>()
   }
 }
