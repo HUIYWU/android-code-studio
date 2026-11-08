@@ -175,7 +175,7 @@ abstract class TreeSitterLanguage(
         return DEF_IDENT_ADV
       }
 
-      return indentNxtLine - indentLine
+      return (indentNxtLine - indentLine).coerceAtLeast(0)
     } catch (e: Exception) {
       log.error("An error occurred computing indentation at line:column::{}:{}", line, column, e)
       DEF_IDENT_ADV
