@@ -26,6 +26,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolve
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.resolveSingleSignatureCall
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureArgumentIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.signatureDisplayName
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.snippetCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedExtensionCompletionItems
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.unimportedShadowingKind
@@ -236,15 +237,31 @@ internal class KotlinStandaloneAnalysisRuntime(
                     (candidate.ideLabel to candidate.completionKind.unimportedShadowingKind()) in visibleKeys
                   }
                 }
+            val snippetItems = snippetCompletionItems(clientPrefix, file, offset, element)
+            val symbolAndSnippets =
+                if (snippetItems.isEmpty()) {
+                  symbolItems
+                } else {
+                  request.cancelChecker.abortIfCancelled()
+                  symbolItems + snippetItems.filterNot { snippet ->
+                    symbolItems.any {
+                      it.ideLabel == snippet.ideLabel && it.completionKind == snippet.completionKind
+                    }
+                  }
+                }
+            val snippetLabels =
+                if (snippetItems.isEmpty()) emptySet()
+                else snippetItems.mapTo(HashSet()) { it.ideLabel }
             val keywordItems = keywordCompletionItems(clientPrefix, file, offset, element, request.cancelChecker)
             val merged =
                 if (keywordItems.isNullOrEmpty()) {
-                  symbolItems
+                  symbolAndSnippets
                 } else {
-                  symbolItems + keywordItems.filterNot { keyword ->
-                    symbolItems.any {
-                      it.ideLabel == keyword.ideLabel && it.completionKind == keyword.completionKind
-                    }
+                  symbolAndSnippets + keywordItems.filterNot { keyword ->
+                    keyword.ideLabel in snippetLabels ||
+                        symbolItems.any {
+                          it.ideLabel == keyword.ideLabel && it.completionKind == keyword.completionKind
+                        }
                   }
                 }
             CompletionResult(merged)

@@ -1,8 +1,24 @@
 {
   "fun": {
-    "desc": "Create a function",
+    "desc": "Create a member function",
     "body": [
       "fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "pfun": {
+    "desc": "Create a private function",
+    "body": [
+      "private fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "ofun": {
+    "desc": "Create an override function",
+    "body": [
+      "override fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
       "\t$0",
       "}"
     ]
@@ -33,6 +49,14 @@
       "}"
     ]
   },
+  "constructor": {
+    "desc": "Create a secondary constructor",
+    "body": [
+      "constructor(${1:params}) {",
+      "\t$0",
+      "}"
+    ]
+  },
   "companion": {
     "desc": "Create a companion object",
     "body": [
@@ -45,52 +69,6 @@
     "desc": "Create an init block",
     "body": [
       "init {",
-      "\t$0",
-      "}"
-    ]
-  },
-  "override": {
-    "desc": "Create an override function",
-    "body": [
-      "override fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
-      "\t$0",
-      "}"
-    ]
-  },
-  "getter": {
-    "desc": "Create a getter",
-    "body": [
-      "get() = ${1:value}"
-    ]
-  },
-  "setter": {
-    "desc": "Create a setter",
-    "body": [
-      "set(value) {",
-      "\t${1:field} = value",
-      "}"
-    ]
-  },
-  "private": {
-    "desc": "Create a private function",
-    "body": [
-      "private fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
-      "\t$0",
-      "}"
-    ]
-  },
-  "protected": {
-    "desc": "Create a protected function",
-    "body": [
-      "protected fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
-      "\t$0",
-      "}"
-    ]
-  },
-  "internal": {
-    "desc": "Create an internal function",
-    "body": [
-      "internal fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
       "\t$0",
       "}"
     ]

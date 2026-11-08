@@ -17,6 +17,14 @@
       "}"
     ]
   },
+  "ifnot": {
+    "desc": "Create an if-not-null check",
+    "body": [
+      "if (${1:value} != null) {",
+      "\t$0",
+      "}"
+    ]
+  },
   "when": {
     "desc": "Create a when expression",
     "body": [
@@ -28,9 +36,17 @@
     ]
   },
   "for": {
-    "desc": "Create a for loop",
+    "desc": "Create a for-in loop",
     "body": [
       "for (${1:item} in ${2:collection}) {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "fori": {
+    "desc": "Create an indexed for loop",
+    "body": [
+      "for (${1:i} in 0 until ${2:count}) {",
       "\t$0",
       "}"
     ]
@@ -43,6 +59,14 @@
       "}"
     ]
   },
+  "dowhile": {
+    "desc": "Create a do-while loop",
+    "body": [
+      "do {",
+      "\t$0",
+      "} while (${1:condition})"
+    ]
+  },
   "try": {
     "desc": "Create a try-catch block",
     "body": [
@@ -53,20 +77,30 @@
       "}"
     ]
   },
-  "val": {
-    "desc": "Create a val property",
+  "tryf": {
+    "desc": "Create a try-finally block",
     "body": [
-      "val ${1:propertyName}: ${2:Type} = ${3:value}"
+      "try {",
+      "\t$0",
+      "} finally {",
+      "\t${1:// cleanup}",
+      "}"
+    ]
+  },
+  "val": {
+    "desc": "Create a local val",
+    "body": [
+      "val ${1:name}: ${2:Type} = ${3:value}"
     ]
   },
   "var": {
-    "desc": "Create a var property",
+    "desc": "Create a local var",
     "body": [
-      "var ${1:propertyName}: ${2:Type} = ${3:value}"
+      "var ${1:name}: ${2:Type} = ${3:value}"
     ]
   },
   "fun": {
-    "desc": "Create a function",
+    "desc": "Create a local function",
     "body": [
       "fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
       "\t$0",

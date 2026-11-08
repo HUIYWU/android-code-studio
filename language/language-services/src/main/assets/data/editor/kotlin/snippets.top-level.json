@@ -12,7 +12,13 @@
     "body": [
       "data class ${1:ClassName}(",
       "\t${2:param}: ${3:Type}",
-      ") {",
+      ")"
+    ]
+  },
+  "sealed": {
+    "desc": "Create a sealed class",
+    "body": [
+      "sealed class ${1:ClassName} {",
       "\t$0",
       "}"
     ]
@@ -35,6 +41,12 @@
       "}"
     ]
   },
+  "annotation": {
+    "desc": "Create an annotation class",
+    "body": [
+      "annotation class ${1:AnnotationName}"
+    ]
+  },
   "object": {
     "desc": "Create an object",
     "body": [
@@ -47,6 +59,14 @@
     "desc": "Create a top-level function",
     "body": [
       "fun ${1:functionName}(${2:params}): ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ]
+  },
+  "main": {
+    "desc": "Create a main function",
+    "body": [
+      "fun main() {",
       "\t$0",
       "}"
     ]
@@ -73,18 +93,6 @@
     "desc": "Create a type alias",
     "body": [
       "typealias ${1:AliasName} = ${2:OriginalType}"
-    ]
-  },
-  "import": {
-    "desc": "Create an import statement",
-    "body": [
-      "import ${1:package.name.ClassName}"
-    ]
-  },
-  "package": {
-    "desc": "Create a package declaration",
-    "body": [
-      "package ${1:com.example.package}"
     ]
   }
 }
