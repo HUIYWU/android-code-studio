@@ -25,20 +25,7 @@
   <string name="terminal_close_session">关闭会话</string>
   <string name="edit">编辑</string>
   <string name="reset">重置</string>
-  <string name="updater_update_available">有可用更新</string>
   <string name="updater_download">下载</string>
-  <string name="updater_view_in_browser">在浏览器中查看</string>
-  <string name="updater_later">稍后</string>
-  <string name="updater_cancel">取消</string>
-  <string name="updater_downloading_update">正在下载更新</string>
-  <string name="updater_new_version_available">发现新版本 %s！</string>
-  <string name="updater_current_architecture">设备架构：%s</string>
-  <string name="updater_target_version_code">目标版本号：%d</string>
-  <string name="updater_available_variants">可用变体：%s</string>
-  <string name="updater_preparing_download">正在准备下载…</string>
-  <string name="updater_progress_format">%1$d MB / %2$d MB</string>
-  <string name="updater_enable_install_permission">请启用“安装未知应用”权限后重试</string>
-  <string name="updater_changelog_failed">无法加载更新日志</string>
   <string name="app_logs">应用日志</string>
   <string name="ide_logs">IDE 日志</string>
   <!-- AndroidIDE-R -->

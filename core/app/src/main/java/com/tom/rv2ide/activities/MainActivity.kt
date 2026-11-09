@@ -49,7 +49,6 @@ import java.io.File
 
 class MainActivity : EdgeToEdgeIDEActivity() {
 
-  private lateinit var tomIDEUpdater: TomIDEUpdater
   private val viewModel by viewModels<MainViewModel>()
   private var _binding: ActivityMainBinding? = null
 
@@ -82,9 +81,6 @@ class MainActivity : EdgeToEdgeIDEActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    tomIDEUpdater = TomIDEUpdater(this)
-    // tomIDEUpdater.checkForUpdates()
-
     // Only a fresh launch should auto-open the last project. This used to run on every onCreate,
     // which meant that any recreation (configuration change, and now the theme-staleness recreate in
     // BaseIDEActivity) could jump straight back into the last project while the user was sitting on
@@ -220,7 +216,6 @@ class MainActivity : EdgeToEdgeIDEActivity() {
   }
 
   override fun onDestroy() {
-    tomIDEUpdater.cancelDownload()
     ITemplateProvider.getInstance().release()
     super.onDestroy()
     _binding = null

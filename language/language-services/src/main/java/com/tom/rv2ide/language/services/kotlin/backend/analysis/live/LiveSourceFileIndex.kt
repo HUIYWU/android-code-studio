@@ -397,15 +397,6 @@ internal class LiveSourceFileIndex(
                   else -> "NONE"
                 }
                 logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity()) { "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}" }
-                KlsLogs.debug(
-                    "Kotlin incremental edit classification: path={}, association={}, transition={}, declarationsPreserved={}, declarationsBefore={}, declarationsAfter={}",
-                    path,
-                    functionAssociation,
-                    transition,
-                    declarationsPreserved,
-                    declarationsBefore.size,
-                    declarationsAfter.size,
-                )
 val modificationService = KaSourceModificationService.getInstance(project)
                   stage = "modification-service"
                  // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
@@ -413,11 +404,8 @@ val modificationService = KaSourceModificationService.getInstance(project)
                 // TODO(ACS-ANALYSIS-EXPERIMENT): Verify additional declaration-with-body transitions.
                 val modificationEvent = when {
                     // A rebuilt non-local declaration has no FIR element for the current PSI; only a file-level target forces out-of-block invalidation.
-                    // TODO(ACS-ANALYSIS-EXPERIMENT): Remove this marker after the brace-deletion diagnostics repro passes on device.
                     !declarationsPreserved -> {
-                      val invalidBefore = declarationsBefore.count { !it.isValid }
-                      val detail = "event=OutOfBlock; reason=declarations-replaced; before=${declarationsBefore.size}; after=${declarationsAfter.size}; invalidBefore=$invalidBefore; functionAssociation=$functionAssociation; transition=$transition"
-                      logLive("edit-structure-invalidation", path, current.file, edit.targetIdentity(), detail)
+                      val detail = "event=OutOfBlock; reason=declarations-replaced; before=${declarationsBefore.size}; after=${declarationsAfter.size}; functionAssociation=$functionAssociation; transition=$transition"
                       modificationService.handleElementModification(current.file, KaElementModificationType.Unknown)
                       detail
                     }
