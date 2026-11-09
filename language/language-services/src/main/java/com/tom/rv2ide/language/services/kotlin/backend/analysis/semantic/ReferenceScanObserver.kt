@@ -11,6 +11,8 @@ internal interface ReferenceScanObserver {
 
   fun referenceResolved(path: Path) = Unit
 
+  fun beforePublish() = Unit
+
   fun fileFailed(path: Path) = Unit
 
   companion object {

@@ -6,7 +6,9 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTe
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.runAnalysis
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withRuntime
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisTestSupport.withWorkspace
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.ReferenceScanObserver
 import com.tom.rv2ide.lsp.models.LineIndex
+import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -815,6 +817,57 @@ class KotlinAnalysisReferencesTargetsTest {
               LineIndex.from(content).indexToPosition(content.indexOf("value.value()")).line
           assertTrue(references.locations.any { it.range.start.line == superLine })
           assertTrue(references.locations.none { it.range.start.line == derivedCallLine })
+        }
+      } finally {
+        closeDocument(file)
+        Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun cancelBeforePublishReturnsNoPartialResult() {
+    withWorkspace {
+      val file = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ReferenceCancelPublish.kt")
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app
+
+          fun cancelTarget(): String = "x"
+
+          fun useCancelTarget(): String = cancelTarget() + cancelTarget()
+      """.trimIndent() + "\n"
+      Files.write(file, content.toByteArray(Charsets.UTF_8))
+      openDocument(file, content, version = 1, revision = 1L)
+      val checker = ICancelChecker.Default()
+      val observer =
+          object : ReferenceScanObserver {
+            override fun beforePublish() {
+              checker.cancel()
+            }
+          }
+      try {
+        withRuntime(workspace, observer) { runtime ->
+          runAnalysis { runtime.onFileOpened(file) }
+          val outcome = runCatching {
+            runAnalysis {
+              runtime.findReferences(
+                  request(
+                      file,
+                      content,
+                      "cancelTarget",
+                      occurrence = 1,
+                      includeDeclaration = true,
+                      cancelChecker = checker,
+                  )
+              )
+            }
+          }
+          assertTrue("search never reached publish", checker.isCancelled())
+          val references = outcome.getOrNull()
+          assertTrue(
+              "cancelled search published ${references?.locations}",
+              references == null || references.locations.isEmpty(),
+          )
         }
       } finally {
         closeDocument(file)

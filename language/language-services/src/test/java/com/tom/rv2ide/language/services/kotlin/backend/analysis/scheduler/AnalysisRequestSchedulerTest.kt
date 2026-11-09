@@ -274,4 +274,57 @@ class AnalysisRequestSchedulerTest {
     }
   }
 
+  @Test
+  fun waitForPendingMutationsRunsQueuedMutationBeforeReferences() {
+    val scheduler = AnalysisRequestScheduler("acs-kotlin-analysis-pending-mutation-test")
+    val path = Path.of("/project/Main.kt")
+    val gateEntered = CountDownLatch(1)
+    val gateRelease = CountDownLatch(1)
+    val executionOrder = mutableListOf<String>()
+    val referencesExecuted = CountDownLatch(1)
+    try {
+      scheduler.submit(
+          kind = AnalysisRequestKind.SEMANTIC,
+          path = path,
+          cancelChecker = ICancelChecker.NOOP,
+          action = {
+            gateEntered.countDown()
+            assertTrue(gateRelease.await(2, TimeUnit.SECONDS))
+            Unit
+          },
+      )
+      assertTrue(gateEntered.await(2, TimeUnit.SECONDS))
+
+      scheduler.submit(
+          kind = AnalysisRequestKind.INDEXING,
+          path = path,
+          cancelChecker = ICancelChecker.NOOP,
+          mutationPaths = setOf(path),
+          action = {
+            synchronized(executionOrder) { executionOrder += "mutation" }
+            Unit
+          },
+      )
+      scheduler.submit(
+          kind = AnalysisRequestKind.COMMAND,
+          path = path,
+          cancelChecker = ICancelChecker.NOOP,
+          waitForPendingMutations = true,
+          action = {
+            synchronized(executionOrder) { executionOrder += "references" }
+            referencesExecuted.countDown()
+            Unit
+          },
+      )
+
+      gateRelease.countDown()
+
+      assertTrue(referencesExecuted.await(2, TimeUnit.SECONDS))
+      assertEquals(listOf("mutation", "references"), executionOrder)
+    } finally {
+      gateRelease.countDown()
+      scheduler.close()
+    }
+  }
+
 }

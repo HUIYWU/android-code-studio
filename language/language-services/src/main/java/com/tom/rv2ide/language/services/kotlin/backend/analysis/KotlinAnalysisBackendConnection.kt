@@ -465,7 +465,12 @@ internal suspend fun findDefinition(
 internal suspend fun findReferences(
        request: KotlinSemanticRequest,
        isCurrent: (KotlinSemanticRequest) -> Boolean,
-   ): ReferenceResult? = executeSemanticRequest(request, AnalysisRequestKind.COMMAND, isCurrent) { runtime ->
+   ): ReferenceResult? = executeSemanticRequest(
+       request,
+       AnalysisRequestKind.COMMAND,
+       isCurrent,
+       waitForPendingMutations = true,
+   ) { runtime ->
      val epoch = requestScheduler.mutationEpoch()
      runtime.findReferences(request)?.takeIf { requestScheduler.mutationEpoch() == epoch }
    }
@@ -478,6 +483,7 @@ internal suspend fun signatureHelp(
       request: KotlinSemanticRequest,
       kind: AnalysisRequestKind,
       isCurrent: (KotlinSemanticRequest) -> Boolean,
+      waitForPendingMutations: Boolean = false,
       action: (KotlinAnalysisRuntime) -> T?,
   ): T? = suspendCancellableCoroutine { continuation ->
     fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
@@ -506,6 +512,7 @@ internal suspend fun signatureHelp(
           documentRevision = request.snapshot.revision,
           cancelChecker = request.cancelChecker,
           requiredMutationPaths = setOf(request.file),
+          waitForPendingMutations = waitForPendingMutations,
            action = {
              val currentRuntime = runtime
              val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null

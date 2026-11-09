@@ -27,6 +27,8 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiModificationTracker
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
+import org.jetbrains.kotlin.psi.KtClassOrObject
+import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedFunction
@@ -157,6 +159,19 @@ internal class LiveSourceFileIndex(
   private fun functionAnchor(function: KtNamedFunction?): FunctionAnchor? {
     val range = function?.textRange ?: return null
     return FunctionAnchor(range.startOffset, function.name)
+  }
+
+  // Only top-level and class-body declarations participate in FIR file structure; body-local declarations are rebuilt by in-block invalidation.
+  private fun nonLocalDeclarations(file: KtFile): List<KtDeclaration> {
+    val declarations = ArrayList<KtDeclaration>(file.declarations.size)
+    fun collect(items: List<KtDeclaration>) {
+      items.forEach { declaration ->
+        declarations.add(declaration)
+        if (declaration is KtClassOrObject) collect(declaration.declarations)
+      }
+    }
+    collect(file.declarations)
+    return declarations
   }
 
   // Reparsed declarations are valid event targets even when the old PSI object has been invalidated.
@@ -319,6 +334,7 @@ internal class LiveSourceFileIndex(
               val functionBefore = functionAt(current.file, start)
               val declarationAnchor = functionAnchor(functionBefore)
               val bodyBefore = functionBefore?.bodyBlockExpression
+              val declarationsBefore = nonLocalDeclarations(current.file)
               logIncrementalTrace("edit-body-before", path, current.file, edit.targetIdentity()) { "offset=$start; declarationAnchor=$declarationAnchor; ${bodyState(functionBefore)}" }
               document.replaceString(start, end, edit.replacementText)
               val targetText = document.text
@@ -369,6 +385,10 @@ internal class LiveSourceFileIndex(
                   else -> "STRUCTURAL_LOOKUP_MISSING"
                 }
                 val sameDeclaration = reusedBefore || reparsedSameDeclaration
+                val declarationsAfter = nonLocalDeclarations(current.file)
+                val declarationsPreserved =
+                    declarationsAfter.size == declarationsBefore.size &&
+                        declarationsAfter.indices.all { declarationsAfter[it] === declarationsBefore[it] }
                 val bodyAfter = functionAfter?.bodyBlockExpression
                 val transition = when {
                   !sameDeclaration -> "FUNCTION_ASSOCIATION_UNRESOLVED"
@@ -377,12 +397,30 @@ internal class LiveSourceFileIndex(
                   else -> "NONE"
                 }
                 logIncrementalTrace("edit-body-after", path, current.file, edit.targetIdentity()) { "offset=$start; transition=$transition; functionAssociation=$functionAssociation; sameDeclaration=$sameDeclaration; ${bodyState(functionAfter)}" }
+                KlsLogs.debug(
+                    "Kotlin incremental edit classification: path={}, association={}, transition={}, declarationsPreserved={}, declarationsBefore={}, declarationsAfter={}",
+                    path,
+                    functionAssociation,
+                    transition,
+                    declarationsPreserved,
+                    declarationsBefore.size,
+                    declarationsAfter.size,
+                )
 val modificationService = KaSourceModificationService.getInstance(project)
                   stage = "modification-service"
                  // Body insertion must report the new block; body removal keeps the old block only as removed-element metadata because the AST diff invalidates it.
                 // When the declaration PSI was replaced, the file event target forces FIR to classify removal as out-of-block and invalidate the source module.
                 // TODO(ACS-ANALYSIS-EXPERIMENT): Verify additional declaration-with-body transitions.
                 val modificationEvent = when {
+                    // A rebuilt non-local declaration has no FIR element for the current PSI; only a file-level target forces out-of-block invalidation.
+                    // TODO(ACS-ANALYSIS-EXPERIMENT): Remove this marker after the brace-deletion diagnostics repro passes on device.
+                    !declarationsPreserved -> {
+                      val invalidBefore = declarationsBefore.count { !it.isValid }
+                      val detail = "event=OutOfBlock; reason=declarations-replaced; before=${declarationsBefore.size}; after=${declarationsAfter.size}; invalidBefore=$invalidBefore; functionAssociation=$functionAssociation; transition=$transition"
+                      logLive("edit-structure-invalidation", path, current.file, edit.targetIdentity(), detail)
+                      modificationService.handleElementModification(current.file, KaElementModificationType.Unknown)
+                      detail
+                    }
                     sameDeclaration && bodyBefore == null && bodyAfter != null -> {
                       val detail = "event=ElementAdded; element=${bodyAfter.javaClass.simpleName}; eventElement=${bodyAfter.javaClass.simpleName}"
                       logIncrementalTrace("edit-modification-start", path, current.file, edit.targetIdentity()) { "$detail; ${trackerState()}" }

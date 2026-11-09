@@ -118,16 +118,17 @@ internal object KotlinAnalysisTestSupport {
        includeDeclaration: Boolean = false,
        occurrence: Int = 0,
        offset: Int? = null,
+       cancelChecker: ICancelChecker = ICancelChecker.NOOP,
    ): KotlinSemanticRequest {
      val resolvedOffset = offset ?: content.offsetOf(marker, occurrence)
      val position = LineIndex.from(content).indexToPosition(resolvedOffset)
-     val snapshot = requireNotNull(FileManager.getActiveDocumentSnapshot(file))
-     return KotlinSemanticRequest(
-         snapshot = ActiveDocumentSnapshot(file, snapshot.version, Instant.EPOCH, content, snapshot.revision),
-         line = position.line,
-         column = position.column,
-         backendGeneration = 1L,
-         cancelChecker = ICancelChecker.NOOP,
+val snapshot = requireNotNull(FileManager.getActiveDocumentSnapshot(file))
+      return KotlinSemanticRequest(
+          snapshot = ActiveDocumentSnapshot(file, snapshot.version, Instant.EPOCH, content, snapshot.revision),
+          line = position.line,
+          column = position.column,
+          backendGeneration = 1L,
+          cancelChecker = cancelChecker,
          prefix = marker,
          includeDeclaration = includeDeclaration,
      )

@@ -50,6 +50,7 @@ internal class AnalysisRequestScheduler(
       cancelChecker: ICancelChecker,
       requiredMutationPaths: Set<Path> = emptySet(),
       mutationPaths: Set<Path> = emptySet(),
+      waitForPendingMutations: Boolean = false,
       action: () -> T,
       cancellableAction: ((ICancelChecker) -> T)? = null,
   ): CompletableFuture<T?> {
@@ -59,7 +60,18 @@ internal class AnalysisRequestScheduler(
       return future
     }
     val (requiredMutationSequences, reservation) = synchronized(mutationLock) {
-      val required = requiredMutationPaths
+      val requiredPaths =
+          if (waitForPendingMutations) {
+            requiredMutationPaths +
+                reservedMutationSequences
+                    .filter { (path, sequence) ->
+                      sequence > (completedMutationSequences[path] ?: 0L)
+                    }
+                    .keys
+          } else {
+            requiredMutationPaths
+          }
+      val required = requiredPaths
           .map { it.normalize() }
           .distinct()
           .associateWith { reservedMutationSequences[it] ?: completedMutationSequences[it] ?: 0L }

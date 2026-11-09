@@ -8,6 +8,7 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveFileIdentity
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.ReferenceResult
@@ -96,6 +97,7 @@ internal data class ReferenceSearchPlan(
     val aliasConstructorClassIds: Set<ClassId>,
     val aliasWrittenName: String?,
     val declaration: ReferenceDeclarationSite?,
+    val declarationIdentity: LiveFileIdentity?,
     val includeDeclaration: Boolean,
     val scope: ReferenceScope,
     val stamp: ReferenceSearchStamp,
@@ -196,6 +198,7 @@ internal fun KaSession.buildReferencePlan(
       aliasConstructorClassIds = aliasConstructorClassIds,
       aliasWrittenName = aliasWrittenName,
       declaration = site,
+      declarationIdentity = site?.let { environment.liveIndex.currentIdentity(it.path) },
       includeDeclaration = includeDeclaration,
       scope = scope,
       stamp =
@@ -215,7 +218,7 @@ internal fun collectReferences(
     observer: ReferenceScanObserver = ReferenceScanObserver.NONE,
 ): ReferenceResult {
   val orderedPaths = LinkedHashSet<Path>()
-  orderedPaths.addAll(selectCandidatePaths(plan, environment))
+  orderedPaths.addAll(selectCandidatePaths(plan, environment, cancelChecker))
   val hits = ArrayList<ReferenceHit>()
   if (plan.includeDeclaration) {
     plan.declaration?.let { declaration ->
@@ -244,8 +247,15 @@ internal fun collectReferences(
     }
     hits += fileHits
   }
+  observer.beforePublish()
+  cancelChecker.abortIfCancelled()
   if (plan.stamp.metadataRevision != environment.metadataIndex.revision() ||
       plan.stamp.identityRevision != environment.liveIndex.identityRevision()) {
+    return ReferenceResult(emptyList())
+  }
+  val declaration = plan.declaration
+  if (declaration != null &&
+      environment.liveIndex.currentIdentity(declaration.path) != plan.declarationIdentity) {
     return ReferenceResult(emptyList())
   }
   return toReferenceResult(hits)
@@ -254,6 +264,7 @@ internal fun collectReferences(
 private fun selectCandidatePaths(
     plan: ReferenceSearchPlan,
     environment: LiveAnalysisEnvironment,
+    cancelChecker: ICancelChecker,
 ): List<Path> {
   val base =
       when (val scope = plan.scope) {
@@ -261,7 +272,13 @@ private fun selectCandidatePaths(
         is ReferenceScope.Modules -> environment.liveIndex.currentPaths()
         ReferenceScope.AllSource -> environment.liveIndex.currentPaths()
       }
-  val scoped = base.map { it.normalize() }.filter { isPathInScope(it, plan.scope, environment) }
+  val scoped =
+      base
+          .map { it.normalize() }
+          .filter {
+            cancelChecker.abortIfCancelled()
+            isPathInScope(it, plan.scope, environment)
+          }
   if (plan.scanAllNames) return scoped
   val candidates = LinkedHashSet<Path>()
   if (plan.searchNames.isNotEmpty()) {
@@ -274,6 +291,7 @@ private fun selectCandidatePaths(
     candidates.addAll(environment.metadataIndex.pathsWithAliasImports())
   }
   return scoped.filter { path ->
+    cancelChecker.abortIfCancelled()
     val metadata = environment.metadataIndex.metadata(path)
     val current = environment.liveIndex.currentIdentity(path)
     metadata == null ||
