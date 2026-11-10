@@ -54,6 +54,8 @@ import org.jetbrains.kotlin.cli.jvm.modules.CliJavaModuleResolver
 import org.jetbrains.kotlin.cli.jvm.modules.JavaModuleGraph
 import org.jetbrains.kotlin.analysis.api.standalone.base.java.KotlinStandaloneJavaModuleAccessibilityChecker
 import org.jetbrains.kotlin.analysis.api.standalone.base.java.KotlinStandaloneJavaModuleAnnotationsProvider
+import org.jetbrains.kotlin.analysis.low.level.api.fir.LLFirInternals
+import org.jetbrains.kotlin.analysis.low.level.api.fir.LLResolutionFacadeService
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.StandardFileSystems
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
@@ -85,7 +87,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipFile
 import kotlin.streams.asSequence
 
-@OptIn(KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class)
+@OptIn(KaExperimentalApi::class, KaImplementationDetail::class, KaPlatformInterface::class, K1Deprecation::class, LLFirInternals::class)
 internal class LiveAnalysisEnvironment(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
@@ -126,6 +128,12 @@ internal class LiveAnalysisEnvironment(
     private set
   lateinit var javaSourceIndex: JavaSourceIndex
     private set
+  private val diagnosticFacadeServiceLazy = lazy(LazyThreadSafetyMode.PUBLICATION) {
+    LLResolutionFacadeService(project)
+  }
+
+  val diagnosticFacadeService: LLResolutionFacadeService
+    get() = diagnosticFacadeServiceLazy.value
 
   fun binaryRootsFor(modulePath: String?): List<Path> {
     if (modulePath == null || !::runtimeGraph.isInitialized) return emptyList()

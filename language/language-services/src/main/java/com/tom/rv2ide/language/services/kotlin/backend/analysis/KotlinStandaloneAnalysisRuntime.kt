@@ -58,11 +58,12 @@ import org.jetbrains.kotlin.psi.KtCallElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtFunctionLiteral
 import org.jetbrains.kotlin.psi.KtNonPublicApi
+import org.jetbrains.kotlin.analysis.low.level.api.fir.LLFirInternals
 import org.jetbrains.kotlin.types.Variance
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 
-@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class)
+@OptIn(KaContextParameterApi::class, KaExperimentalApi::class, KaImplementationDetail::class, KaNonPublicApi::class, KtNonPublicApi::class, LLFirInternals::class)
 internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
@@ -137,7 +138,7 @@ internal class KotlinStandaloneAnalysisRuntime(
       cancelChecker.abortIfCancelled()
       if (live.isStale) return@withLiveKtFile null
       val diagnostics = live.analyzing(cancelChecker) { file ->
-          KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file)
+          KotlinAnalysisDiagnostics.collectDiagnosticsFor(this, file, env.diagnosticFacadeService)
         }
         DiagnosticResult(
            normalized,
