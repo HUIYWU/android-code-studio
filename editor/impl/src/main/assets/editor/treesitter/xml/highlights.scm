@@ -34,8 +34,6 @@
 (entity_ref) @xml.ref
 (char_ref) @xml.ref
 
-(comment) @comment
-
 (cdata_start) @cdata.start
 (cdata_end) @cdata.end
 (cdata) @cdata.data
