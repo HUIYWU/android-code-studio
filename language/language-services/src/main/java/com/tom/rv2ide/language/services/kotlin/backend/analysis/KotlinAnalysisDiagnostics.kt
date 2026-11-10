@@ -28,7 +28,14 @@ internal object KotlinAnalysisDiagnostics {
     val language = KotlinDiagnosticTemplates.currentLanguage()
     val parserItems =
         PsiTreeUtil.collectElementsOfType(file, PsiErrorElement::class.java).map { error ->
-          item(lineIndex, error.textRange, "PARSER_ERROR", error.errorDescription, DiagnosticSeverity.ERROR, "syntax")
+          item(
+              lineIndex,
+              error.textRange,
+              "PARSER_ERROR",
+              KotlinParserMessages.messageFor(error.errorDescription, language),
+              DiagnosticSeverity.ERROR,
+              "syntax",
+          )
         }
 
     val collected = collectCompilerDiagnostics(session, file, facadeService)

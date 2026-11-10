@@ -1,0 +1,133 @@
+# Kotlin PSI parser error messages.
+# Format: English<TAB>translation. Lines starting with # are comments.
+# Keys must stay byte-identical to the messages produced by KotlinParsing/KotlinExpressionParsing.
+# English reference baseline: every value equals its key.
+Expecting a top level declaration	Expecting a top level declaration
+Expecting a name	Expecting a name
+Expecting an expression	Expecting an expression
+Expecting an element	Expecting an element
+Expecting a statement	Expecting a statement
+Expecting identifier	Expecting identifier
+Expecting an identifier	Expecting an identifier
+Expecting '('	Expecting '('
+Expecting ')'	Expecting ')'
+Expecting '{'	Expecting '{'
+Expecting '}'	Expecting '}'
+Expecting '='	Expecting '='
+Expecting a type	Expecting a type
+Type expected	Type expected
+Type reference expected	Type reference expected
+Expecting member declaration	Expecting member declaration
+Expecting a class body	Expecting a class body
+Expecting function body	Expecting function body
+Unexpected token	Unexpected token
+Unexpected tokens	Unexpected tokens
+Unexpected symbol	Unexpected symbol
+Unclosed comment	Unclosed comment
+Missing '}	Missing '}
+Missing '>'	Missing '>'
+Expecting type parameter declaration	Expecting type parameter declaration
+Expecting ':' before the upper bound	Expecting ':' before the upper bound
+Expecting '.' before a property name	Expecting '.' before a property name
+Expecting '.' before a function name	Expecting '.' before a function name
+Expecting property name	Expecting property name
+Expecting property name or receiver type	Expecting property name or receiver type
+Expecting function name	Expecting function name
+Expecting function name or receiver type	Expecting function name or receiver type
+Expecting "file:" prefix for file annotations	Expecting "file:" prefix for file annotations
+Expecting "field:" prefix for field annotations	Expecting "field:" prefix for field annotations
+'class' keyword is expected after 'enum'	'class' keyword is expected after 'enum'
+Accessor body expected	Accessor body expected
+An -> is expected	An -> is expected
+An object expression cannot bind a name	An object expression cannot bind a name
+Annotations are not allowed in this position	Annotations are not allowed in this position
+Cannot rename all imported items to one identifier	Cannot rename all imported items to one identifier
+Destructuring declarations are only allowed for local variables/values	Destructuring declarations are only allowed for local variables/values
+Empty context parameter list	Empty context parameter list
+Expected annotation identifier after ':'	Expected annotation identifier after ':'
+Expected annotation identifier after '@'	Expected annotation identifier after '@'
+Expected annotation target before ':'	Expected annotation target before ':'
+Expecting "all:" prefix for all annotations	Expecting "all:" prefix for all annotations
+Expecting "delegate:" prefix for delegate annotations	Expecting "delegate:" prefix for delegate annotations
+Expecting "get:" prefix for get annotations	Expecting "get:" prefix for get annotations
+Expecting "param:" prefix for param annotations	Expecting "param:" prefix for param annotations
+Expecting "property:" prefix for property annotations	Expecting "property:" prefix for property annotations
+Expecting "receiver:" prefix for receiver annotations	Expecting "receiver:" prefix for receiver annotations
+Expecting "set:" prefix for set annotations	Expecting "set:" prefix for set annotations
+Expecting "setparam:" prefix for setparam annotations	Expecting "setparam:" prefix for setparam annotations
+Expecting '"'	Expecting '"'
+Expecting '(' to open a loop range	Expecting '(' to open a loop range
+Expecting ')	Expecting ')
+Expecting ','	Expecting ','
+Expecting '->'	Expecting '->'
+Expecting '->' or ','	Expecting '->' or ','
+Expecting '->' to specify return type of a function type	Expecting '->' to specify return type of a function type
+Expecting '.'	Expecting '.'
+Expecting ';' after the last enum entry or '}' to close enum class body	Expecting ';' after the last enum entry or '}' to close enum class body
+Expecting '['	Expecting '['
+Expecting ']'	Expecting ']'
+Expecting ']' to close the annotation list	Expecting ']' to close the annotation list
+Expecting 'catch' or 'finally'	Expecting 'catch' or 'finally'
+Expecting 'constructor' keyword	Expecting 'constructor' keyword
+Expecting 'in'	Expecting 'in'
+Expecting 'while' followed by a post-condition	Expecting 'while' followed by a post-condition
+Expecting '{' after 'init'	Expecting '{' after 'init'
+Expecting '{' to open a block	Expecting '{' to open a block
+Expecting '}' to close enum class body	Expecting '}' to close enum class body
+Expecting a '>'	Expecting a '>'
+Expecting a 'this' or 'super' constructor call	Expecting a 'this' or 'super' constructor call
+Expecting a block: { ... }	Expecting a block: { ... }
+Expecting a condition in parentheses '(...)'	Expecting a condition in parentheses '(...)'
+Expecting a contract effect	Expecting a contract effect
+Expecting a delegation specifier	Expecting a delegation specifier
+Expecting a list of annotations	Expecting a list of annotations
+Expecting a parameter declaration	Expecting a parameter declaration
+Expecting a variable name	Expecting a variable name
+Expecting a when-condition	Expecting a when-condition
+Expecting an argument	Expecting an argument
+Expecting an argument list	Expecting an argument list
+Expecting an expression, is-condition or in-condition	Expecting an expression, is-condition or in-condition
+Expecting an index element	Expecting an index element
+Expecting comma or ')'	Expecting comma or ')'
+Expecting exception variable declaration	Expecting exception variable declaration
+Expecting function type	Expecting function type
+Expecting identifier before '@' in label definition	Expecting identifier before '@' in label definition
+Expecting parameter name	Expecting parameter name
+Expecting primary constructor parameter list	Expecting primary constructor parameter list
+Expecting qualified name	Expecting qualified name
+Expecting type name	Expecting type name
+Expecting type parameter name	Expecting type parameter name
+Expecting val keyword	Expecting val keyword
+Expecting val or var keyword	Expecting val or var keyword
+Function body expected	Function body expected
+Function type expected expected	Function type expected expected
+Import must be placed on a single line	Import must be placed on a single line
+Keyword cannot be used as a reference	Keyword cannot be used as a reference
+Name expected	Name expected
+No '@' needed in annotation list	No '@' needed in annotation list
+No commas needed to separate annotations	No commas needed to separate annotations
+Only one type parameter list is allowed for a function	Only one type parameter list is allowed for a function
+Package directive and imports are forbidden in code fragments	Package directive and imports are forbidden in code fragments
+Package name must be a '.'-separated identifier list	Package name must be a '.'-separated identifier list
+Package name must be a '.'-separated identifier list placed on a single line	Package name must be a '.'-separated identifier list placed on a single line
+Parameter name expected	Parameter name expected
+Parameters must have type annotation	Parameters must have type annotation
+Property getter or setter expected	Property getter or setter expected
+Qualified name must be a '.'-separated identifier list	Qualified name must be a '.'-separated identifier list
+Receiver type is not allowed on a destructuring declaration	Receiver type is not allowed on a destructuring declaration
+There should be no space or comments before '@' in label reference	There should be no space or comments before '@' in label reference
+This syntax is reserved for future use; to call a reference, enclose it in parentheses: (foo::bar)(args)	This syntax is reserved for future use; to call a reference, enclose it in parentheses: (foo::bar)(args)
+Type alias parameters can't have bounds	Type alias parameters can't have bounds
+Type annotations are not allowed on destructuring declarations	Type annotations are not allowed on destructuring declarations
+Type arguments are not allowed	Type arguments are not allowed
+Type constraint expected	Type constraint expected
+Type constraints are not allowed when no type parameters declared	Type constraints are not allowed when no type parameters declared
+Type name expected	Type name expected
+Type parameter declaration expected	Type parameter declaration expected
+Type parameter name expected	Type parameter name expected
+Unexpected '&&', use 'if' to introduce additional conditions; see https://kotl.in/guards-in-when	Unexpected '&&', use 'if' to introduce additional conditions; see https://kotl.in/guards-in-when
+Unexpected token in a string template	Unexpected token in a string template
+Unexpected tokens (use ';' to separate expressions on the same line)	Unexpected tokens (use ';' to separate expressions on the same line)
+Unexpected type specification	Unexpected type specification
+Where clause is not allowed for objects	Where clause is not allowed for objects
+imports are only allowed in the beginning of file	imports are only allowed in the beginning of file

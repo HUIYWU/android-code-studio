@@ -1,0 +1,133 @@
+# Kotlin PSI parser error messages.
+# Format: English<TAB>translation. Lines starting with # are comments.
+# Keys must stay byte-identical to the messages produced by KotlinParsing/KotlinExpressionParsing.
+# Entries without a translation keep the English message.
+Expecting a top level declaration	此处需要顶层声明。
+Expecting a name	此处需要名称。
+Expecting an expression	此处需要表达式。
+Expecting an element	此处需要元素。
+Expecting a statement	此处需要语句。
+Expecting identifier	此处需要标识符。
+Expecting an identifier	此处需要标识符。
+Expecting '('	此处需要 '('。
+Expecting ')'	此处需要 ')'。
+Expecting '{'	此处需要 '{'。
+Expecting '}'	此处需要 '}'。
+Expecting '='	此处需要 '='。
+Expecting a type	此处需要类型。
+Type expected	此处需要类型。
+Type reference expected	此处需要类型引用。
+Expecting member declaration	此处需要成员声明。
+Expecting a class body	此处需要类体。
+Expecting function body	此处需要函数体。
+Unexpected token	意外的标记。
+Unexpected tokens	意外的标记。
+Unexpected symbol	意外的符号。
+Unclosed comment	注释未闭合。
+Missing '}	缺少 '}'。
+Missing '>'	缺少 '>'。
+Expecting type parameter declaration	此处需要类型参数声明。
+Expecting ':' before the upper bound	上界前需要 ':'。
+Expecting '.' before a property name	属性名前需要 '.'。
+Expecting '.' before a function name	函数名前需要 '.'。
+Expecting property name	此处需要属性名。
+Expecting property name or receiver type	此处需要属性名或接收者类型。
+Expecting function name	此处需要函数名。
+Expecting function name or receiver type	此处需要函数名或接收者类型。
+Expecting "file:" prefix for file annotations	file 注解需要以 "file:" 为前缀。
+Expecting "field:" prefix for field annotations	field 注解需要以 "field:" 为前缀。
+'class' keyword is expected after 'enum'	枚举声明中应在 'enum' 后使用 'class' 关键字。
+Accessor body expected	此处需要访问器函数体。
+An -> is expected	此处需要 '->'。
+An object expression cannot bind a name	对象表达式不能绑定名称。
+Annotations are not allowed in this position	此处不允许使用注解。
+Cannot rename all imported items to one identifier	不能将所有导入项重命名为同一个标识符。
+Destructuring declarations are only allowed for local variables/values	解构声明仅允许用于局部变量或值。
+Empty context parameter list	上下文参数列表不能为空。
+Expected annotation identifier after ':'	':' 后需要注解标识符。
+Expected annotation identifier after '@'	'@' 后需要注解标识符。
+Expected annotation target before ':'	':' 前需要注解使用处目标。
+Expecting "all:" prefix for all annotations	所有注解都需要以 "all:" 为前缀。
+Expecting "delegate:" prefix for delegate annotations	委托注解需要以 "delegate:" 为前缀。
+Expecting "get:" prefix for get annotations	getter 注解需要以 "get:" 为前缀。
+Expecting "param:" prefix for param annotations	参数注解需要以 "param:" 为前缀。
+Expecting "property:" prefix for property annotations	属性注解需要以 "property:" 为前缀。
+Expecting "receiver:" prefix for receiver annotations	接收者注解需要以 "receiver:" 为前缀。
+Expecting "set:" prefix for set annotations	setter 注解需要以 "set:" 为前缀。
+Expecting "setparam:" prefix for setparam annotations	setter 参数注解需要以 "setparam:" 为前缀。
+Expecting '"'	此处需要 '"'。
+Expecting '(' to open a loop range	循环范围前需要 '('。
+Expecting ')	此处需要 ')'。
+Expecting ','	此处需要 ','。
+Expecting '->'	此处需要 '->'。
+Expecting '->' or ','	此处需要 '->' 或 ','。
+Expecting '->' to specify return type of a function type	函数类型需要使用 '->' 指定返回类型。
+Expecting '.'	此处需要 '.'。
+Expecting ';' after the last enum entry or '}' to close enum class body	最后一个枚举项后需要 ';'，或使用 '}' 结束枚举类主体。
+Expecting '['	此处需要 '['。
+Expecting ']'	此处需要 ']'。
+Expecting ']' to close the annotation list	注解列表需要以 ']' 结束。
+Expecting 'catch' or 'finally'	此处需要 'catch' 或 'finally'。
+Expecting 'constructor' keyword	此处需要 'constructor' 关键字。
+Expecting 'in'	此处需要 'in'。
+Expecting 'while' followed by a post-condition	此处需要 'while' 以及后置条件。
+Expecting '{' after 'init'	'init' 后需要 '{'。
+Expecting '{' to open a block	此处需要 '{' 以开始代码块。
+Expecting '}' to close enum class body	此处需要 '}' 以结束枚举类主体。
+Expecting a '>'	此处需要 '>'。
+Expecting a 'this' or 'super' constructor call	此处需要 'this' 或 'super' 构造函数调用。
+Expecting a block: { ... }	此处需要代码块：{ ... }
+Expecting a condition in parentheses '(...)'	此处需要用括号括起条件 '(...)'。
+Expecting a contract effect	此处需要契约效果。
+Expecting a delegation specifier	此处需要委托说明符。
+Expecting a list of annotations	此处需要注解列表。
+Expecting a parameter declaration	此处需要参数声明。
+Expecting a variable name	此处需要变量名。
+Expecting a when-condition	此处需要 when 条件。
+Expecting an argument	此处需要实参。
+Expecting an argument list	此处需要实参列表。
+Expecting an expression, is-condition or in-condition	此处需要表达式、is 条件或 in 条件。
+Expecting an index element	此处需要索引表达式。
+Expecting comma or ')'	此处需要逗号或 ')'。
+Expecting exception variable declaration	此处需要异常变量声明。
+Expecting function type	此处需要函数类型。
+Expecting identifier before '@' in label definition	标签定义中的 '@' 前需要标识符。
+Expecting parameter name	此处需要参数名。
+Expecting primary constructor parameter list	此处需要主构造函数参数列表。
+Expecting qualified name	此处需要限定名称。
+Expecting type name	此处需要类型名称。
+Expecting type parameter name	此处需要类型参数名称。
+Expecting val keyword	此处需要 val 关键字。
+Expecting val or var keyword	此处需要 val 或 var 关键字。
+Function body expected	此处需要函数体。
+Function type expected expected	此处需要函数类型的期望类型。
+Import must be placed on a single line	import 声明必须位于同一行。
+Keyword cannot be used as a reference	关键字不能用作引用。
+Name expected	此处需要名称。
+No '@' needed in annotation list	注解列表中的每个注解前无需添加 '@'。
+No commas needed to separate annotations	分隔注解时无需使用逗号。
+Only one type parameter list is allowed for a function	函数只能有一个类型参数列表。
+Package directive and imports are forbidden in code fragments	代码片段中不允许出现 package 指令或 import 声明。
+Package name must be a '.'-separated identifier list	包名必须是以 '.' 分隔的标识符列表。
+Package name must be a '.'-separated identifier list placed on a single line	包名必须是位于同一行、以 '.' 分隔的标识符列表。
+Parameter name expected	此处需要参数名。
+Parameters must have type annotation	参数必须标注类型。
+Property getter or setter expected	此处需要属性 getter 或 setter。
+Qualified name must be a '.'-separated identifier list	限定名称必须是以 '.' 分隔的标识符列表。
+Receiver type is not allowed on a destructuring declaration	解构声明不能指定接收者类型。
+There should be no space or comments before '@' in label reference	标签引用中的 '@' 前不能有空格或注释。
+This syntax is reserved for future use; to call a reference, enclose it in parentheses: (foo::bar)(args)	此语法为未来用途保留；如需调用引用，请将其放在括号中：(foo::bar)(args)。
+Type alias parameters can't have bounds	类型别名的类型参数不能指定上界。
+Type annotations are not allowed on destructuring declarations	解构声明不能标注类型。
+Type arguments are not allowed	不允许使用类型实参。
+Type constraint expected	此处需要类型约束。
+Type constraints are not allowed when no type parameters declared	未声明类型参数时不能指定类型约束。
+Type name expected	此处需要类型名称。
+Type parameter declaration expected	此处需要类型参数声明。
+Type parameter name expected	此处需要类型参数名称。
+Unexpected '&&', use 'if' to introduce additional conditions; see https://kotl.in/guards-in-when	不应使用 '&&'，请改用 'if' 引入附加条件；详见 https://kotl.in/guards-in-when。
+Unexpected token in a string template	字符串模板中出现意外标记。
+Unexpected tokens (use ';' to separate expressions on the same line)	出现意外标记（同一行的表达式请使用 ';' 分隔）。
+Unexpected type specification	出现意外的类型说明。
+Where clause is not allowed for objects	对象不能使用 where 子句。
+imports are only allowed in the beginning of file	import 声明只能出现在文件开头。
