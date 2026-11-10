@@ -11,6 +11,7 @@ import java.util.Properties
 import java.util.concurrent.ConcurrentHashMap
 import org.jetbrains.kotlin.diagnostics.KtDiagnostic
 import org.jetbrains.kotlin.diagnostics.KtPsiDiagnostic
+import org.jetbrains.kotlin.diagnostics.SimpleKtDiagnosticRenderer
 
 internal object KotlinDiagnosticTemplates {
   private const val RESOURCE_PREFIX =
@@ -28,7 +29,8 @@ internal object KotlinDiagnosticTemplates {
     val renderer =
         runCatching { diagnostic.factory.ktRenderer }.getOrElse { return diagnostic.factory.name }
     val template = templates[diagnostic.factory.name] ?: return renderer.render(ktDiagnostic)
-    if ('{' !in template) return template
+    if (renderer is SimpleKtDiagnosticRenderer) return template
+    if ('{' !in template && "''" !in template) return template
     return runCatching {
           MessageFormat.format(template, *renderer.renderParameters(ktDiagnostic))
         }

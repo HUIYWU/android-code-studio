@@ -5,9 +5,9 @@ import org.jetbrains.kotlin.fir.analysis.diagnostics.CliFrontendDiagnostics
 import org.jetbrains.kotlin.fir.analysis.diagnostics.FirErrors
 import org.jetbrains.kotlin.fir.analysis.diagnostics.jvm.FirJvmErrors
 import org.jetbrains.kotlin.fir.builder.FirSyntaxErrors
+import org.jetbrains.kotlin.diagnostics.SimpleKtDiagnosticRenderer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class KotlinDiagnosticTemplateTest {
@@ -20,16 +20,19 @@ class KotlinDiagnosticTemplateTest {
     val names = factories.map { it.name }.toSet()
     val byName = factories.associateBy { it.name }
     val templates = KotlinDiagnosticTemplates.loadedTemplates("zh")
+    val englishTemplates = KotlinDiagnosticTemplates.loadedTemplates("en")
     assertFalse(templates.isEmpty())
-    assertTrue(KotlinDiagnosticTemplates.loadedTemplates("en").isEmpty())
+    assertFalse(englishTemplates.isEmpty())
+    assertEquals(templates.keys, englishTemplates.keys)
     assertEquals(emptySet<String>(), templates.keys - names)
     templates.forEach { (name, template) ->
       assertFalse(name, template.isBlank())
-      if ('{' in template) {
+      val factory = requireNotNull(byName[name]) { "Unknown diagnostic factory: $name" }
+      if (factory.ktRenderer !is SimpleKtDiagnosticRenderer && '{' in template) {
         MessageFormat(template)
       }
-      val english =
-          requireNotNull(byName[name]) { "Unknown diagnostic factory: $name" }.ktRenderer.message
+      val english = factory.ktRenderer.message
+      assertEquals(name, english, englishTemplates[name])
       assertEquals(name, placeholders(english), placeholders(template))
     }
   }

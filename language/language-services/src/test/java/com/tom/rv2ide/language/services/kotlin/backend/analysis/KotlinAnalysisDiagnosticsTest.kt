@@ -9,6 +9,7 @@ import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.lsp.models.LineIndex
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -49,6 +50,11 @@ class KotlinAnalysisDiagnosticsTest {
           val value = 1
           return value as Int
         }
+
+        fun diagnosticProbeValReassignment() {
+          val value = 1
+          value = 2
+        }
         """
             .trimIndent() + "\n"
 
@@ -83,6 +89,12 @@ class KotlinAnalysisDiagnosticsTest {
 
             val uselessCast = requireNotNull(byCode["USELESS_CAST"]?.firstOrNull())
             assertTrue(uselessCast.message, uselessCast.message.isNotEmpty())
+
+            val reassignment =
+                requireNotNull(byCode["VAL_REASSIGNMENT"]?.firstOrNull()) {
+                  "diagnostics=$summary"
+                }
+            assertFalse(reassignment.message, reassignment.message.contains("''"))
           }
         } finally {
           closeDocument(file)
