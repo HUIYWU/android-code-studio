@@ -115,18 +115,8 @@ android {
       val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
 
       val versionName = variant.versionName ?: "unknown"
-      val versionCode = variant.versionCode
       val buildType = variant.buildType.name
-      val filters = output.filters
-      val abiFilter = filters.find { it.filterType == "ABI" }
-      val archSuffix = abiFilter?.identifier ?: return@all
-
-      if (archSuffix != "arm64-v8a") {
-
-        throw IllegalStateException(
-            "Unsupported architecture: $archSuffix. Only arm64-v8a is supported."
-        )
-      }
+      val archSuffix = "arm64-v8a"
 
       val appName = "android-code-studio"
       val fileName =
@@ -137,10 +127,6 @@ android {
           }
 
       output.outputFileName = fileName
-
-      println(
-          "Generated APK: $fileName for variant: ${variant.name}, arch: $archSuffix, versionCode: $versionCode"
-      )
     }
   }
 }

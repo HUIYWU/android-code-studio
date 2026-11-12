@@ -19,9 +19,6 @@ package com.tom.rv2ide.plugins.conf
 
 import com.android.build.api.dsl.CommonExtension
 import com.android.build.api.variant.AndroidComponentsExtension
-import com.android.build.api.variant.ApplicationAndroidComponentsExtension
-import com.android.build.api.variant.FilterConfiguration
-import com.android.build.api.variant.impl.getFilter
 import com.android.build.gradle.BaseExtension
 import com.tom.rv2ide.build.config.BuildConfig
 import com.tom.rv2ide.build.config.projectVersionCode
@@ -31,15 +28,7 @@ import org.gradle.api.Project
 import org.gradle.api.artifacts.MinimalExternalModuleDependency
 import org.gradle.api.provider.Provider
 
-/**
- * ABIs for which the product flavors will be created. The keys in this map are the names of the
- * product flavors whereas, the value for each flavor is a number that will be incremented to the
- * base version code of the IDE and set as the version code of that flavor.
- *
- * For example, if the base version code of the IDE is 270 (for v2.7.0), then for arm64-v8a flavor,
- * the version code will be `100 * 270 + 1` i.e. `27001`
- */
-internal val flavorsAbis = mapOf("arm64-v8a" to 0)
+private const val SUPPORTED_ABI = "arm64-v8a"
 
 fun Project.configureAndroidModule(coreLibDesugDep: Provider<MinimalExternalModuleDependency>) {
   val isAppModule = plugins.hasPlugin("com.android.application")
@@ -122,41 +111,14 @@ fun Project.configureAndroidModule(coreLibDesugDep: Provider<MinimalExternalModu
           reset()
           isEnable = true
           isUniversalApk = false
-          include("arm64-v8a")
-        }
-      }
-
-      extensions.getByType(ApplicationAndroidComponentsExtension::class.java).apply {
-        onVariants { variant ->
-          variant.outputs.forEach { output ->
-            val abiFilter = output.getFilter(FilterConfiguration.FilterType.ABI)
-            val abiIdentifier = abiFilter?.identifier
-
-            project.logger.info("Processing variant: ${variant.name}, ABI: $abiIdentifier")
-            if (abiIdentifier == null) {
-              project.logger.info(
-                  "Skipping non-ABI-specific output for variant ${variant.name}; only arm64-v8a APKs are supported."
-              )
-              return@forEach
-            }
-
-            val verCodeIncr = flavorsAbis[abiIdentifier]
-
-            if (verCodeIncr == null) {
-              throw UnsupportedOperationException(
-                  "Unsupported ABI: $abiIdentifier. Only ARM architectures are supported: ${flavorsAbis.keys.joinToString()}"
-              )
-            }
-
-            output.versionCode.set(projectVersionCode + verCodeIncr)
-          }
+          include(SUPPORTED_ABI)
         }
       }
     } else {
       defaultConfig {
         ndk {
           abiFilters.clear()
-          abiFilters.addAll(flavorsAbis.keys)
+          abiFilters.add(SUPPORTED_ABI)
         }
       }
     }
