@@ -13,11 +13,14 @@ import com.tom.rv2ide.progress.ICancelChecker
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.JavaErrorCollector
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaCompilationError
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaErrorHighlightType
+import org.jetbrains.kotlin.com.intellij.lang.LanguageUtil
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
+import org.jetbrains.kotlin.com.intellij.openapi.util.TextRange
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
-import org.jetbrains.kotlin.com.intellij.psi.JavaRecursiveElementVisitor
+import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
 
@@ -97,21 +100,45 @@ internal class LiveJavaDiagnosticsResolver(
     return try {
       val lineIndex = LineIndex.from(file.text)
       val result = ArrayList<DiagnosticItem>()
+      var visitedElements = 0
+      var syntaxDiagnostics = 0
+      var semanticDiagnostics = 0
       val collector = JavaErrorCollector(file) { error ->
         cancelChecker.abortIfCancelled()
         result += toDiagnostic(error, lineIndex)
+        semanticDiagnostics++
       }
-      file.accept(object : JavaRecursiveElementVisitor() {
+      file.accept(object : PsiRecursiveElementWalkingVisitor() {
         override fun visitElement(element: PsiElement) {
           cancelChecker.abortIfCancelled()
+          visitedElements++
+          if (element is PsiErrorElement) {
+            val rawRange = requireNotNull(element.textRange)
+            val diagnostic = toSyntaxDiagnostic(element, rawRange, lineIndex)
+            result += diagnostic
+            syntaxDiagnostics++
+            KlsLogs.info(
+                "Java codeserver parser error: file={}, psi={}, rawStart={}, rawEnd={}, range={}, message={}",
+                file.virtualFile?.path,
+                System.identityHashCode(file),
+                rawRange.startOffset,
+                rawRange.endOffset,
+                diagnostic.range,
+                diagnostic.message,
+            )
+          }
           collector.processElement(element)
           super.visitElement(element)
         }
       })
       result.sortedWith(DiagnosticItem.START_COMPARATOR).also { diagnostics ->
         KlsLogs.info(
-            "Java codeserver collector end: file={}, visitedDiagnostics={}, durationUs={}",
+            "Java codeserver collector end: file={}, psi={}, visitedElements={}, syntaxDiagnostics={}, semanticDiagnostics={}, visitedDiagnostics={}, durationUs={}",
             file.virtualFile?.path,
+            System.identityHashCode(file),
+            visitedElements,
+            syntaxDiagnostics,
+            semanticDiagnostics,
             diagnostics.size,
             (System.nanoTime() - startedAt) / 1_000L,
         )
@@ -129,6 +156,36 @@ internal class LiveJavaDiagnosticsResolver(
       )
       throw error
     }
+  }
+
+  // TODO(ACS-ANALYSIS-EXPERIMENT): Validate parser-error publication and point ranges with the live editor.
+  private fun toSyntaxDiagnostic(
+      error: PsiErrorElement,
+      range: TextRange,
+      lineIndex: LineIndex,
+  ): DiagnosticItem {
+    val startOffset = range.startOffset
+    var endOffset = range.endOffset
+    if (range.isEmpty) {
+      val file = error.containingFile
+      val fileLength = file.textLength
+      val elementText = file.viewProvider.findElementAt(startOffset, LanguageUtil.getRootLanguage(error))?.text
+      endOffset = if (startOffset < fileLength && elementText != null &&
+          !elementText.startsWith("\n") && !elementText.startsWith("\r")) {
+        startOffset + 1
+      } else if (startOffset == 0) {
+        minOf(1, fileLength)
+      } else {
+        startOffset
+      }
+    }
+    return DiagnosticItem(
+        message = error.errorDescription,
+        code = "java.parser.error",
+        range = Range(lineIndex.indexToPosition(startOffset), lineIndex.indexToPosition(endOffset)),
+        source = "java-psi-parser",
+        severity = DiagnosticSeverity.ERROR,
+    )
   }
 
   private fun toDiagnostic(
