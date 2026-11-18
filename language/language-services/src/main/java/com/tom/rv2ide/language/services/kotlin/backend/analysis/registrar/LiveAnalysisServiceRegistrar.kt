@@ -62,8 +62,10 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaE
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
+import org.jetbrains.kotlin.com.intellij.psi.impl.search.MethodSuperSearcher
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.DirectClassInheritorsSearch
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.ImplicitClassSearch
+import org.jetbrains.kotlin.com.intellij.psi.search.searches.SuperMethodsSearch
 import org.jetbrains.kotlin.com.intellij.util.QueryExecutor
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
 import org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager
@@ -143,6 +145,19 @@ internal class LiveAnalysisServiceRegistrar(
         System.identityHashCode(application),
         DirectClassInheritorsSearch.EP_NAME.name,
         LiveJavaDirectInheritorsSearcher::class.java.name,
+    )
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        SuperMethodsSearch.EP_NAME.name,
+        QueryExecutor::class.java,
+    )
+    application.extensionArea.getExtensionPoint(SuperMethodsSearch.EP_NAME)
+        .registerExtension(MethodSuperSearcher(), application)
+    KlsLogs.info(
+        "Kotlin Analysis Java search extension registered: application={}, point={}, executor={}",
+        System.identityHashCode(application),
+        SuperMethodsSearch.EP_NAME.name,
+        MethodSuperSearcher::class.java.name,
     )
   }
 
