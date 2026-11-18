@@ -41,8 +41,11 @@ internal class LiveProjectFiles(
   private val revision = AtomicLong()
   private var closed = false
 
+  val fileSetRevision: Long
+    get() = revision.get()
+
   val modificationStamp: Long
-    get() = revision.get() + registry.fileMappingRevision
+    get() = fileSetRevision + registry.fileMappingRevision
 
   fun invalidate(path: Path? = null) {
     synchronized(snapshots) {

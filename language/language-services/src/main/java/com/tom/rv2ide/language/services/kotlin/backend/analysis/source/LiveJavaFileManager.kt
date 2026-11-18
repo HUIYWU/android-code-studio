@@ -3,6 +3,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.source
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisWrite
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 import org.jetbrains.kotlin.analysis.api.platform.modification.KotlinModuleOutOfBlockModificationEvent
@@ -30,6 +31,7 @@ import org.jetbrains.kotlin.load.java.structure.impl.JavaClassImpl
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaElementSourceFactory
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.resolve.jvm.KotlinCliJavaFileManager
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.function.Predicate
 
@@ -84,7 +86,15 @@ internal class LiveJavaFileManager(
           files[normalized] = Entry(snapshot.version, snapshot.revision, next, diskNames)
           index(next, add = true)
         }
-        PsiManager.getInstance(project).dropResolveCaches()
+        val psiManager = PsiManager.getInstance(project)
+        // TODO(ACS-ANALYSIS-EXPERIMENT): Validate disk PSI coherence after saving and closing an active Java document.
+        if (next == null && previous != null && Files.isRegularFile(normalized)) {
+          val diskVirtualFile = requireNotNull(VirtualFileManager.getInstance().findFileByNioPath(normalized))
+          val diskFile = requireNotNull(psiManager.findFile(diskVirtualFile))
+          psiManager.reloadFromDisk(diskFile)
+          KlsLogs.info("Java live PSI disk reloaded: file={}, psi={}", normalized, System.identityHashCode(diskFile))
+        }
+        psiManager.dropResolveCaches()
         project.messageBus.syncPublisher(PsiModificationTracker.TOPIC).modificationCountChanged()
         project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
       }

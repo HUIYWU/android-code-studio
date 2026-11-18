@@ -62,6 +62,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaE
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
+import org.jetbrains.kotlin.com.intellij.psi.search.searches.DirectClassInheritorsSearch
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.ImplicitClassSearch
 import org.jetbrains.kotlin.com.intellij.util.QueryExecutor
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
@@ -130,6 +131,19 @@ internal class LiveAnalysisServiceRegistrar(
         ImplicitClassSearch.EP_NAME.name,
         LiveImplicitClassesSearcher::class.java.name,
     )
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        DirectClassInheritorsSearch.EP_NAME.name,
+        QueryExecutor::class.java,
+    )
+    application.extensionArea.getExtensionPoint(DirectClassInheritorsSearch.EP_NAME)
+        .registerExtension(LiveJavaDirectInheritorsSearcher(), application)
+    KlsLogs.info(
+        "Kotlin Analysis Java search extension registered: application={}, point={}, executor={}",
+        System.identityHashCode(application),
+        DirectClassInheritorsSearch.EP_NAME.name,
+        LiveJavaDirectInheritorsSearcher::class.java.name,
+    )
   }
 
   @Suppress("UnstableApiUsage")
@@ -176,10 +190,13 @@ internal class LiveAnalysisServiceRegistrar(
     project.registerService(ModuleManager::class.java, projectFileIndex.moduleManager)
     val projectFiles = LiveProjectFiles(projectContext, sourceRegistry)
     project.registerService(LiveProjectFiles::class.java, projectFiles)
+    val directInheritorsIndex = LiveJavaDirectInheritorsIndex(project, projectFiles, sourceRegistry)
+    project.registerService(LiveJavaDirectInheritorsIndex::class.java, directInheritorsIndex)
     val fileBasedIndex = FileBasedIndex.getInstance() as LiveFileBasedIndex
     fileBasedIndex.bind(project, projectFiles)
     Disposer.register(project, Disposable {
       fileBasedIndex.unbind(project)
+      directInheritorsIndex.close()
       projectFiles.close()
     })
     project.picoContainer.unregisterComponent(ProjectRootModificationTracker::class.java.name)
