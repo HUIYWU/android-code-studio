@@ -36,7 +36,6 @@ import com.tom.rv2ide.language.services.java.actions.JavaCodeActionsMenu
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex
 import com.tom.rv2ide.language.services.java.models.JavaServerSettings
 import com.tom.rv2ide.language.services.java.providers.CodeFormatProvider
 import com.tom.rv2ide.language.services.java.providers.CompletionProvider
@@ -46,6 +45,7 @@ import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsAnalyzer
 import com.tom.rv2ide.language.services.java.diagnostics.PublishDecision
 import com.tom.rv2ide.language.services.java.providers.JavaHoverProvider
 import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
+import com.tom.rv2ide.language.services.java.providers.KotlinSourceSignature
 import com.tom.rv2ide.language.services.java.providers.ReferenceProvider
 import com.tom.rv2ide.language.services.java.providers.SignatureProvider
 import com.tom.rv2ide.language.services.java.providers.snippet.JavaSnippetRepository.init
@@ -55,6 +55,9 @@ import com.tom.rv2ide.language.services.java.semantic.JavaModuleScopes
 import com.tom.rv2ide.lsp.api.CompletionCancellation
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.language.services.java.utils.CancelChecker.Companion.isCancelled
+import com.tom.rv2ide.app.BaseApplication
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.SharedAnalysisWorkspaceOwner
+import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.lsp.models.CodeFormatResult
 import com.tom.rv2ide.lsp.models.CompletionParams
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -83,6 +86,7 @@ import com.tom.rv2ide.utils.VMUtils
 import java.nio.file.Path
 import java.util.Objects
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -120,6 +124,8 @@ class JavaLanguageServer : ILanguageServer {
   internal var diagnosticsAttemptOverride: (suspend (Path) -> DiagnosticsAttempt)? = null
   private val cachedCompletion = AtomicReference(CachedCompletion.EMPTY)
   private var lastChangeDelta = 0
+  private var sharedAnalysisLease: SharedAnalysisWorkspaceOwner.Lease? = null
+  private val sharedAnalysisGeneration = AtomicLong(0L)
 
   val settings: IServerSettings
     get() {
@@ -153,14 +159,75 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override fun shutdown() {
+    releaseSharedAnalysis()
     JavaModuleScopes.destroyAll()
     SourceFileManager.clearCache()
-    KotlinJvmTypeIndex.clear()
     KotlinClassOutputProvider.clearCache()
     CacheFSInfoSingleton.clearCache()
     clearCache()
     EventBus.getDefault().unregister(this)
     timer.close()
+  }
+
+  private fun acquireSharedAnalysis(workspace: IWorkspace) {
+    releaseSharedAnalysis()
+    if (!JavaPreferences.isJavaKotlinRecognitionEnabled || VMUtils.isJvm()) {
+      return
+    }
+    val pluginRoot = BaseApplication.getBaseInstance()?.applicationInfo?.sourceDir ?: return
+    val generation = sharedAnalysisGeneration.incrementAndGet()
+    val provider = KotlinProjectClasspathProvider(workspace)
+    CoroutineScope(Dispatchers.Default).launch {
+      val lease =
+          try {
+            SharedAnalysisWorkspaceOwner.acquire(provider, pluginRoot, fresh = false)
+          } catch (error: Throwable) {
+            log.warn("Java shared Analysis environment failed to start", error)
+            return@launch
+          }
+      withContext(Dispatchers.Main) {
+        if (sharedAnalysisGeneration.get() != generation) {
+          lease.close()
+          return@withContext
+        }
+        if (lease.environment == null) {
+          log.warn(
+              "Java shared Analysis environment unavailable: {}",
+              lease.failureReason ?: lease.failure?.toString() ?: "unknown",
+          )
+          lease.close()
+          return@withContext
+        }
+        sharedAnalysisLease = lease
+        onSharedAnalysisReady()
+      }
+    }
+  }
+
+  private fun onSharedAnalysisReady() {
+    KotlinClassOutputProvider.clearCache()
+    SourceFileManager.clearCache()
+    JavaModuleScopes.destroyAll()
+    cachedCompletion.set(CachedCompletion.EMPTY)
+    diagnosticsAnalyzer.clear()
+    selectedFile?.let { file ->
+      if (DocumentUtils.isJavaFile(file)) {
+        scheduleDiagnostics()
+      }
+    }
+  }
+
+  private fun releaseSharedAnalysis() {
+    sharedAnalysisGeneration.incrementAndGet()
+    val lease = sharedAnalysisLease ?: return
+    sharedAnalysisLease = null
+    CoroutineScope(Dispatchers.Default).launch {
+      try {
+        lease.close()
+      } catch (error: Throwable) {
+        log.warn("Java shared Analysis environment failed to close", error)
+      }
+    }
   }
 
   override fun connectClient(client: ILanguageClient?) {
@@ -178,9 +245,8 @@ class JavaLanguageServer : ILanguageServer {
     // Destory the NO_MODULE_COMPILER instance
     JavaCompilerService.NO_MODULE_COMPILER.destroy()
 
-    // Clear cached file managers and Kotlin source/class-output symbol snapshots.
+    // Clear cached file managers and compiled Kotlin class-output snapshots.
     SourceFileManager.clearCache()
-    KotlinJvmTypeIndex.clear()
     KotlinClassOutputProvider.clearCache()
 
     // Clear cached JAR file system for R.jar
@@ -194,6 +260,7 @@ class JavaLanguageServer : ILanguageServer {
     JavaModuleScopes.destroyAll()
     cachedCompletion.set(CachedCompletion.EMPTY)
     diagnosticsAnalyzer.clear()
+    acquireSharedAnalysis(workspace)
 
     // Cache classpath locations for eagerly active modules only.
     for (subModule in workspace.getSubProjects()) {
@@ -547,7 +614,13 @@ class JavaLanguageServer : ILanguageServer {
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      val result = SignatureProvider(compiler, params.cancelChecker).signatureHelp(params)
+      val result =
+          KotlinSourceSignature.find(
+              params.file,
+              params.position.line,
+              params.position.column,
+              params.cancelChecker,
+          ) ?: SignatureProvider(compiler, params.cancelChecker).signatureHelp(params)
       return if (
           isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
               isCurrentScope(semanticSession, epoch)
@@ -738,7 +811,7 @@ class JavaLanguageServer : ILanguageServer {
   @Suppress("unused")
   fun onContentChange(event: DocumentChangeEvent) {
     if (DocumentUtils.isKotlinFile(event.changedFile)) {
-      invalidateKotlinAbi(event.changedFile, clearFileManagers = false)
+      invalidateKotlinSourceDependents(event.changedFile)
       return
     }
     if (!DocumentUtils.isJavaFile(event.changedFile)) {
@@ -758,8 +831,7 @@ class JavaLanguageServer : ILanguageServer {
   fun onFileSelected(event: DocumentSelectedEvent) {
     selectedFile = event.selectedFile
     // Kotlin source changes can occur while its editor is selected. Once the user returns to an
-    // open Java file, force a full diagnostics pass so stale Kotlin ABI/classpath state is never
-    // retained merely because no Java document change was made.
+    // open Java file, force a full diagnostics pass so dependent Java semantic sessions are refreshed.
     if (DocumentUtils.isJavaFile(event.selectedFile)) {
       lastChangeDelta = 0
       scheduleDiagnostics()
@@ -785,6 +857,9 @@ class JavaLanguageServer : ILanguageServer {
   @Subscribe(threadMode = ThreadMode.ASYNC)
   @Suppress("unused")
   fun onFileClosed(event: DocumentCloseEvent) {
+    if (DocumentUtils.isKotlinFile(event.closedFile)) {
+      invalidateKotlinSourceDependents(event.closedFile)
+    }
     JavaModuleScopes.cancelForFile(event.closedFile)
     diagnosticsAnalyzer.forget(event.closedFile)
 
@@ -812,7 +887,7 @@ class JavaLanguageServer : ILanguageServer {
   @Suppress("unused")
   fun onKotlinFileCreated(event: FileCreationEvent) {
     if (DocumentUtils.isKotlinFile(event.file.toPath())) {
-      invalidateKotlinAbi(event.file.toPath(), clearFileManagers = false)
+      invalidateKotlinSourceDependents(event.file.toPath())
     }
   }
 
@@ -820,7 +895,7 @@ class JavaLanguageServer : ILanguageServer {
   @Suppress("unused")
   fun onKotlinFileDeleted(event: FileDeletionEvent) {
     if (event.file.extension == "kt" || event.file.extension == "kts") {
-      invalidateKotlinAbi(event.file.toPath(), clearFileManagers = false)
+      invalidateKotlinSourceDependents(event.file.toPath())
     }
   }
 
@@ -829,36 +904,32 @@ class JavaLanguageServer : ILanguageServer {
   fun onKotlinFileRenamed(event: FileRenameEvent) {
     if (event.file.extension == "kt" || event.file.extension == "kts"
         || DocumentUtils.isKotlinFile(event.newFile.toPath())) {
-      invalidateKotlinAbi(event.file.toPath(), clearFileManagers = false)
-      invalidateKotlinAbi(event.newFile.toPath(), clearFileManagers = false)
+      invalidateKotlinSourceDependents(event.file.toPath())
+      invalidateKotlinSourceDependents(event.newFile.toPath())
     }
   }
-
-  private fun invalidateKotlinAbi(kotlinFile: Path, clearFileManagers: Boolean) {
+  private fun invalidateKotlinSourceDependents(kotlinFile: Path) {
     if (!JavaPreferences.isJavaKotlinRecognitionEnabled) {
       return
     }
+    diagnosticsAnalyzer.cancel()
+    diagnosticsAnalyzer.clear()
     val workspace = getInstance().getWorkspace()
+
     val module = workspace?.findModuleForFile(kotlinFile.toFile(), false)
         ?: workspace?.findModuleForFile(kotlinFile.toFile(), true)
     if (module != null) {
-      KotlinJvmTypeIndex.invalidate(module)
+      module.bumpSourceIndexVersion()
       JavaModuleScopes.destroy(module)
+      JavaModuleScopes.destroyDependentsOf(module)
     } else {
-      // A deletion is commonly delivered after its file can no longer be resolved to a module.
-      // Prefer a conservative global reset over retaining an ABI stub for a deleted Kotlin type.
-      KotlinJvmTypeIndex.clear()
       JavaModuleScopes.destroyAll()
     }
     KotlinClassOutputProvider.clearCache()
     cachedCompletion.set(CachedCompletion.EMPTY)
-    if (clearFileManagers) {
-      SourceFileManager.clearCache()
-    }
     val currentJavaFile = selectedFile
-    val schedulesJavaDiagnostics = currentJavaFile != null
-        && DocumentUtils.isJavaFile(currentJavaFile)
-        && (module == null || module.isFromThisModule(currentJavaFile))
+    val schedulesJavaDiagnostics =
+        currentJavaFile != null && DocumentUtils.isJavaFile(currentJavaFile)
     if (schedulesJavaDiagnostics) {
       lastChangeDelta = 0
       scheduleDiagnostics()

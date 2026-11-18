@@ -36,7 +36,7 @@ class KotlinDocumentEventBridge(
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onContentChange(event: com.tom.rv2ide.eventbus.events.editor.DocumentChangeEvent) {
     val file = event.changedFile
-    if (!file.isKotlinLanguageDocument()) return
+    if (!connection.synchronizesDocument(file)) return
 
     try {
       documentManager.syncActiveDocument(file)
@@ -48,7 +48,7 @@ class KotlinDocumentEventBridge(
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileOpened(event: com.tom.rv2ide.eventbus.events.editor.DocumentOpenEvent) {
     val file = event.openedFile
-    if (!file.isKotlinLanguageDocument()) return
+    if (!connection.synchronizesDocument(file)) return
 
     KlsLogs.debug("Document open event for: {}", file)
     val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
@@ -62,7 +62,7 @@ class KotlinDocumentEventBridge(
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileSelected(event: com.tom.rv2ide.eventbus.events.editor.DocumentSelectedEvent) {
     val file = event.selectedFile
-    if (!file.isKotlinLanguageDocument()) return
+    if (!connection.synchronizesDocument(file)) return
     KlsLogs.debug("Document selected event for: {}", file)
     val snapshot = com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file) ?: return
     documentManager.ensureDocumentOpen(file, snapshot.content, snapshot.version)
@@ -71,7 +71,7 @@ class KotlinDocumentEventBridge(
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileSaved(event: com.tom.rv2ide.eventbus.events.editor.DocumentSaveEvent) {
     val file = event.savedFile
-    if (!file.isKotlinLanguageDocument()) return
+    if (!connection.synchronizesDocument(file)) return
 
     documentManager.notifyDocumentSave(file)
   }
@@ -79,7 +79,7 @@ class KotlinDocumentEventBridge(
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileClosed(event: com.tom.rv2ide.eventbus.events.editor.DocumentCloseEvent) {
     val file = event.closedFile
-    if (!file.isKotlinLanguageDocument() || com.tom.rv2ide.projects.FileManager.isActive(file)) return
+    if (!connection.synchronizesDocument(file) || com.tom.rv2ide.projects.FileManager.isActive(file)) return
 
     KlsLogs.debug("Document close event for: {}", file)
     documentManager.closeDocument(file)
@@ -89,7 +89,7 @@ class KotlinDocumentEventBridge(
 @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
   fun onFileCreated(event: FileCreationEvent) {
     val path = event.file.toPath().normalize()
-    if (path.isKotlinLanguageDocument()) connection.notifyFileCreated(path)
+    if (connection.synchronizesDocument(path)) connection.notifyFileCreated(path)
   }
 
   @org.greenrobot.eventbus.Subscribe(threadMode = org.greenrobot.eventbus.ThreadMode.POSTING)
@@ -108,7 +108,7 @@ class KotlinDocumentEventBridge(
     connection.notifyFileMoved(root, target)
     clearDiagnostics(root)
     com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
-        .filter { it.startsWith(target) && it.isKotlinLanguageDocument() }
+        .filter { it.startsWith(target) && connection.synchronizesDocument(it) }
         .forEach(documentManager::syncActiveDocument)
   }
 

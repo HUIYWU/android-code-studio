@@ -10,3 +10,10 @@ android {
     minSdk 23
   }
 }
+
+dependencies {
+  // The analysis module classpath is per-module: the app's stdlib does not reach this module, and
+  // without stdlib on this classpath JVM annotations such as @JvmField cannot be resolved to a
+  // ClassId, which makes Kotlin light classes treat @JvmField properties as private fields.
+  implementation files('../app/libs/kotlin-stdlib-2.3.21.jar')
+}

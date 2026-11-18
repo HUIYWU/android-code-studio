@@ -54,8 +54,8 @@ class KotlinAnalysisBackendConnection internal constructor(
 ) : KotlinBackendConnection {
 
   constructor(intellijPluginRoot: String) : this(
-      KotlinAnalysisRuntimeFactory { provider ->
-        KotlinStandaloneAnalysisRuntime(provider, intellijPluginRoot)
+      KotlinAnalysisRuntimeFactory { provider, fresh ->
+        KotlinStandaloneAnalysisRuntime(provider, intellijPluginRoot, freshEnvironment = fresh)
       },
   )
 
@@ -105,6 +105,9 @@ class KotlinAnalysisBackendConnection internal constructor(
 
   override fun supportsDocument(path: Path): Boolean =
       path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
+  override fun synchronizesDocument(path: Path): Boolean =
+      super.synchronizesDocument(path) || path.toString().endsWith(".java")
+
   override fun notifyFileCreated(path: Path) {
     val normalized = path.normalize()
     executeOnAnalysisQueue(path = normalized, mutationPaths = setOf(normalized)) {
@@ -174,7 +177,8 @@ class KotlinAnalysisBackendConnection internal constructor(
 
         stateRef.set(KotlinBackendState.STARTING)
         val targetGeneration = generationCounter.get() + 1L
-        val startedRuntime = createRuntime(classpathProvider, targetGeneration)
+        val startedRuntime =
+            createRuntime(classpathProvider, targetGeneration, freshEnvironment = false)
         if (startedRuntime == null) {
           stateRef.set(KotlinBackendState.FAILED)
           return@executeOnAnalysisQueue false
@@ -208,7 +212,8 @@ class KotlinAnalysisBackendConnection internal constructor(
         requestScheduler.cancelRequests(AnalysisRequestKind.DIAGNOSTICS, oldGeneration)
         requestScheduler.cancelPendingRequests(AnalysisRequestKind.INDEXING, oldGeneration)
         val targetGeneration = oldGeneration + 1L
-        val newRuntime = createRuntime(classpathProvider, targetGeneration)
+        val newRuntime =
+            createRuntime(classpathProvider, targetGeneration, freshEnvironment = true)
         if (newRuntime == null) {
           stateRef.set(if (oldRuntime != null) KotlinBackendState.READY else KotlinBackendState.FAILED)
           initialized = wasInitialized
@@ -281,23 +286,24 @@ class KotlinAnalysisBackendConnection internal constructor(
       when (method) {
         "textDocument/didOpen" -> {
           val path = extractFilePath(params)?.normalize() ?: return
-          if (supportsDocument(path)) {
+          if (synchronizesDocument(path)) {
             runtime?.onFileOpened(path)
-            scheduleDiagnostics(path)
+            rescheduleActiveDocuments()
           }
         }
         "textDocument/didChange" -> {
           val path = extractFilePath(params)?.normalize() ?: return
-          if (supportsDocument(path)) {
+          if (synchronizesDocument(path)) {
             runtime?.onFileContentChanged(
                 path,
                 FileManager.getLatestOneHopDocumentEdit(path),
             )
-            scheduleDiagnostics(path)
+            rescheduleActiveDocuments()
           }
         }
         "textDocument/didSave" -> {
           val path = extractFilePath(params)?.normalize() ?: return
+          if (synchronizesDocument(path)) runtime?.onFileSaved(path)
           if (supportsDocument(path)) {
             scheduleDiagnostics(path)
           }
@@ -305,6 +311,8 @@ class KotlinAnalysisBackendConnection internal constructor(
         "textDocument/didClose" -> {
           val path = extractFilePath(params)?.normalize() ?: return
           runtime?.onFileClosed(path)
+          rescheduleActiveDocuments()
+          if (!supportsDocument(path)) return
           synchronized(diagnosticsStateLock) {
             diagnosticSequences[path] = diagnosticSequenceCounter.incrementAndGet()
             diagnosticRescheduledSequences.remove(path)
@@ -374,6 +382,7 @@ class KotlinAnalysisBackendConnection internal constructor(
           backendGeneration = generation,
           cancelChecker = debounceCancellation,
           requiredMutationPaths = setOf(normalizedPath),
+          waitForPendingMutations = true,
           action = {},
           cancellableAction = { cancelChecker ->
             synchronized(diagnosticsStateLock) {
@@ -400,6 +409,7 @@ class KotlinAnalysisBackendConnection internal constructor(
     val requestGeneration = generation
     val snapshot = FileManager.getActiveDocumentSnapshot(normalizedPath) ?: return
     val activeRuntime = runtime ?: return
+    val mutationEpoch = requestScheduler.mutationEpoch()
     try {
       val result = activeRuntime.analyze(normalizedPath, snapshot, cancelChecker) ?: run {
         KlsLogs.warn("Kotlin diagnostics analysis returned null: file={}", normalizedPath)
@@ -408,6 +418,10 @@ class KotlinAnalysisBackendConnection internal constructor(
       cancelChecker.abortIfCancelled()
       if (diagnosticSequences[normalizedPath] != sequence) return
       if (requestGeneration != generation || !isReady) return
+      if (requestScheduler.mutationEpoch() != mutationEpoch) {
+        scheduleDiagnostics(normalizedPath)
+        return
+      }
       val currentSnapshot = FileManager.getActiveDocumentSnapshot(normalizedPath)
       if (currentSnapshot == null || snapshot.version != currentSnapshot.version ||
           snapshot.revision != currentSnapshot.revision) return
@@ -470,10 +484,7 @@ internal suspend fun findReferences(
        AnalysisRequestKind.COMMAND,
        isCurrent,
        waitForPendingMutations = true,
-   ) { runtime ->
-     val epoch = requestScheduler.mutationEpoch()
-     runtime.findReferences(request)?.takeIf { requestScheduler.mutationEpoch() == epoch }
-   }
+   ) { runtime -> runtime.findReferences(request) }
 
 internal suspend fun signatureHelp(
        request: KotlinSemanticRequest,
@@ -483,7 +494,7 @@ internal suspend fun signatureHelp(
       request: KotlinSemanticRequest,
       kind: AnalysisRequestKind,
       isCurrent: (KotlinSemanticRequest) -> Boolean,
-      waitForPendingMutations: Boolean = false,
+      waitForPendingMutations: Boolean = true,
       action: (KotlinAnalysisRuntime) -> T?,
   ): T? = suspendCancellableCoroutine { continuation ->
     fun canExecute(): Boolean = continuation.isActive && isReady && initialized &&
@@ -504,6 +515,7 @@ internal suspend fun signatureHelp(
     }
 
     try {
+      val epoch = requestScheduler.mutationEpoch()
       val task = requestScheduler.submit(
           kind = kind,
           path = request.file,
@@ -515,8 +527,10 @@ internal suspend fun signatureHelp(
           waitForPendingMutations = waitForPendingMutations,
            action = {
              val currentRuntime = runtime
-             val result = if (canExecute() && currentRuntime != null) action(currentRuntime) else null
-             val currentAfterExecution = canExecute()
+             val result = if (canExecute() && requestScheduler.mutationEpoch() == epoch && currentRuntime != null) {
+               action(currentRuntime)
+             } else null
+             val currentAfterExecution = canExecute() && requestScheduler.mutationEpoch() == epoch
              if (currentAfterExecution) result else null
            },
       )
@@ -558,10 +572,11 @@ internal suspend fun signatureHelp(
   private fun createRuntime(
       provider: KotlinProjectClasspathProvider,
       backendGeneration: Long,
+      freshEnvironment: Boolean,
   ): KotlinAnalysisRuntime? {
     var candidate: KotlinAnalysisRuntime? = null
     return try {
-      candidate = runtimeFactory.create(provider)
+      candidate = runtimeFactory.create(provider, freshEnvironment)
       candidate.configureIndexingScheduler { path, action ->
         val normalizedPath = path.normalize()
         if (isReady && generation == backendGeneration) {

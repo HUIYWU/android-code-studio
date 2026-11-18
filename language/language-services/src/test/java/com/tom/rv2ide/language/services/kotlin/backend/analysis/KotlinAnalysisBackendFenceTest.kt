@@ -102,8 +102,13 @@ class KotlinAnalysisBackendFenceTest {
       val release = CountDownLatch(1)
       prepareAnalysisPaths()
       val backend = KotlinAnalysisBackendConnection(
-          KotlinAnalysisRuntimeFactory { provider ->
-            val delegate = KotlinStandaloneAnalysisRuntime(provider, analysisApiJar())
+          KotlinAnalysisRuntimeFactory { provider, fresh ->
+            val delegate =
+                KotlinStandaloneAnalysisRuntime(
+                    provider,
+                    analysisApiJar(),
+                    freshEnvironment = fresh,
+                )
             object : KotlinAnalysisRuntime by delegate {
               override fun hover(request: KotlinSemanticRequest): MarkupContent? {
                 val result = delegate.hover(request)

@@ -8,12 +8,22 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisMo
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourceIndex
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaDiagnosticsResolver
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaPsiResolver
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaResolveScopeManager
+import org.jetbrains.kotlin.com.intellij.psi.impl.ResolveScopeManager
+import org.jetbrains.kotlin.resolve.jvm.KotlinCliJavaFileManager
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceKind
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceMetadataIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.KotlinSourceRootDescriptor
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar.LiveAnalysisServiceRegistrar
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar.LiveProjectFiles
+import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
+
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPackagePartProviderFactory
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LiveAnnotationsResolverFactory
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.LiveDeclarationProviderFactory
@@ -128,6 +138,10 @@ internal class LiveAnalysisEnvironment(
     private set
   lateinit var javaSourceIndex: JavaSourceIndex
     private set
+  lateinit var javaFiles: LiveJavaFileManager
+    private set
+  val javaPsiResolver: LiveJavaPsiResolver = LiveJavaPsiResolver(this)
+  val javaDiagnosticsResolver: LiveJavaDiagnosticsResolver = LiveJavaDiagnosticsResolver(this)
   private val diagnosticFacadeServiceLazy = lazy(LazyThreadSafetyMode.PUBLICATION) {
     LLResolutionFacadeService(project)
   }
@@ -192,9 +206,11 @@ internal class LiveAnalysisEnvironment(
       val packagePartFactory = AnalysisPackagePartProviderFactory()
       val provisionalStructure = LiveProjectStructureProvider()
       val directInheritorsProvider = LiveDirectInheritorsProvider()
-      val registrar = LiveAnalysisServiceRegistrar(
-          annotationsResolverFactory,
-          declarationFactory,
+val registrar = LiveAnalysisServiceRegistrar(
+           projectContext,
+           sourceRegistry,
+           annotationsResolverFactory,
+           declarationFactory,
           declarationMerger,
           packageFactory,
           packageMerger,
@@ -353,6 +369,18 @@ val allModules = modules +
       unregisterStaticServices(project)
       registrar.registerProjectExtensionPoints(project)
       registrar.registerProjectServices(project)
+      javaFiles = LiveJavaFileManager(
+          project,
+          sourceRegistry,
+          project.getService(JavaFileManager::class.java) as KotlinCliJavaFileManager,
+      )
+      project.picoContainer.unregisterComponent(JavaFileManager::class.java.name)
+      project.registerService(JavaFileManager::class.java, javaFiles)
+      val resolveScopes = LiveJavaResolveScopeManager(
+          project, sourceRegistry, project.getService(ResolveScopeManager::class.java),
+      )
+      project.picoContainer.unregisterComponent(ResolveScopeManager::class.java.name)
+      project.registerService(ResolveScopeManager::class.java, resolveScopes)
       registrar.registerProjectModelServices(project, disposable)
 
       liveIndex = LiveSourceFileIndex(project, sourceRegistry, metadataIndex)
@@ -394,7 +422,8 @@ librarySourceFiles = librarySourceFiles,
 
        session = StandaloneAnalysisAPISession(projectEnvironment) {
           sourceModules.values.associateWith { module -> liveIndex.currentPsiFilesFor(module) }
-       }
+        }
+      FileManager.getActiveDocumentFiles().forEach(javaFiles::refresh)
          true
 } catch (t: Throwable) {
         startFailure = t
@@ -410,6 +439,7 @@ override fun close() {
         return
       }
      if (::liveIndex.isInitialized) liveIndex.close()
+     if (::javaFiles.isInitialized) javaFiles.close()
      if (::binaryClassIndex.isInitialized) binaryClassIndex.close()
      if (::javaSourceIndex.isInitialized) javaSourceIndex.close()
      temporaryLibrarySourceRoots.toList().forEach(::deleteTemporarySourceRoot)
@@ -449,6 +479,15 @@ Disposer.dispose(disposable)
         }
       }
       else -> null
+    }
+  }
+
+  fun invalidateProjectFiles(vararg paths: Path) {
+    ApplicationManager.getApplication().runWriteAction {
+      project.analysisWrite {
+        val files = project.getService(LiveProjectFiles::class.java)
+        paths.forEach { files.invalidate(it) }
+      }
     }
   }
 

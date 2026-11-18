@@ -21,13 +21,17 @@ import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.lsp.api.IServerSettings
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
+import com.tom.rv2ide.language.services.java.utils.CancelChecker
 import com.tom.rv2ide.language.services.java.utils.ScopeHelper
+import com.tom.rv2ide.lsp.api.CompletionCancellation
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.MatchLevel
 import com.tom.rv2ide.lsp.models.MatchLevel.NO_MATCH
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.progress.ProgressManager.Companion.abortIfCancelled
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import jdkx.lang.model.element.ElementKind.CONSTRUCTOR
 import jdkx.lang.model.element.ElementKind.METHOD
 import jdkx.lang.model.element.ExecutableElement
@@ -40,7 +44,6 @@ import openjdk.source.tree.MemberSelectTree
 import openjdk.source.tree.Scope
 import openjdk.source.util.TreePath
 import openjdk.source.util.Trees
-import openjdk.tools.javac.code.Symbol
 
 /**
  * Completions for member select.
@@ -155,12 +158,7 @@ class MemberSelectCompletionProvider(
     val matchLevels = mutableMapOf<String, MatchLevel>()
 
     if (IdeLogConfig.shouldLogDebug()) {
-      log.debug(
-          "DeclaredType {} with members {} in scope: {}",
-          typeElement,
-          (typeElement as Symbol).members(),
-          scope,
-      )
+      log.debug("DeclaredType {} in scope: {}", typeElement, scope)
     }
 
     abortIfCancelled()
@@ -216,7 +214,52 @@ class MemberSelectCompletionProvider(
       list.add(keyword("super", partial, 100))
     }
 
+    appendKotlinMembers(list, typeElement, isStatic, partial, endsWithParen)
     return CompletionResult(list)
+  }
+
+  private fun appendKotlinMembers(
+      list: MutableList<CompletionItem>,
+      typeElement: TypeElement,
+      isStatic: Boolean,
+      partial: String,
+      endsWithParen: Boolean,
+  ) {
+    val supplements =
+        try {
+          KotlinSourceCompletion.find(
+              file,
+              cursor,
+              typeElement.qualifiedName?.toString(),
+              isStatic,
+              partial,
+              !endsWithParen,
+              CompletionCancellation.current() ?: ICancelChecker.NOOP,
+          )
+        } catch (cancelled: CancellationException) {
+          throw cancelled
+        } catch (error: Throwable) {
+          if (CancelChecker.isCancelled(error)) {
+            throw error
+          }
+          log.warn(
+              "Kotlin member completion supplement failed file={} owner={} static={}",
+              file,
+              typeElement.qualifiedName,
+              isStatic,
+              error,
+          )
+          emptyList()
+        }
+    if (KotlinSourceCompletion.isKotlinOwner(
+            file,
+            cursor,
+            typeElement.qualifiedName?.toString(),
+            CompletionCancellation.current() ?: ICancelChecker.NOOP,
+        )) {
+      list.clear()
+    }
+    KotlinSourceCompletion.merge(list, supplements)
   }
 
   private fun isEnclosingClass(type: DeclaredType, start: Scope): Boolean {

@@ -63,8 +63,13 @@ class KotlinAnalysisReferencesCancellationTest {
         }
         prepareAnalysisPaths()
         val connection = KotlinAnalysisBackendConnection(
-            KotlinAnalysisRuntimeFactory { provider ->
-              val delegate = KotlinStandaloneAnalysisRuntime(provider, analysisApiJar())
+            KotlinAnalysisRuntimeFactory { provider, fresh ->
+              val delegate =
+                KotlinStandaloneAnalysisRuntime(
+                    provider,
+                    analysisApiJar(),
+                    freshEnvironment = fresh,
+                )
               object : KotlinAnalysisRuntime by delegate {
                 override fun findReferences(request: KotlinSemanticRequest): ReferenceResult? {
                   return try {

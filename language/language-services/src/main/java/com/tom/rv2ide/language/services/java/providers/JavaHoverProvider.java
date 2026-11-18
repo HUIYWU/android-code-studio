@@ -11,15 +11,12 @@ package com.tom.rv2ide.language.services.java.providers;
 import androidx.annotation.NonNull;
 import com.tom.rv2ide.language.services.java.compiler.CompileTask;
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService;
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmSourceNavigator;
 import com.tom.rv2ide.language.services.java.utils.MarkdownHelper;
 import com.tom.rv2ide.language.services.java.utils.NavigationHelper;
 import com.tom.rv2ide.language.services.java.utils.ShortTypePrinter;
 import com.tom.rv2ide.lsp.models.DefinitionParams;
 import com.tom.rv2ide.lsp.models.MarkupContent;
 import com.tom.rv2ide.lsp.models.MarkupKind;
-import com.tom.rv2ide.models.Location;
-import com.tom.rv2ide.projects.FileManager;
 import com.tom.rv2ide.progress.ICancelChecker;
 import java.util.List;
 import java.util.StringJoiner;
@@ -45,6 +42,15 @@ public final class JavaHoverProvider extends CancelableServiceProvider {
   @NonNull
   public MarkupContent hover(@NonNull DefinitionParams params) {
     abortIfCancelled();
+    final MarkupContent kotlinHover =
+        KotlinSourceHover.find(
+            params.getFile(),
+            params.getPosition().getLine(),
+            params.getPosition().getColumn(),
+            this);
+    if (kotlinHover != null) {
+      return kotlinHover;
+    }
     final int line = params.getPosition().getLine() + 1;
     final int column = params.getPosition().getColumn() + 1;
     return compiler.compile(params.getFile()).get(task -> hover(task, params, line, column));
@@ -63,10 +69,7 @@ public final class JavaHoverProvider extends CancelableServiceProvider {
     if (signature.isEmpty()) {
       return new MarkupContent();
     }
-    String documentation = javaDocumentation(task, element);
-    if (documentation.isEmpty()) {
-      documentation = kotlinDocumentation(task, element);
-    }
+    final String documentation = javaDocumentation(task, element);
     return new MarkupContent(formatHoverMarkdown(signature, documentation), MarkupKind.MARKDOWN);
   }
 
@@ -81,49 +84,6 @@ public final class JavaHoverProvider extends CancelableServiceProvider {
       return "";
     }
     return MarkdownHelper.asMarkdown(documentation).trim();
-  }
-
-  private String kotlinDocumentation(CompileTask task, Element element) {
-    final Location location = KotlinJvmSourceNavigator.find(task.module(), element);
-    if (location == null) {
-      return "";
-    }
-    final String source = FileManager.INSTANCE.getDocumentContents(location.getFile()).toString();
-    final int declarationOffset = offsetAt(
-        source, location.getRange().getStart().getLine(), location.getRange().getStart().getColumn());
-    return extractAdjacentKDoc(source, declarationOffset);
-  }
-
-  private static int offsetAt(String source, int line, int column) {
-    int offset = 0;
-    for (int currentLine = 0; currentLine < line && offset < source.length(); currentLine++) {
-      final int lineEnd = source.indexOf('\n', offset);
-      offset = lineEnd < 0 ? source.length() : lineEnd + 1;
-    }
-    return Math.min(source.length(), offset + Math.max(0, column));
-  }
-
-  static String extractAdjacentKDoc(String source, int declarationOffset) {
-    if (source == null || declarationOffset < 0 || declarationOffset > source.length()) {
-      return "";
-    }
-    int end = declarationOffset;
-    while (end > 0 && Character.isWhitespace(source.charAt(end - 1))) {
-      end--;
-    }
-    if (end < 2 || source.charAt(end - 1) != '/' || source.charAt(end - 2) != '*') {
-      return "";
-    }
-    final int start = source.lastIndexOf("/**", end - 2);
-    if (start < 0 || source.indexOf("*/", start) != end - 2) {
-      return "";
-    }
-    final String body = source.substring(start + 3, end - 2);
-    final StringJoiner lines = new StringJoiner("\n");
-    for (String line : body.split("\\r?\\n", -1)) {
-      lines.add(line.replaceFirst("^\\s*\\* ?", ""));
-    }
-    return lines.toString().trim();
   }
 
   static String formatSignature(Element element) {

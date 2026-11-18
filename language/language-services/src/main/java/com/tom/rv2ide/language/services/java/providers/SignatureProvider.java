@@ -18,7 +18,6 @@
 package com.tom.rv2ide.language.services.java.providers;
 
 import androidx.annotation.NonNull;
-import com.tom.rv2ide.language.services.java.kotlin.KotlinAbiSyntheticMembers;
 import com.tom.rv2ide.language.services.java.compiler.CompileTask;
 import com.tom.rv2ide.language.services.java.compiler.CompilerProvider;
 import com.tom.rv2ide.language.services.java.compiler.SourceFileObject;
@@ -287,10 +286,9 @@ public class SignatureProvider extends CancelableServiceProvider {
       if (member.getKind() != ElementKind.CONSTRUCTOR) {
         continue;
       }
-      final boolean synthetic = KotlinAbiSyntheticMembers.isSyntheticConstructor(member);
-      final boolean accessible = !synthetic
-          && trees.isAccessible(scope, member, (DeclaredType) type.asType());
-      if (synthetic || !accessible) {
+      final boolean accessible =
+          trees.isAccessible(scope, member, (DeclaredType) type.asType());
+      if (!accessible) {
         continue;
       }
       list.add((ExecutableElement) member);

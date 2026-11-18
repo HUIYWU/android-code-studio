@@ -8,3 +8,24 @@ class LibraryApi {
 }
 
 fun libraryExtension(value: String): String = value.trim()
+
+@JvmName("renamedLibrary")
+fun originalLibrary(value: String): String = value.trim()
+
+class InteropOverloads(val label: String) {
+  fun pick(value: String): String = label + value
+
+  fun pick(value: Int): String = label + value
+
+  fun String.decorated(suffix: String): String = this + suffix
+
+  private fun hidden(): String = label
+
+  class Nested
+
+  inner class Inner
+
+  companion object {
+    @JvmField val TOKEN: String = "token"
+  }
+}

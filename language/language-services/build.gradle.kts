@@ -103,8 +103,10 @@ dependencies {
 
   implementation(libs.androidx.core.ktx)
   implementation(libs.common.kotlin)
+  implementation(libs.common.kotlin.coroutines.core)
 
   implementation(files(ktAnalysisEngineJar))
+
   implementation(libs.kotlin.metadata.jvm)
   implementation(libs.asm)
   

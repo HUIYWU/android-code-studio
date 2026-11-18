@@ -54,6 +54,7 @@ import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
 import org.jetbrains.kotlin.analysis.api.symbols.KaDeclarationSymbol
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
 import org.jetbrains.kotlin.psi.KtCallElement
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtFunctionLiteral
@@ -68,9 +69,11 @@ internal class KotlinStandaloneAnalysisRuntime(
     private val classpathProvider: KotlinProjectClasspathProvider,
     private val intellijPluginRoot: String,
     private val referenceObserver: ReferenceScanObserver = ReferenceScanObserver.NONE,
+    private val freshEnvironment: Boolean = false,
 ) : KotlinAnalysisRuntime {
   private val closed = AtomicBoolean(false)
   private var environment: LiveAnalysisEnvironment? = null
+  private var lease: SharedAnalysisWorkspaceOwner.Lease? = null
   private var scheduleIndexing: ((Path, () -> Unit) -> Unit)? = null
 
   internal var startFailure: Throwable? = null
@@ -91,40 +94,92 @@ internal class KotlinStandaloneAnalysisRuntime(
     }
     startFailure = null
     startFailureReason = null
-    val created = LiveAnalysisEnvironment(classpathProvider, intellijPluginRoot)
-    if (!created.start()) {
-      startFailure = created.startFailure
-      startFailureReason = created.startFailureReason
-      created.close()
+    val acquired =
+        SharedAnalysisWorkspaceOwner.acquire(classpathProvider, intellijPluginRoot, freshEnvironment)
+    val created = acquired.environment
+    if (created == null) {
+      startFailure = acquired.failure
+      startFailureReason =
+          acquired.failureReason ?: "Kotlin Analysis environment is unavailable"
+      acquired.close()
       return false
     }
+    lease = acquired
     scheduleIndexing?.let { schedule -> created.configureRefreshScheduler(schedule) }
     environment = created
     return true
   }
 
   override fun onFileOpened(path: Path) {
-    environment?.liveIndex?.refreshCurrentKtFile(path)
+    val env = environment ?: return
+    if (path.toString().endsWith(".java")) {
+      env.javaFiles.refresh(path)
+      env.javaSourceIndex.refreshFile(path)
+    } else {
+      env.liveIndex.refreshCurrentKtFile(path)
+    }
   }
 
   override fun onFileContentChanged(path: Path, edit: OneHopDocumentEdit?) {
-    environment?.liveIndex?.applyDocumentEdit(path, edit)
+    val env = environment ?: return
+    if (path.toString().endsWith(".java")) {
+      env.javaFiles.refresh(path)
+      env.javaSourceIndex.refreshFile(path)
+    } else {
+      env.liveIndex.applyDocumentEdit(path, edit)
+    }
   }
 
   override fun onFileClosed(path: Path) {
-    environment?.liveIndex?.closeCurrent(path)
+    val env = environment ?: return
+    if (path.toString().endsWith(".java")) {
+      env.javaFiles.refresh(path)
+      env.javaSourceIndex.refreshFile(path)
+    } else {
+      env.liveIndex.closeCurrent(path)
+    }
   }
 
   override fun onFileCreated(path: Path) {
-    environment?.liveIndex?.scheduleRefreshCurrentKtFile(path)
+    val env = environment ?: return
+    env.invalidateProjectFiles(path)
+    if (path.toString().endsWith(".java")) {
+      env.javaFiles.refresh(path)
+      // findFileByNioPath does not refresh the VFS, so a file created after the runtime started
+      // must be inserted here or the PSI-based Java reference scan cannot read it.
+      VirtualFileManager.getInstance().refreshAndFindFileByNioPath(path)
+      env.javaSourceIndex.invalidate()
+    } else {
+      env.liveIndex.scheduleRefreshCurrentKtFile(path)
+    }
+  }
+
+  override fun onFileSaved(path: Path) {
+    val env = environment ?: return
+    if (path.toString().endsWith(".java")) env.javaSourceIndex.refreshFile(path)
   }
 
   override fun onFileRemoved(path: Path) {
-    environment?.liveIndex?.removeFromSourceIndexUnder(path)
+    val env = environment ?: return
+    env.invalidateProjectFiles(path)
+    env.javaFiles.removeUnder(path)
+    // The removed path can be a directory holding Java sources, so the path set is invalidated
+    // unconditionally. A Kotlin-only removal only costs one rebuild of the Java source tables.
+    env.javaSourceIndex.invalidate()
+    env.liveIndex.removeFromSourceIndexUnder(path)
   }
 
   override fun onFileMoved(fromPath: Path, toPath: Path) {
-    environment?.liveIndex?.moveSourceIndex(fromPath, toPath)
+    val env = environment ?: return
+    env.invalidateProjectFiles(fromPath, toPath)
+    env.javaFiles.removeUnder(fromPath)
+    env.javaSourceIndex.invalidate()
+    // The destination is a new VFS entry for the same reason as in onFileCreated.
+    VirtualFileManager.getInstance().refreshAndFindFileByNioPath(toPath)
+    env.liveIndex.moveSourceIndex(fromPath, toPath)
+    com.tom.rv2ide.projects.FileManager.getActiveDocumentFiles()
+        .filter { it == toPath || it.startsWith(toPath) }
+        .forEach(env.javaFiles::refresh)
   }
 
   override fun analyze(
@@ -437,7 +492,8 @@ private fun extractCompletionPrefix(text: String, offset: Int): String {
     if (!closed.compareAndSet(false, true)) {
       return
     }
-    environment?.close()
+    lease?.close()
+    lease = null
     environment = null
   }
 }

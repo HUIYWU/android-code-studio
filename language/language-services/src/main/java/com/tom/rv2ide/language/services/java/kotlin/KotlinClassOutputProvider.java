@@ -18,6 +18,7 @@ package com.tom.rv2ide.language.services.java.kotlin;
 
 import com.tom.rv2ide.projects.ModuleProject;
 import com.tom.rv2ide.projects.android.AndroidModule;
+import com.tom.rv2ide.progress.ICancelChecker;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -39,16 +40,6 @@ public final class KotlinClassOutputProvider {
 
   private KotlinClassOutputProvider() {}
 
-  /**
-   * Returns only materialized outputs. This method never creates directories and never invokes
-   * Gradle/Kotlin compilation.
-   */
-  public static Set<File> findCompileOutputs(ModuleProject module) {
-    final Set<File> outputs = new LinkedHashSet<>(findModuleCompileOutputs(module));
-    outputs.addAll(findDependencyCompileOutputs(module));
-    return outputs;
-  }
-
   /** Returns materialized Kotlin outputs belonging to {@code module} itself. */
   public static Set<File> findModuleCompileOutputs(ModuleProject module) {
     final Set<File> outputs = new LinkedHashSet<>();
@@ -61,9 +52,8 @@ public final class KotlinClassOutputProvider {
   /**
    * Returns materialized Kotlin outputs of compile dependencies, excluding {@code module} itself.
    *
-   * <p>The current module's Kotlin source is represented by in-memory ABI stubs so unsaved edits,
-   * additions and deletions take precedence over stale build output. Dependencies do not have that
-   * live source view in the current Java compiler and therefore remain classpath-backed.
+   * <p>These are only compiled JVM outputs. Live Kotlin source semantics, including unsaved edits,
+   * are owned by the shared Analysis PSI project and are not represented by this provider.
    */
   public static Set<File> findDependencyCompileOutputs(ModuleProject module) {
     final Set<File> outputs = new LinkedHashSet<>();
@@ -76,25 +66,19 @@ public final class KotlinClassOutputProvider {
     return outputs;
   }
 
-  /**
-   * Lists top-level JVM types from directory-form Kotlin compiler outputs.
-   *
-   * <p>The project classpath index reads jars only. javac can consume these directories directly,
-   * but completion needs this parallel directory scan to expose the same Kotlin classes.
-   */
-  public static Set<String> publicTopLevelTypes(ModuleProject module) {
-    final Set<String> types = new LinkedHashSet<>();
-    for (File output : findCompileOutputs(module)) {
-      types.addAll(typesInDirectory(output));
-    }
-    return types;
-  }
-
   /** Lists top-level types from dependency Kotlin output only; see {@link #findDependencyCompileOutputs}. */
   public static Set<String> publicDependencyTopLevelTypes(ModuleProject module) {
+    return publicDependencyTopLevelTypes(module, ICancelChecker.NOOP);
+  }
+
+  /** Cancellable variant used by completion workers. */
+  public static Set<String> publicDependencyTopLevelTypes(
+      ModuleProject module, ICancelChecker cancelChecker) {
+    cancelChecker.abortIfCancelled();
     final Set<String> types = new LinkedHashSet<>();
     for (File output : findDependencyCompileOutputs(module)) {
-      types.addAll(typesInDirectory(output));
+      cancelChecker.abortIfCancelled();
+      types.addAll(typesInDirectory(output, cancelChecker));
     }
     return types;
   }
@@ -103,7 +87,7 @@ public final class KotlinClassOutputProvider {
     TYPE_CACHE.clear();
   }
 
-  private static Set<String> typesInDirectory(File output) {
+  private static Set<String> typesInDirectory(File output, ICancelChecker cancelChecker) {
     final String cacheKey = output.getAbsolutePath();
     final long lastModified = output.lastModified();
     final CachedTypes cached = TYPE_CACHE.get(cacheKey);
@@ -115,7 +99,10 @@ public final class KotlinClassOutputProvider {
     final Path root = output.toPath();
     try (Stream<Path> files = Files.walk(root)) {
       files.filter(path -> path.getFileName().toString().endsWith(".class"))
-          .map(path -> binaryName(root, path))
+          .map(path -> {
+            cancelChecker.abortIfCancelled();
+            return binaryName(root, path);
+          })
           .filter(name -> name != null && name.indexOf('$') < 0)
           .forEach(types::add);
     } catch (IOException error) {

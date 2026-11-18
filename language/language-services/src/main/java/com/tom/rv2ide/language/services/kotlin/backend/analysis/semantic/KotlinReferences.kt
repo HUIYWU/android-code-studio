@@ -8,7 +8,10 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveFileIdentity
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisApiGuard
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.ReferenceResult
@@ -16,6 +19,8 @@ import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.projects.IProjectManager
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.components.containingDeclaration
 import org.jetbrains.kotlin.analysis.api.components.containingModule
@@ -44,27 +49,44 @@ import org.jetbrains.kotlin.analysis.api.symbols.pointers.KaSymbolPointer
 import org.jetbrains.kotlin.analysis.api.types.KaClassType
 import org.jetbrains.kotlin.analysis.api.types.symbol
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaSourceModule
+import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.diagnostic.ControlFlowException
 import org.jetbrains.kotlin.com.intellij.openapi.project.IndexNotReadyException
+import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
+import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
+import org.jetbrains.kotlin.com.intellij.psi.JavaRecursiveElementVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiJavaCodeReferenceElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiManager
+import org.jetbrains.kotlin.com.intellij.psi.PsiReference
+import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceExpression
 import org.jetbrains.kotlin.idea.references.KtReference
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.psi.KtAnnotationEntry
 import org.jetbrains.kotlin.psi.KtArrayAccessExpression
 import org.jetbrains.kotlin.psi.KtBinaryExpression
 import org.jetbrains.kotlin.psi.KtCallExpression
+import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtDestructuringDeclarationEntry
 import org.jetbrains.kotlin.psi.KtExpression
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtForExpression
 import org.jetbrains.kotlin.psi.KtImportAlias
+import org.jetbrains.kotlin.psi.KtNamedFunction
+import org.jetbrains.kotlin.psi.KtProperty
+import org.jetbrains.kotlin.psi.KtPropertyAccessor
 import org.jetbrains.kotlin.psi.KtPropertyDelegate
 import org.jetbrains.kotlin.psi.KtSimpleNameExpression
+import org.jetbrains.kotlin.psi.KtStringTemplateExpression
 import org.jetbrains.kotlin.psi.KtUnaryExpression
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.CancellationException
+import kotlin.io.path.extension
 
 internal sealed interface ReferenceScope {
   data class FileScope(val path: Path) : ReferenceScope
@@ -145,6 +167,7 @@ internal fun KaSession.buildReferencePlan(
   val searchNames = LinkedHashSet<String>()
   targetName?.let { searchNames.add(it) }
   searchNames.addAll(aliasNames)
+  searchNames.addAll(jvmNameCandidates(declaration.psi as? KtDeclaration))
   if (normalized is KaClassSymbol && normalized.classKind == KaClassKind.COMPANION_OBJECT) {
     (normalized.containingDeclaration as? KaClassSymbol)?.let { outer ->
       symbolName(outer)?.let { searchNames.add(it) }
@@ -247,8 +270,39 @@ internal fun collectReferences(
     }
     hits += fileHits
   }
+  val javaCandidates = selectJavaCandidatePaths(plan, environment, cancelChecker)
+  val javaStamps =
+      javaCandidates.associateWith { path ->
+        nonFatalOrNull { FileManager.getLastModified(path) }
+      }
+  var javaScanFailed = false
+  for (path in javaCandidates.sortedBy { it.toString() }) {
+    cancelChecker.abortIfCancelled()
+    observer.candidateSelected(path)
+    val fileHits =
+        try {
+          scanJavaReferenceFile(plan, path, environment, cancelChecker, observer)
+        } catch (t: Throwable) {
+          if (t.isReferenceFatal()) throw t
+          observer.fileFailed(path)
+          KlsLogs.warn(
+              "Java references file scan failed: path={}, error={}",
+              path,
+              t.message,
+          )
+          javaScanFailed = true
+          continue
+        }
+    hits += fileHits
+  }
+  if (javaScanFailed) return ReferenceResult(emptyList())
   observer.beforePublish()
   cancelChecker.abortIfCancelled()
+  if (javaStamps.any { (path, stamp) ->
+        nonFatalOrNull { FileManager.getLastModified(path) } != stamp
+      }) {
+    return ReferenceResult(emptyList())
+  }
   if (plan.stamp.metadataRevision != environment.metadataIndex.revision() ||
       plan.stamp.identityRevision != environment.liveIndex.identityRevision()) {
     return ReferenceResult(emptyList())
@@ -259,6 +313,164 @@ internal fun collectReferences(
     return ReferenceResult(emptyList())
   }
   return toReferenceResult(hits)
+}
+
+private fun selectJavaCandidatePaths(
+    plan: ReferenceSearchPlan,
+    environment: LiveAnalysisEnvironment,
+    cancelChecker: ICancelChecker,
+): List<Path> {
+  if (plan.declaration == null || plan.scanAllNames) return emptyList()
+  val scope = plan.scope
+  if (scope is ReferenceScope.FileScope) return emptyList()
+  val modulePaths =
+      when (scope) {
+        is ReferenceScope.Modules -> scope.modulePaths
+        ReferenceScope.AllSource -> environment.sourceModulesByPath.keys
+        else -> return emptyList()
+      }
+  if (modulePaths.isEmpty()) return emptyList()
+  val candidates = LinkedHashSet<Path>()
+  for (modulePath in modulePaths) {
+    cancelChecker.abortIfCancelled()
+    environment.javaSourceIndex.sourceFiles(modulePath).forEach { candidates.add(it.normalize()) }
+  }
+  FileManager.getActiveDocumentFiles().forEach { path ->
+    if (path.extension != "java") return@forEach
+    cancelChecker.abortIfCancelled()
+    val normalized = path.normalize()
+    if (scope is ReferenceScope.Modules) {
+      val ownerPath =
+          IProjectManager.getInstance()
+              .getWorkspace()
+              ?.findModuleForFile(normalized, false)
+              ?.path
+      if (ownerPath != null && ownerPath !in scope.modulePaths) return@forEach
+    }
+    candidates.add(normalized)
+  }
+  val javaNames = javaReferenceNameCandidates(plan.searchNames)
+  return candidates.filter { path ->
+    cancelChecker.abortIfCancelled()
+    val text = nonFatalOrNull { FileManager.getDocumentContents(path) }
+    text == null || javaNames.any { text.contains(it) }
+  }
+}
+
+private fun jvmNameCandidates(declaration: KtDeclaration?): Set<String> {
+  val entries: List<KtAnnotationEntry> =
+      when (declaration) {
+        is KtNamedFunction -> declaration.annotationEntries
+        is KtProperty ->
+            buildList {
+              addAll(declaration.annotationEntries)
+              declaration.getter?.let { addAll(it.annotationEntries) }
+              declaration.setter?.let { addAll(it.annotationEntries) }
+            }
+        is KtPropertyAccessor -> declaration.annotationEntries
+        else -> return emptySet()
+      }
+  if (entries.isEmpty()) return emptySet()
+  val result = LinkedHashSet<String>()
+  for (entry in entries) {
+    if (entry.shortName?.asString() != "JvmName") continue
+    val expression =
+        entry.valueArguments.firstOrNull()?.getArgumentExpression() as? KtStringTemplateExpression
+            ?: continue
+    val name = expression.entries.singleOrNull()?.text ?: continue
+    if (name.isNotEmpty()) result.add(name)
+  }
+  return result
+}
+
+private fun javaReferenceNameCandidates(names: Set<String>): List<String> {
+  val result = LinkedHashSet<String>()
+  for (name in names) {
+    if (name.isEmpty()) continue
+    result.add(name)
+    val capitalized = name.replaceFirstChar { it.titlecase() }
+    result.add("get$capitalized")
+    result.add("set$capitalized")
+    result.add("is$capitalized")
+  }
+  return result.toList()
+}
+
+private fun scanJavaReferenceFile(
+    plan: ReferenceSearchPlan,
+    path: Path,
+    environment: LiveAnalysisEnvironment,
+    cancelChecker: ICancelChecker,
+    observer: ReferenceScanObserver,
+): List<ReferenceHit> =
+    AnalysisApiGuard.withAccess(cancelChecker) {
+      ApplicationManager.getApplication().runReadAction(
+          Computable {
+            environment.project.analysisRead {
+              val javaFile = javaPsiFile(path, environment) ?: return@analysisRead emptyList()
+              observer.analysisSessionStarted(path)
+              val text = javaFile.text
+              val lineIndex = LineIndex.from(text)
+              val textLength = text.length
+              val hits = LinkedHashMap<ReferenceKey, ReferenceHit>()
+              fun record(nameElement: PsiElement?, reference: PsiReference?) {
+                cancelChecker.abortIfCancelled()
+                val resolved = nonFatalOrNull { reference?.resolve() } ?: return
+                if (!javaReferenceTargets(plan, resolved)) return
+                val range = nameElement?.textRange ?: return
+                val start = range.startOffset.coerceIn(0, textLength)
+                val end = range.endOffset.coerceIn(start, textLength)
+                val location =
+                    Location(
+                        path.normalize(),
+                        Range(lineIndex.indexToPosition(start), lineIndex.indexToPosition(end)),
+                    )
+                hits[ReferenceKey.of(location)] = ReferenceHit(location, ReferenceRole.USAGE)
+                observer.referenceResolved(path)
+              }
+              javaFile.accept(
+                  object : JavaRecursiveElementVisitor() {
+                    override fun visitReferenceExpression(expression: PsiReferenceExpression) {
+                      record(expression.referenceNameElement, expression.reference)
+                      super.visitReferenceExpression(expression)
+                    }
+
+                    override fun visitReferenceElement(element: PsiJavaCodeReferenceElement) {
+                      record(element.referenceNameElement, element.reference)
+                      super.visitReferenceElement(element)
+                    }
+                  }
+              )
+              hits.values.toList()
+            }
+          }
+      )
+    }
+
+private fun javaPsiFile(path: Path, environment: LiveAnalysisEnvironment): PsiJavaFile? {
+  environment.javaFiles.currentFile(path)?.let {
+    return it
+  }
+  val virtualFile =
+      nonFatalOrNull { VirtualFileManager.getInstance().findFileByNioPath(path) } ?: return null
+  return nonFatalOrNull { PsiManager.getInstance(environment.project).findFile(virtualFile) }
+      as? PsiJavaFile
+}
+
+private fun javaReferenceTargets(plan: ReferenceSearchPlan, resolved: PsiElement): Boolean {
+  val declaration = plan.declaration ?: return false
+  val navigation = nonFatalOrNull { resolved.navigationElement ?: resolved } ?: return false
+  val targetPath = psiPath(navigation) ?: return false
+  if (targetPath.normalize() != declaration.path.normalize()) return false
+  val target = nonFatalOrNull { definitionTargetPsi(navigation) } ?: return false
+  val range = target.textRange ?: return false
+  return range.startOffset == declaration.startOffset && range.endOffset == declaration.endOffset
+}
+
+private fun psiPath(element: PsiElement): Path? {
+  val file = nonFatalOrNull { element.containingFile } ?: return null
+  return file.liveBackingPath
+      ?: file.virtualFile?.takeIf { it.isInLocalFileSystem }?.path?.let(Paths::get)
 }
 
 private fun selectCandidatePaths(
@@ -740,6 +952,14 @@ private data class ReferenceKey(
         )
   }
 }
+
+private inline fun <T> nonFatalOrNull(action: () -> T): T? =
+    try {
+      action()
+    } catch (error: Throwable) {
+      if (error.isReferenceFatal()) throw error
+      null
+    }
 
 private fun Throwable.isReferenceFatal(): Boolean =
     this is CancellationException ||

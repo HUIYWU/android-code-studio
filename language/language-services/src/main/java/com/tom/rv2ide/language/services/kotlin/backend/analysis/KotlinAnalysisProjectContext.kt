@@ -37,6 +37,7 @@ internal data class KotlinAnalysisLibraryAttachmentContext(
 
 internal data class KotlinAnalysisModuleContext(
     val modulePath: String,
+    val projectDirectory: Path,
     val sourceRootDescriptors: List<ProjectRootDescriptor>,
     val sourceRoots: List<Path>,
     val javaSourceRoots: List<Path>,
@@ -86,6 +87,7 @@ internal data class KotlinAnalysisProjectContext(
       val sourceRoots = sourceRootDescriptors.map { it.path }.distinct().sortedBy(Path::toString)
       return KotlinAnalysisModuleContext(
           modulePath = snapshot.identity.modulePath,
+          projectDirectory = snapshot.identity.projectDirectory.toAbsolutePath().normalize(),
           sourceRootDescriptors = sourceRootDescriptors,
           sourceRoots = sourceRoots,
           javaSourceRoots = existingPaths(snapshot.javaSourceRoots.map { it.path.toFile() }),

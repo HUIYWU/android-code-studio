@@ -146,6 +146,7 @@ internal class AnalysisRequestScheduler(
       cancelChecker: ICancelChecker,
       requiredMutationPaths: Set<Path> = emptySet(),
       mutationPaths: Set<Path> = emptySet(),
+      waitForPendingMutations: Boolean = false,
       action: () -> T,
       cancellableAction: ((ICancelChecker) -> T)? = null,
   ): Pair<CompletableFuture<T?>, Future<*>> {
@@ -167,6 +168,7 @@ internal class AnalysisRequestScheduler(
                   cancelChecker = cancelChecker,
                   requiredMutationPaths = requiredMutationPaths,
                   mutationPaths = mutationPaths,
+                  waitForPendingMutations = waitForPendingMutations,
                   action = action,
                   cancellableAction = cancellableAction,
               )

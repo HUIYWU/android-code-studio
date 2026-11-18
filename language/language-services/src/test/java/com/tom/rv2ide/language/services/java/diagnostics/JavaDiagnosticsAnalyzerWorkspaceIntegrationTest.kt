@@ -25,6 +25,7 @@ import com.tom.rv2ide.utils.FileProvider
 import kotlin.io.path.readText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,6 +43,48 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = BaseApplication::class)
 class JavaDiagnosticsAnalyzerWorkspaceIntegrationTest {
+
+  @Test
+  fun kotlinDependencyChange_invalidatesConsumerScopeOnly() {
+    val appFile =
+        FileProvider.kotlinAnalysisProjectRoot()
+            .resolve("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java")
+            .normalize()
+    val libraryFile =
+        FileProvider.kotlinAnalysisProjectRoot()
+            .resolve("library/src/main/java/com/tom/rv2ide/testing/kotlinfixture/library/LibraryApi.kt")
+            .normalize()
+
+    LspWorkspaceTestSupport.withWorkspace(FileProvider.kotlinAnalysisProjectRoot()) {
+      val consumer = requireNotNull(workspace.findModuleForFile(appFile, checkExistance = true))
+      val dependency = requireNotNull(workspace.findModuleForFile(libraryFile, checkExistance = true))
+      assertTrue(
+          "fixture must compile the consumer against the Kotlin library",
+          consumer.getCompileModuleProjects().any { it.path == dependency.path },
+      )
+
+      val consumerScope = JavaModuleScopes.forModule(consumer)
+      val consumerEpoch = consumerScope.epoch
+      val dependencyScope = JavaModuleScopes.forModule(dependency)
+      val dependencyEpoch = dependencyScope.epoch
+      try {
+        JavaModuleScopes.destroyDependentsOf(dependency)
+
+        assertFalse(
+            "a changed Kotlin dependency must invalidate the consumer's semantic epoch",
+            JavaModuleScopes.isCurrent(consumerScope, consumerEpoch),
+        )
+        assertNotEquals(consumerEpoch, consumerScope.epoch)
+        assertTrue(
+            "a module that does not compile against the change keeps its epoch",
+            JavaModuleScopes.isCurrent(dependencyScope, dependencyEpoch),
+        )
+      } finally {
+        JavaModuleScopes.destroy(consumer)
+        JavaModuleScopes.destroy(dependency)
+      }
+    }
+  }
 
   @Test
   fun foregroundLease_yieldsThenReleasedLeaseAnalyzesCurrentDocument() {

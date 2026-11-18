@@ -119,6 +119,11 @@ class KotlinAnalysisReferencesTargetsTest {
             )
           })
           val intLine = LineIndex.from(content).indexToPosition(content.indexOf("OverloadTarget(1)")).line
+          val stringLine = LineIndex.from(content).indexToPosition(content.indexOf("OverloadTarget(\"s\")")).line
+          assertTrue(
+              "string constructor call missing: ${references.locations}",
+              references.locations.any { it.range.start.line == stringLine },
+          )
           assertTrue(references.locations.none { it.range.start.line == intLine })
         }
       } finally {
@@ -821,6 +826,109 @@ class KotlinAnalysisReferencesTargetsTest {
       } finally {
         closeDocument(file)
         Files.deleteIfExists(file)
+      }
+    }
+  }
+
+  @Test
+  fun kotlinTargetFindsJavaSourceReference() {
+    withWorkspace {
+      val kotlinFile =
+          fixturePath("library/src/main/java/com/tom/rv2ide/testing/kotlinfixture/library/LibraryApi.kt")
+      val content = String(Files.readAllBytes(kotlinFile), Charsets.UTF_8)
+      val javaFile =
+          fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaKotlinCaller.java")
+      val javaContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+
+          import com.tom.rv2ide.testing.kotlinfixture.library.LibraryApi;
+
+          public final class JavaKotlinCaller {
+            public String call() {
+              LibraryApi api = new LibraryApi();
+              return api.load("value");
+            }
+          }
+      """.trimIndent() + "\n"
+      Files.write(javaFile, javaContent.toByteArray(Charsets.UTF_8))
+      openDocument(kotlinFile, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(kotlinFile) }
+          val references = requireNotNull(runAnalysis {
+            runtime.findReferences(request(kotlinFile, content, "load", includeDeclaration = true))
+          })
+          val callLine =
+              LineIndex.from(javaContent).indexToPosition(javaContent.indexOf("api.load")).line
+          assertTrue(
+              "java call site missing: ${references.locations}",
+              references.locations.any { it.file == javaFile && it.range.start.line == callLine },
+          )
+        }
+      } finally {
+        closeDocument(kotlinFile)
+        Files.deleteIfExists(javaFile)
+      }
+    }
+  }
+
+  @Test
+  fun newlyCreatedJavaSourceIsIndexedAfterCreationNotification() {
+    withWorkspace {
+      val kotlinFile =
+          fixturePath("library/src/main/java/com/tom/rv2ide/testing/kotlinfixture/library/LibraryApi.kt")
+      val content = String(Files.readAllBytes(kotlinFile), Charsets.UTF_8)
+      val javaFile =
+          fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaCreationCaller.java")
+      val javaContent = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+
+          import com.tom.rv2ide.testing.kotlinfixture.library.LibraryApi;
+
+          public final class JavaCreationCaller {
+            public String call() {
+              LibraryApi api = new LibraryApi();
+              return api.load("value");
+            }
+          }
+      """.trimIndent() + "\n"
+      openDocument(kotlinFile, content, version = 1, revision = 1L)
+      try {
+        withRuntime(workspace) { runtime ->
+          runAnalysis { runtime.onFileOpened(kotlinFile) }
+          val baseline =
+              requireNotNull(
+                  runAnalysis {
+                    runtime.findReferences(
+                        request(kotlinFile, content, "load", includeDeclaration = true)
+                    )
+                  }
+              )
+          assertTrue(
+              "the Java caller must not exist during the baseline search; refs=${baseline.locations}",
+              baseline.locations.none { it.file == javaFile },
+          )
+
+          Files.write(javaFile, javaContent.toByteArray(Charsets.UTF_8))
+          runAnalysis { runtime.onFileCreated(javaFile) }
+          val refreshed =
+              requireNotNull(
+                  runAnalysis {
+                    runtime.findReferences(
+                        request(kotlinFile, content, "load", includeDeclaration = true)
+                    )
+                  }
+              )
+          val callLine =
+              LineIndex.from(javaContent).indexToPosition(javaContent.indexOf("api.load")).line
+          assertTrue(
+              "the created Java source was not indexed; refs=${refreshed.locations}",
+              refreshed.locations.any { it.file == javaFile && it.range.start.line == callLine },
+          )
+        }
+      } finally {
+        closeDocument(kotlinFile)
+        Files.deleteIfExists(javaFile)
       }
     }
   }

@@ -22,11 +22,9 @@ import androidx.annotation.NonNull;
 import com.tom.rv2ide.lsp.api.IServerSettings;
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService;
 import com.tom.rv2ide.language.services.java.compiler.SynchronizedTask;
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmSourceNavigator;
-import com.tom.rv2ide.preferences.internal.JavaPreferences;
+import com.tom.rv2ide.language.services.java.providers.definition.KotlinSourceNavigation;
 import com.tom.rv2ide.language.services.java.providers.definition.ErroneousDefinitionProvider;
 import com.tom.rv2ide.language.services.java.providers.definition.IJavaDefinitionProvider;
-import com.tom.rv2ide.language.services.java.providers.definition.KotlinDefinitionFallback;
 import com.tom.rv2ide.language.services.java.providers.definition.LocalDefinitionProvider;
 import com.tom.rv2ide.language.services.java.providers.definition.RemoteDefinitionProvider;
 import com.tom.rv2ide.language.services.java.utils.NavigationHelper;
@@ -88,15 +86,15 @@ public class DefinitionProvider extends CancelableServiceProvider {
 
     if (element == null) {
       LOG.debug("Cannot find javac element at line: {} and column: {}; trying Kotlin fallback", line, column);
-      return KotlinDefinitionFallback.find(compiler, file, line - 1, column - 1);
+      return KotlinSourceNavigation.findFallback(compiler, file, line - 1, column - 1, this);
     }
 
     // Java-to-Kotlin source navigation is an opt-in language-service capability.
     // Do not let an element originating from a stale classpath or previous task bypass the
     // recognition preference and trigger Kotlin source/index work while the feature is disabled.
-    final Location kotlinLocation = JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()
-        ? KotlinJvmSourceNavigator.find(compiler.getModule(), element)
-        : null;
+    final Location kotlinLocation =
+        KotlinSourceNavigation.findResolvedSymbol(
+            compiler, file, line - 1, column - 1, element, this);
     if (kotlinLocation != null) {
       return Collections.singletonList(kotlinLocation);
     }
@@ -113,13 +111,13 @@ public class DefinitionProvider extends CancelableServiceProvider {
       final String className = className(element);
       if (TextUtils.isEmpty(className)) {
         LOG.debug("No Java class name found for element: {}; trying Kotlin fallback", element);
-        return KotlinDefinitionFallback.find(compiler, file, line - 1, column - 1);
+        return KotlinSourceNavigation.findFallback(compiler, file, line - 1, column - 1, this);
       }
 
       final Optional<JavaFileObject> optional = compiler.findAnywhere(className);
       if (!optional.isPresent()) {
         LOG.debug("Cannot find Java source file for class: {}; trying Kotlin fallback", className);
-        return KotlinDefinitionFallback.find(compiler, file, line - 1, column - 1);
+        return KotlinSourceNavigation.findFallback(compiler, file, line - 1, column - 1, this);
       }
 
       final JavaFileObject jfo = optional.get();
@@ -135,7 +133,7 @@ public class DefinitionProvider extends CancelableServiceProvider {
     if (!locations.isEmpty()) {
       return locations;
     }
-    return KotlinDefinitionFallback.find(compiler, file, line - 1, column - 1);
+    return KotlinSourceNavigation.findFallback(compiler, file, line - 1, column - 1, this);
   }
 
   private String className(Element element) {

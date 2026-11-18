@@ -19,6 +19,7 @@ internal interface KotlinAnalysisRuntime {
   fun onFileContentChanged(path: Path, edit: OneHopDocumentEdit? = null) = Unit
   fun onFileClosed(path: Path) = Unit
   fun onFileCreated(path: Path) = Unit
+  fun onFileSaved(path: Path) = Unit
   fun onFileRemoved(path: Path) = Unit
   fun onFileMoved(fromPath: Path, toPath: Path) = Unit
   fun analyze(
@@ -35,5 +36,8 @@ internal interface KotlinAnalysisRuntime {
 }
 
 internal fun interface KotlinAnalysisRuntimeFactory {
-  fun create(classpathProvider: KotlinProjectClasspathProvider): KotlinAnalysisRuntime
+  fun create(
+      classpathProvider: KotlinProjectClasspathProvider,
+      freshEnvironment: Boolean,
+  ): KotlinAnalysisRuntime
 }

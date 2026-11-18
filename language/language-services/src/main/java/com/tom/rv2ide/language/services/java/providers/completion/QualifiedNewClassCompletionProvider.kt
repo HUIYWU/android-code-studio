@@ -20,13 +20,17 @@ import com.tom.rv2ide.lsp.api.IServerSettings
 import com.tom.rv2ide.lsp.api.describeSnippet
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
+import com.tom.rv2ide.language.services.java.utils.CancelChecker
+import com.tom.rv2ide.lsp.api.CompletionCancellation
 import com.tom.rv2ide.lsp.models.Command
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.InsertTextFormat.SNIPPET
 import com.tom.rv2ide.lsp.models.MatchLevel.NO_MATCH
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.progress.ProgressManager.Companion.abortIfCancelled
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import jdkx.lang.model.element.ElementKind.CLASS
 import jdkx.lang.model.element.Modifier.STATIC
 import jdkx.lang.model.element.TypeElement
@@ -59,6 +63,8 @@ class QualifiedNewClassCompletionProvider(
         ?: return CompletionResult.EMPTY
     val owner = qualifierType.asElement() as? TypeElement ?: return CompletionResult.EMPTY
     val items = mutableListOf<CompletionItem>()
+    val insertionPrefix =
+        if (partial.isEmpty() && !hasWhitespaceBeforeCursor(path)) "new " else ""
 
     for (member in task.task.elements.getAllMembers(owner)) {
       abortIfCancelled()
@@ -72,8 +78,6 @@ class QualifiedNewClassCompletionProvider(
       }
       val completion = item(task, member, matchLevel)
       if (!endsWithParen) {
-        val insertionPrefix =
-            if (partial.isEmpty() && !hasWhitespaceBeforeCursor(path)) "new " else ""
         completion.insertText = insertionPrefix + member.simpleName.toString() + "($0)"
         completion.insertTextFormat = SNIPPET
         completion.command = Command("Trigger Parameter Hints", Command.TRIGGER_PARAMETER_HINTS)
@@ -82,7 +86,52 @@ class QualifiedNewClassCompletionProvider(
       }
       items.add(completion)
     }
+
+    appendKotlinInnerClasses(items, owner, partial, insertionPrefix, endsWithParen)
     return CompletionResult(items)
+  }
+
+  private fun appendKotlinInnerClasses(
+      items: MutableList<CompletionItem>,
+      owner: TypeElement,
+      partial: String,
+      insertionPrefix: String,
+      endsWithParen: Boolean,
+  ) {
+    val supplements =
+        try {
+          KotlinSourceCompletion.findInnerClasses(
+              file,
+              cursor,
+              owner.qualifiedName?.toString(),
+              partial,
+              insertionPrefix,
+              !endsWithParen,
+              CompletionCancellation.current() ?: ICancelChecker.NOOP,
+          )
+        } catch (cancelled: CancellationException) {
+          throw cancelled
+        } catch (error: Throwable) {
+          if (CancelChecker.isCancelled(error)) {
+            throw error
+          }
+          log.warn(
+              "Kotlin inner class completion supplement failed file={} owner={}",
+              file,
+              owner.qualifiedName,
+              error,
+          )
+          emptyList()
+        }
+    if (KotlinSourceCompletion.isKotlinOwner(
+            file,
+            cursor,
+            owner.qualifiedName?.toString(),
+            CompletionCancellation.current() ?: ICancelChecker.NOOP,
+        )) {
+      items.clear()
+    }
+    KotlinSourceCompletion.merge(items, supplements)
   }
 
   private fun hasWhitespaceBeforeCursor(path: TreePath): Boolean {

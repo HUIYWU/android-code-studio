@@ -59,6 +59,33 @@ internal object JavaModuleScopes {
     JavaCompilerProvider.getInstance().destroy(module)
   }
 
+  /**
+   * Destroys the scopes of active modules that compile against [module].
+   *
+   * Kotlin sources in a dependency module feed the ABI of consumer modules, but [destroy] only
+   * invalidates the changed module. Without this, a consumer keeps its epoch and answers requests
+   * and diagnostics from a cache built against the previous ABI. Only already-created scopes are
+   * visited, so no scope or compiler is allocated for modules that never requested semantics.
+   */
+  fun destroyDependentsOf(module: ModuleProject) {
+    val modulePath = module.path
+    scopes.keys.forEach { candidate ->
+      if (candidate.path == modulePath) return@forEach
+      val dependsOnModule =
+          try {
+            candidate.getCompileModuleProjects().any { it.path == modulePath }
+          } catch (_: RuntimeException) {
+            // A transient workspace failure cannot prove independence. Invalidate conservatively
+            // instead of keeping semantics from a possibly stale ABI.
+            true
+          }
+      if (dependsOnModule) {
+        destroy(candidate)
+      }
+    }
+  }
+
+
   fun destroyAll() {
     scopes.values.forEach { it.invalidateEpoch() }
     scopes.clear()

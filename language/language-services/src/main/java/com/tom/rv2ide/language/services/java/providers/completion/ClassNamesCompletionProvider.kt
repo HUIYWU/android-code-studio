@@ -19,6 +19,8 @@ package com.tom.rv2ide.language.services.java.providers.completion
 
 import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.lsp.api.IServerSettings
+import com.tom.rv2ide.lsp.api.CompletionCancellation
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
 import com.tom.rv2ide.language.services.java.providers.CompletionProvider
@@ -79,7 +81,9 @@ class ClassNamesCompletionProvider(
     abortIfCancelled()
     abortCompletionIfCancelled()
     val publicIndexStartedNs = System.nanoTime()
-    val topLevelTypes = compiler.publicTopLevelTypes()
+    val topLevelTypes =
+        compiler.publicTopLevelTypes(
+            CompletionCancellation.current() ?: ICancelChecker.NOOP)
     val publicIndexUs = (System.nanoTime() - publicIndexStartedNs) / 1_000L
     if (IdeLogConfig.shouldLogInfo()) {
       log.info(

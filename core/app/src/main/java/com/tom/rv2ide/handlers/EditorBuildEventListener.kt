@@ -29,7 +29,6 @@ import com.tom.rv2ide.activities.editor.EditorHandlerActivity
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex
 import com.tom.rv2ide.preferences.internal.GeneralPreferences
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.projects.IProjectManager
@@ -203,7 +202,6 @@ class EditorBuildEventListener : GradleBuildService.EventListener {
     // the post-build analysis to avoid source-stub/class-output transition diagnostics.
     JavaCompilerProvider.getInstance().destroy()
     SourceFileManager.clearCache()
-    KotlinJvmTypeIndex.clear()
     KotlinClassOutputProvider.clearCache()
   }
 

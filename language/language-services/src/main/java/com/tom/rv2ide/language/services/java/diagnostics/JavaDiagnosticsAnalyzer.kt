@@ -18,7 +18,10 @@ package com.tom.rv2ide.language.services.java.diagnostics
 
 import android.os.Process
 import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.language.services.interop.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
+import com.tom.rv2ide.preferences.internal.JavaPreferences
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
 import com.tom.rv2ide.language.services.java.compiler.SourceFileObject
 import com.tom.rv2ide.language.services.java.models.CompilationDocumentState
@@ -68,7 +71,6 @@ internal class JavaDiagnosticsAnalyzer(
         IProjectManager.getInstance().getWorkspace()?.findModuleForFile(file, false)
             ?: return DiagnosticResult.NO_UPDATE
     val scope = JavaModuleScopes.forModule(module)
-    val compiler = scope.compiler()
     val epoch = scope.epoch
 
     abortIfCancelled()
@@ -80,8 +82,13 @@ internal class JavaDiagnosticsAnalyzer(
     val activeSnapshot = FileManager.getActiveDocumentSnapshot(file)
     val stamp = activeSnapshot?.let { DocumentStamp(it.version, it.revision) }
     val modifiedAt = activeSnapshot?.modified ?: FileManager.getLastModified(file)
+    val ledgerGeneration = ledger.generation()
+    val sharedResolverGeneration = JavaDiagnosticsInterop.currentGeneration()
+    if (JavaPreferences.isJavaKotlinRecognitionEnabled && sharedResolverGeneration == null) {
+      return DiagnosticResult.NO_UPDATE
+    }
 
-    ledger.find(file, stamp, epoch, modifiedAt)?.let { cached ->
+    ledger.find(file, stamp, epoch, ledgerGeneration, modifiedAt, sharedResolverGeneration)?.let { cached ->
       if (IdeLogConfig.shouldLogInfo()) {
         log.info(
             "Diagnostics cache-hit file={} version={} revision={} epoch={} resultKind={} diagnosticCount={}",
@@ -93,7 +100,10 @@ internal class JavaDiagnosticsAnalyzer(
             cached.diagnostics.size,
         )
       }
-      return cached
+      if (ledger.generation() == ledgerGeneration) {
+        return cached
+      }
+      return DiagnosticResult.NO_UPDATE
     }
 
     if (analyzing) {
@@ -110,13 +120,16 @@ internal class JavaDiagnosticsAnalyzer(
     analyzing = true
 
     val worker =
-        DiagnosticsWork(compiler, file, scope, epoch).also {
+        DiagnosticsWork(file, scope, epoch, ledgerGeneration, sharedResolverGeneration).also {
           analyzingWorker = it
           it.start()
           it.join()
         }
 
-    return worker.result.also { result ->
+    val terminalResult =
+        if (ledger.generation() == ledgerGeneration) worker.result
+        else DiagnosticResult.NO_UPDATE
+    return terminalResult.also { result ->
       analyzingWorker = null
       if (IdeLogConfig.shouldLogInfo()) {
         log.info(
@@ -137,7 +150,15 @@ internal class JavaDiagnosticsAnalyzer(
             } else {
               stamp
             }
-        ledger.record(file, resultStamp, epoch, Instant.now(), result)
+        ledger.record(
+            file,
+            resultStamp,
+            epoch,
+            ledgerGeneration,
+            Instant.now(),
+            result,
+            sharedResolverGeneration,
+        )
       }
     }
   }
@@ -166,6 +187,8 @@ internal class JavaDiagnosticsAnalyzer(
       task: CompileTask,
       documentVersion: Int,
       documentRevision: Long,
+      ledgerGeneration: Long,
+      resolverGeneration: Long?,
   ): DiagnosticResult {
     val result =
         if (!isTaskValid(task)) {
@@ -173,7 +196,8 @@ internal class JavaDiagnosticsAnalyzer(
           if (IdeLogConfig.shouldLogInfo()) {
             log.info("Using cached diagnostics")
           }
-          ledger.findByRevision(file, documentRevision) ?: DiagnosticResult.NO_UPDATE
+          ledger.findByRevision(file, documentRevision, ledgerGeneration, resolverGeneration)
+              ?: DiagnosticResult.NO_UPDATE
         } else {
           DiagnosticResult(
               file,
@@ -195,25 +219,27 @@ internal class JavaDiagnosticsAnalyzer(
   }
 
   private inner class DiagnosticsWork(
-      val compiler: JavaCompilerService,
       val file: Path,
       val scope: JavaModuleScope,
       val epoch: Long,
+      val ledgerGeneration: Long,
+      val resolverGeneration: Long?,
   ) : Thread("JavaDiagnosticsWorker") {
 
-    var result: DiagnosticResult = DiagnosticResult.NO_UPDATE
+     private val cancelChecker = ICancelChecker.Default()
+     var result: DiagnosticResult = DiagnosticResult.NO_UPDATE
 
-    fun cancel() {
-      ProgressManager.instance.cancel(this)
-    }
+     fun cancel() {
+       cancelChecker.cancel()
+       ProgressManager.instance.cancel(this)
+     }
 
     override fun run() {
       Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+      var compiler: JavaCompilerService? = null
       result =
           try {
             val activeSnapshot = FileManager.getActiveDocumentSnapshot(file)
-            val contents = activeSnapshot?.content ?: FileManager.getDocumentContents(file)
-            val modified = activeSnapshot?.modified ?: FileManager.getLastModified(file)
             val documentVersion =
                 activeSnapshot?.version ?: DiagnosticResult.UNKNOWN_DOCUMENT_VERSION
             val documentRevision =
@@ -228,20 +254,57 @@ internal class JavaDiagnosticsAnalyzer(
               }
               return
             }
-            compiler
-                .compile(
-                    CompilationRequest(
-                        sources = listOf(SourceFileObject(file, contents, modified)),
-                        documentState =
-                            CompilationDocumentState(
-                                file,
-                                contents,
-                                documentVersion,
-                                documentRevision,
-                            ),
+            if (JavaPreferences.isJavaKotlinRecognitionEnabled) {
+              when (val shared = JavaDiagnosticsInterop.diagnostics(file, cancelChecker)) {
+                is JavaDiagnosticsInterop.Result.Success -> {
+                  if (shared.generation != resolverGeneration || JavaDiagnosticsInterop.currentGeneration() != shared.generation) {
+                    DiagnosticResult.NO_UPDATE
+                  } else if (
+                      documentRevision != DiagnosticResult.UNKNOWN_DOCUMENT_REVISION &&
+                          FileManager.getActiveDocumentSnapshot(file)?.revision != documentRevision
+                  ) {
+                    DiagnosticResult.NO_UPDATE
+                  } else {
+                    DiagnosticResult(
+                        file,
+                        shared.diagnostics,
+                        documentVersion = documentVersion,
+                        documentRevision = documentRevision,
                     )
-                )
-                .get { task ->
+                  }
+                }
+                is JavaDiagnosticsInterop.Result.Unavailable -> DiagnosticResult.NO_UPDATE
+                is JavaDiagnosticsInterop.Result.Failure -> {
+                  if (IdeLogConfig.shouldLogWarn()) {
+                    log.warn(
+                        "Shared Java diagnostics failed file={} generation={}",
+                        file,
+                        shared.generation,
+                        shared.error,
+                    )
+                  }
+                  DiagnosticResult.NO_UPDATE
+                }
+              }
+            } else {
+              val contents = activeSnapshot?.content ?: FileManager.getDocumentContents(file)
+              val modified = activeSnapshot?.modified ?: FileManager.getLastModified(file)
+              val activeCompiler = scope.compiler()
+              compiler = activeCompiler
+              activeCompiler
+                  .compile(
+                      CompilationRequest(
+                          sources = listOf(SourceFileObject(file, contents, modified)),
+                          documentState =
+                              CompilationDocumentState(
+                                  file,
+                                  contents,
+                                  documentVersion,
+                                  documentRevision,
+                              ),
+                      )
+                  )
+                  .get { task ->
                   if (
                       documentRevision != DiagnosticResult.UNKNOWN_DOCUMENT_REVISION &&
                           FileManager.getActiveDocumentSnapshot(file)?.revision != documentRevision
@@ -258,9 +321,17 @@ internal class JavaDiagnosticsAnalyzer(
                     }
                     DiagnosticResult.NO_UPDATE
                   } else {
-                    computeDiagnostics(file, task, documentVersion, documentRevision)
+                    computeDiagnostics(
+                        file,
+                        task,
+                        documentVersion,
+                        documentRevision,
+                        ledgerGeneration,
+                        resolverGeneration,
+                    )
                   }
                 }
+            }
           } catch (err: Throwable) {
             if (CancelChecker.isCancelled(err)) {
               // Cancellation is expected while foreground work preempts analysis; keep quiet.
@@ -275,9 +346,9 @@ internal class JavaDiagnosticsAnalyzer(
                     err.cause?.javaClass?.name,
                     err.cause?.message,
                     Thread.currentThread().name,
-                    System.identityHashCode(compiler),
-                    compiler.compiler.currentContext != null,
-                    compiler.getSynchronizedTask() != null,
+                    compiler?.let { System.identityHashCode(it) } ?: 0,
+                    compiler?.compiler?.currentContext != null,
+                    compiler?.getSynchronizedTask() != null,
                 )
               }
             }

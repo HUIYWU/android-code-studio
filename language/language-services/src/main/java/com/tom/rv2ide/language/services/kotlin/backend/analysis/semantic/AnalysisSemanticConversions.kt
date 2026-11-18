@@ -165,7 +165,7 @@ internal fun locationForPsi(requestPath: Path, sourceFile: KtFile, psi: PsiEleme
   val targetPath = if (containingFile == sourceFile) {
     requestPath
   } else {
-    (containingFile as? KtFile)?.liveBackingPath
+    containingFile.liveBackingPath
         ?: containingFile.virtualFile
             ?.takeIf { it.isInLocalFileSystem }
             ?.path

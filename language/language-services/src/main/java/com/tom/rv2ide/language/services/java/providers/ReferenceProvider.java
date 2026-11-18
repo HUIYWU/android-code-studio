@@ -59,6 +59,14 @@ public class ReferenceProvider extends CancelableServiceProvider {
     this.line = params.getPosition().getLine() + 1;
     this.column = params.getPosition().getColumn() + 1;
 
+    // Query the shared Analysis PSI before this provider acquires the javac compilation lock.
+    final ReferenceResult kotlinReferences =
+        KotlinSourceReferences.find(
+            file, line - 1, column - 1, params.getIncludeDeclaration(), this);
+    if (kotlinReferences != null) {
+      return kotlinReferences;
+    }
+
     List<Location> locations;
     try {
       locations = find();

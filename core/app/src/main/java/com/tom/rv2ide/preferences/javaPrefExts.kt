@@ -22,7 +22,6 @@ import com.tom.rv2ide.R
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.resources.R.drawable
 import com.tom.rv2ide.resources.R.string
@@ -87,7 +86,6 @@ private class JavaKotlinRecognitionEnabled(
     // next request observes the newly enabled/disabled Kotlin source and class-output bridges.
     JavaCompilerProvider.getInstance().destroy()
     SourceFileManager.clearCache()
-    KotlinJvmTypeIndex.clear()
     KotlinClassOutputProvider.clearCache()
     return true
   }

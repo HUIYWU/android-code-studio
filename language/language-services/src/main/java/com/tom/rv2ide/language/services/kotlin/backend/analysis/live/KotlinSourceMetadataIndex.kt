@@ -139,7 +139,9 @@ internal class KotlinSourceMetadataIndex {
   private val conventionPathsByBit = mutableMapOf<Int, MutableSet<Path>>()
   private val aliasNameByFqName = mutableMapOf<String, MutableMap<String, MutableSet<Path>>>()
   private val aliasImportPaths = mutableSetOf<Path>()
-  private var revisionValue = 0L
+  // Written only under [lock]; volatile so Java completion can read the cache identity without
+  // contending with an in-flight metadata commit.
+  @Volatile private var revisionValue = 0L
 
   fun replace(
       path: Path,
@@ -333,7 +335,7 @@ internal class KotlinSourceMetadataIndex {
     result
   }
 
-  fun revision(): Long = synchronized(lock) { revisionValue }
+  fun revision(): Long = revisionValue
 
   private fun removeLocked(path: Path) {
     records.remove(path)?.let { record ->

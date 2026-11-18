@@ -66,7 +66,7 @@ internal object KotlinAnalysisTestSupport {
 
   fun analysisApiJar(): String =
       FileProvider.projectRoot()
-          .resolve("docs/misc/kotlin-android/analysis-api-standalone-embeddable-for-ide-2.3.255-SNAPSHOT.jar")
+          .resolve("docs/misc/kotlin-android/other/analysis-api-standalone-embeddable-for-ide-2.3.255-SNAPSHOT.jar")
           .toString()
 
   fun createBackend(): KotlinAnalysisBackendConnection {

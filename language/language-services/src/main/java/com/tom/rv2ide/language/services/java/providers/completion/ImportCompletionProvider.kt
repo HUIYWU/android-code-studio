@@ -19,6 +19,8 @@ package com.tom.rv2ide.language.services.java.providers.completion
 
 import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.lsp.api.IServerSettings
+import com.tom.rv2ide.lsp.api.CompletionCancellation
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
 import com.tom.rv2ide.language.services.java.providers.CompletionProvider.MAX_COMPLETION_ITEMS
@@ -411,7 +413,9 @@ class ImportCompletionProvider(
       list: MutableList<CompletionItem>,
   ) {
     val packagePrefix = if (pkgName.isEmpty()) "" else "$pkgName."
-    for (className in compiler.publicTopLevelTypes()) {
+    for (className in
+        compiler.publicTopLevelTypes(
+            CompletionCancellation.current() ?: ICancelChecker.NOOP)) {
       if (!className.startsWith(packagePrefix)) {
         continue
       }
@@ -482,7 +486,9 @@ class ImportCompletionProvider(
   ) {
     abortIfCancelled()
     abortCompletionIfCancelled()
-    for (className in compiler.publicTopLevelTypes()) {
+    for (className in
+        compiler.publicTopLevelTypes(
+            CompletionCancellation.current() ?: ICancelChecker.NOOP)) {
       val matchLevel = matchLevel(className, partial)
       if (matchLevel == NO_MATCH) {
         continue

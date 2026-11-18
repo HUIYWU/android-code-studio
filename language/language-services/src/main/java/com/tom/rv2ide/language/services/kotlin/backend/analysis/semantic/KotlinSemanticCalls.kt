@@ -96,9 +96,14 @@ internal fun KaSession.signatureDisplayName(callElement: KtCallElement, call: Ka
   return receiverPrefix + (symbol.name?.asString() ?: "")
 }
 
-internal fun KaSession.parameterLabel(parameter: KaVariableSignature<KaValueParameterSymbol>): String {
-  val declaredType = parameter.returnType
-  val isVararg = parameter.symbol.isVararg
+internal fun KaSession.parameterLabel(parameter: KaVariableSignature<KaValueParameterSymbol>): String =
+    parameterLabel(parameter.symbol.name.asString(), parameter.returnType, parameter.symbol.isVararg)
+
+internal fun KaSession.parameterLabel(
+    name: String,
+    declaredType: org.jetbrains.kotlin.analysis.api.types.KaType,
+    isVararg: Boolean,
+): String {
   val type = if (isVararg) {
     (declaredType as? KaClassType)?.typeArguments?.singleOrNull()?.type ?: declaredType
   } else {
@@ -106,7 +111,7 @@ internal fun KaSession.parameterLabel(parameter: KaVariableSignature<KaValuePara
   }
   val rendered = type.render(KaTypeRendererForSource.WITH_SHORT_NAMES, Variance.INVARIANT)
   val prefix = if (isVararg) "vararg " else ""
-  return "$prefix${parameter.symbol.name.asString()}: $rendered"
+  return "$prefix$name: $rendered"
 }
 
 internal fun signatureArgumentIndex(callElement: KtCallElement, offset: Int): Int {

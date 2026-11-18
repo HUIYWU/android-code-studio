@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.extension
 
 
@@ -28,6 +29,12 @@ internal class LiveSourceFileRegistry {
   private val virtualFileToModule = ConcurrentHashMap<VirtualFile, KaModule>()
   private val pathToScriptModule = ConcurrentHashMap<Path, KaScriptModule>()
   private val moduleRoots = ConcurrentHashMap<KaModule, List<KotlinSourceRootDescriptor>>()
+  private val mappingRevision = AtomicLong()
+
+  val fileMappingRevision: Long
+    get() = mappingRevision.get()
+
+  fun virtualFilesSnapshot(): Map<Path, VirtualFile> = HashMap(pathToVirtualFile)
 
   fun bindModule(module: KaModule, roots: Collection<KotlinSourceRootDescriptor>) {
     moduleRoots[module] = roots.map { it.copy(path = it.path.normalize()) }
@@ -58,6 +65,7 @@ internal class LiveSourceFileRegistry {
     }
     virtualFileToPath[virtualFile] = normalized
     pathToVirtualFile[normalized] = virtualFile
+    mappingRevision.incrementAndGet()
     return module
   }
 
@@ -77,6 +85,7 @@ internal class LiveSourceFileRegistry {
     pathToVirtualFile.remove(normalized)?.let {
       virtualFileToModule.remove(it)
       virtualFileToPath.remove(it)
+      mappingRevision.incrementAndGet()
     }
   }
 

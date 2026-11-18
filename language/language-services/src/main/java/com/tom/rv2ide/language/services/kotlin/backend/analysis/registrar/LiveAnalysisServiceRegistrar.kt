@@ -1,6 +1,17 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar
-
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisModificationTrackerFactory
+import org.jetbrains.kotlin.com.intellij.openapi.module.ModuleManager
+import org.jetbrains.kotlin.com.intellij.openapi.project.IncompleteDependenciesService
+import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectFileIndex
+import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootManager
+import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootModificationTracker
+import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
+import org.jetbrains.kotlin.com.intellij.psi.impl.PsiJavaModuleModificationTracker
+import org.jetbrains.kotlin.com.intellij.util.indexing.FileBasedIndex
+import org.jetbrains.kotlin.com.intellij.platform.backend.workspace.WorkspaceModel
+
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPackagePartProviderFactory
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPermissionOptions
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPlatformSettings
@@ -46,7 +57,9 @@ import org.jetbrains.kotlin.com.intellij.openapi.Disposable
 import org.jetbrains.kotlin.com.intellij.psi.PsiElementFinder
 import org.jetbrains.kotlin.com.intellij.psi.PsiTreeChangeEvent
 import org.jetbrains.kotlin.com.intellij.psi.PsiTreeChangeListener
-import org.jetbrains.kotlin.com.intellij.psi.impl.PsiElementFinderImpl
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaElementFinder
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
+import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
 import org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager
@@ -62,6 +75,8 @@ import org.jetbrains.kotlin.load.java.structure.impl.source.JavaFixedElementSour
 
 @OptIn(KaImplementationDetail::class)
 internal class LiveAnalysisServiceRegistrar(
+    private val projectContext: KotlinAnalysisProjectContext,
+    private val sourceRegistry: LiveSourceFileRegistry,
     private val annotationsResolverFactory: LiveAnnotationsResolverFactory,
     private val declarationProviderFactory: LiveDeclarationProviderFactory,
     private val declarationProviderMerger: LiveDeclarationProviderMerger,
@@ -87,6 +102,7 @@ internal class LiveAnalysisServiceRegistrar(
     )
     application.registerService(KotlinAnalysisPermissionOptions::class.java, AnalysisPermissionOptions::class.java)
     application.registerService(AsyncExecutionService::class.java, NoOpAsyncExecutionService::class.java)
+    application.registerService(FileBasedIndex::class.java, LiveFileBasedIndex())
   }
 
   @Suppress("UnstableApiUsage")
@@ -119,6 +135,32 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerProjectServices(project: MockProject) {
     PluginStructureProvider.registerProjectServices(project, PLUGIN_PATH)
+    project.picoContainer.unregisterComponent(IncompleteDependenciesService::class.java.name)
+    project.registerService(IncompleteDependenciesService::class.java, LiveIncompleteDependenciesService(project))
+    val workspaceModel = LiveWorkspaceModel(projectContext)
+    project.picoContainer.unregisterComponent(WorkspaceModel::class.java.name)
+    project.registerService(WorkspaceModel::class.java, workspaceModel)
+    val projectFileIndex = LiveProjectFileIndex(project, projectContext, sourceRegistry)
+    project.picoContainer.unregisterComponent(ProjectFileIndex::class.java.name)
+    project.registerService(ProjectFileIndex::class.java, projectFileIndex)
+    project.picoContainer.unregisterComponent(ProjectRootManager::class.java.name)
+    project.registerService(ProjectRootManager::class.java, projectFileIndex.projectRootManager)
+    project.picoContainer.unregisterComponent(ModuleManager::class.java.name)
+    project.registerService(ModuleManager::class.java, projectFileIndex.moduleManager)
+    val projectFiles = LiveProjectFiles(projectContext, sourceRegistry)
+    project.registerService(LiveProjectFiles::class.java, projectFiles)
+    val fileBasedIndex = FileBasedIndex.getInstance() as LiveFileBasedIndex
+    fileBasedIndex.bind(project, projectFiles)
+    Disposer.register(project, Disposable {
+      fileBasedIndex.unbind(project)
+      projectFiles.close()
+    })
+    project.picoContainer.unregisterComponent(ProjectRootModificationTracker::class.java.name)
+    project.registerService(ProjectRootModificationTracker::class.java, object : ProjectRootModificationTracker() {
+      override fun getModificationCount(): Long = projectFiles.modificationStamp
+    })
+    project.registerService(PsiJavaModuleModificationTracker::class.java, PsiJavaModuleModificationTracker::class.java)
+    KlsLogs.info("Kotlin Analysis file index registered: project={}, modules={}", System.identityHashCode(project), projectContext.modules.size)
     project.picoContainer.unregisterComponent(org.jetbrains.kotlin.analysis.api.platform.projectStructure.KaResolutionScopeProvider::class.java.name)
     project.picoContainer.unregisterComponent(JavaElementSourceFactory::class.java.name)
     project.registerService(KotlinLifetimeTokenFactory::class.java, KotlinReadActionConfinementLifetimeTokenFactory::class.java)
@@ -173,7 +215,13 @@ internal class LiveAnalysisServiceRegistrar(
   override fun registerProjectModelServices(project: MockProject, disposable: Disposable) {
     with(PsiElementFinder.EP.getPoint(project)) {
       registerExtension(JavaElementFinder(project), disposable)
-      registerExtension(PsiElementFinderImpl(project), disposable)
+      registerExtension(
+          LiveJavaElementFinder(
+              project,
+              project.getService(JavaFileManager::class.java) as LiveJavaFileManager,
+          ),
+          disposable,
+      )
     }
   }
 }

@@ -39,7 +39,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun startInitializeRefreshAndShutdownAdvanceRuntimeGeneration() {
     val runtimes = mutableListOf<FakeRuntime>()
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory {
+        KotlinAnalysisRuntimeFactory { _, _ ->
           FakeRuntime(true).also { runtimes += it }
         },
         activeDocuments = { emptyList() },
@@ -73,7 +73,7 @@ class KotlinAnalysisBackendConnectionTest {
     val index = AtomicInteger(0)
     val runtimes = mutableListOf<FakeRuntime>()
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory {
+        KotlinAnalysisRuntimeFactory { _, _ ->
           val runtime = FakeRuntime(index.incrementAndGet() > 1)
           runtimes += runtime
           runtime
@@ -98,7 +98,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun semanticAdapterUsesCurrentRuntimeAndRejectsOldGenerationAndClosedBackend() = runBlocking {
     val runtimes = mutableListOf<FakeRuntime>()
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { FakeRuntime(true).also { runtimes += it } },
+        KotlinAnalysisRuntimeFactory { _, _ -> FakeRuntime(true).also { runtimes += it } },
         activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
@@ -132,7 +132,7 @@ class KotlinAnalysisBackendConnectionTest {
     val release = CountDownLatch(1)
     val runtime = FakeRuntime(true).apply { hoverEntered = entered; hoverRelease = release }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
@@ -160,7 +160,7 @@ class KotlinAnalysisBackendConnectionTest {
     val release = CountDownLatch(1)
     val runtime = FakeRuntime(true).apply { hoverEntered = entered; hoverRelease = release }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
@@ -184,7 +184,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun runtimeFailureCompletesSemanticRequestWithoutHanging() = runBlocking {
     val runtime = FakeRuntime(true).apply { hoverFailure = AssertionError("runtime failure") }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
@@ -204,7 +204,7 @@ class KotlinAnalysisBackendConnectionTest {
     val platformFailure = org.jetbrains.kotlin.com.intellij.openapi.progress.ProcessCanceledException()
     val runtime = FakeRuntime(true).apply { hoverFailure = platformFailure }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime },
         activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
@@ -231,7 +231,7 @@ class KotlinAnalysisBackendConnectionTest {
     val release = CountDownLatch(1)
     val runtime = FakeRuntime(true).apply { hoverEntered = entered; hoverRelease = release }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = AtomicReference(ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L))
@@ -256,7 +256,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun oldGenerationRefreshIsDroppedAndCurrentGenerationRefreshRuns() {
     val runtimes = mutableListOf<FakeRuntime>()
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory {
+        KotlinAnalysisRuntimeFactory { _, _ ->
           FakeRuntime(true).also { runtimes += it }
         },
         activeDocuments = { emptyList() },
@@ -288,7 +288,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun closeIsIdempotentAndClosesRuntimeOnce() {
     val runtime = FakeRuntime(true)
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
 
     assertTrue(connection.startBackend(KotlinProjectClasspathProvider()))
@@ -304,7 +304,7 @@ class KotlinAnalysisBackendConnectionTest {
   fun closePreventsLateRefreshFromOldRuntime() {
     val runtimes = mutableListOf<FakeRuntime>()
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory {
+        KotlinAnalysisRuntimeFactory { _, _ ->
           FakeRuntime(true).also { runtimes += it }
         },
         activeDocuments = { emptyList() },
@@ -326,7 +326,7 @@ class KotlinAnalysisBackendConnectionTest {
     val release = CountDownLatch(1)
     val runtime = FakeRuntime(true).apply { hoverEntered = entered; hoverRelease = release }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
@@ -361,7 +361,7 @@ class KotlinAnalysisBackendConnectionTest {
     val refreshCalls = AtomicInteger(0)
     val runtime = FakeRuntime(true).apply { hoverEntered = entered; hoverRelease = release }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val file = Paths.get("/project/Main.kt")
     val snapshot = ActiveDocumentSnapshot(file, 1, Instant.EPOCH, "snapshot content", 10L)
@@ -395,7 +395,7 @@ class KotlinAnalysisBackendConnectionTest {
     val file = Files.createTempFile("kotlin-analysis-diagnostics-debounce", ".kt")
     val runtime = FakeRuntime(true)
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { emptyList() },
     )
     val published = AtomicInteger(0)
     try {
@@ -432,7 +432,7 @@ class KotlinAnalysisBackendConnectionTest {
       analyzeBlockCallCount = 1
     }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { listOf(file) },
     )
     val published = AtomicInteger(0)
     val publishedSignal = CountDownLatch(1)
@@ -493,7 +493,7 @@ class KotlinAnalysisBackendConnectionTest {
       analyzeUntilCancelled = true
     }
     val connection = KotlinAnalysisBackendConnection(
-        KotlinAnalysisRuntimeFactory { runtime }, activeDocuments = { emptyList() },
+        KotlinAnalysisRuntimeFactory { _, _ -> runtime }, activeDocuments = { listOf(file) },
     )
     val published = AtomicInteger(0)
     try {
@@ -532,6 +532,30 @@ class KotlinAnalysisBackendConnectionTest {
       Thread.yield()
     }
     return runtime.analyzeCalls >= expected
+  }
+
+  @Test
+  fun refreshEnvironmentRequestsAFreshEnvironment() {
+    val flags = mutableListOf<Boolean>()
+    val runtimes = mutableListOf<FakeRuntime>()
+    val connection = KotlinAnalysisBackendConnection(
+        KotlinAnalysisRuntimeFactory { _, fresh ->
+          flags += fresh
+          FakeRuntime(true).also { runtimes += it }
+        },
+        activeDocuments = { emptyList() },
+    )
+    try {
+      assertTrue(connection.startBackend(KotlinProjectClasspathProvider()))
+      assertEquals("start must reuse the workspace environment", listOf(false), flags)
+      assertTrue(connection.refreshEnvironment(KotlinProjectClasspathProvider()))
+      assertEquals("refresh must request an independent environment", listOf(false, true), flags)
+      assertEquals(2, runtimes.size)
+      assertTrue("refresh must close the previous runtime", runtimes.first().closed)
+      assertFalse("the new runtime must stay open", runtimes.last().closed)
+    } finally {
+      connection.close()
+    }
   }
 
   private class FakeRuntime(private val startResult: Boolean) : KotlinAnalysisRuntime {

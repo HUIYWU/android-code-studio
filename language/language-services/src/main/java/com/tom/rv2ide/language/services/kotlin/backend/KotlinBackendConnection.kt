@@ -22,6 +22,7 @@ import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathP
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import com.tom.rv2ide.language.services.kotlin.document.KotlinDocumentKind
 import com.tom.rv2ide.language.services.kotlin.document.kotlinDocumentKind
+import com.tom.rv2ide.language.services.kotlin.document.isKotlinLanguageDocument
 
 /**
  * Shared lifecycle and document capability contract for Kotlin backends.
@@ -43,6 +44,9 @@ interface KotlinBackendConnection {
 
   fun supportsDocument(path: java.nio.file.Path): Boolean =
       path.kotlinDocumentKind() == KotlinDocumentKind.KOTLIN_SOURCE
+
+  fun synchronizesDocument(path: java.nio.file.Path): Boolean =
+      path.isKotlinLanguageDocument()
 
   fun setDiagnosticsCallback(callback: (DiagnosticResult) -> Unit)
   /**

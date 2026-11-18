@@ -24,9 +24,9 @@ import com.tom.rv2ide.common.logging.IdeLogConfig;
 import com.tom.rv2ide.language.compiler.javac.compiler.ReusableCompiler;
 import com.tom.rv2ide.language.compiler.javac.partial.CompilationInfo;
 import com.tom.rv2ide.language.compiler.javac.partial.InPlaceReparser;
+import com.tom.rv2ide.language.services.interop.JavaPsiInterop;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider;
-import com.tom.rv2ide.language.services.java.kotlin.KotlinJvmTypeIndex;
-import com.tom.rv2ide.language.services.java.kotlin.KotlinSourceStubProvider;
+
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
 import com.tom.rv2ide.language.services.java.models.ReparsePlan;
 import com.tom.rv2ide.preferences.internal.JavaPreferences;
@@ -39,6 +39,7 @@ import com.tom.rv2ide.projects.FileManager;
 import com.tom.rv2ide.projects.ModuleProject;
 import com.tom.rv2ide.projects.android.AndroidModule;
 import com.tom.rv2ide.projects.java.JavaModule;
+import com.tom.rv2ide.progress.ICancelChecker;
 
 import com.tom.rv2ide.projects.util.BootClasspathProvider;
 import com.tom.rv2ide.projects.util.StringSearch;
@@ -186,6 +187,12 @@ public class JavaCompilerService implements CompilerProvider {
 
   @Override
   public TreeSet<String> publicTopLevelTypes() {
+    return publicTopLevelTypes(ICancelChecker.NOOP);
+  }
+
+  /** Cancellable variant used by completion workers. */
+  public TreeSet<String> publicTopLevelTypes(ICancelChecker cancelChecker) {
+    cancelChecker.abortIfCancelled();
     TreeSet<String> all = new TreeSet<>();
     List<SourceClassTrie.SourceNode> sourceClasses =
         module != null ? module.compileJavaSourceClasses.allSources() : Collections.emptyList();
@@ -198,8 +205,12 @@ public class JavaCompilerService implements CompilerProvider {
     all.addAll(classPathClasses);
     all.addAll(bootClasspathClasses);
     if (module != null && JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()) {
-      all.addAll(KotlinJvmTypeIndex.publicTopLevelTypes(module));
-      all.addAll(KotlinClassOutputProvider.publicDependencyTopLevelTypes(module));
+      final JavaPsiInterop.KotlinTopLevelTypesResult shared =
+          JavaPsiInterop.kotlinTopLevelTypesSnapshot(module.getPath(), cancelChecker);
+      if (shared.types != null) {
+        all.addAll(shared.types);
+      }
+      all.addAll(KotlinClassOutputProvider.publicDependencyTopLevelTypes(module, cancelChecker));
     }
     if (IdeLogConfig.shouldLogDebug()) {
       LOG.debug(
@@ -1083,15 +1094,6 @@ public class JavaCompilerService implements CompilerProvider {
   }
   private CompileBatch performCompilation(CompilationRequest request) {
     Collection<? extends JavaFileObject> sources = request.sources;
-    // Kotlin stubs are part of the stable full-compilation input whenever Kotlin recognition is on.
-    if (module != null && JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()) {
-      final Collection<JavaFileObject> kotlinStubs = KotlinSourceStubProvider.stubsFor(module, sources);
-      if (!kotlinStubs.isEmpty()) {
-        final List<JavaFileObject> withKotlinStubs = new ArrayList<>(sources);
-        withKotlinStubs.addAll(kotlinStubs);
-        sources = withKotlinStubs;
-      }
-    }
     if (IdeLogConfig.shouldLogDebug()) {
       LOG.debug(
           "performCompilation sourcesDetail requestHash={} sourcesDetail={}",

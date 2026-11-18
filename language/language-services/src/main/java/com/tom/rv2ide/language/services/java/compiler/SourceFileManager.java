@@ -110,10 +110,10 @@ public class SourceFileManager extends ForwardingJavaFileManager<JavacFileManage
 
     final Set<File> classpaths = new java.util.LinkedHashSet<>(module.getCompileClasspaths());
     if (JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()) {
-      // Current-module Kotlin source is supplied by in-memory ABI stubs so editor changes win over
-      // stale build output. Remove it even if tooling already put it in compileClasspaths, then add
-      // only dependency-module Kotlin output to javac's CLASS_PATH.
-      classpaths.removeAll(KotlinClassOutputProvider.findModuleCompileOutputs(module));
+      // Compiled Kotlin output is the classpath adapter for Java diagnostics. Shared Kotlin PSI and
+      // Analysis remain the source authority for live semantic features; this output is only used
+      // when javac requires JVM class symbols for the current compilation environment.
+      classpaths.addAll(KotlinClassOutputProvider.findModuleCompileOutputs(module));
       classpaths.addAll(KotlinClassOutputProvider.findDependencyCompileOutputs(module));
     }
     return classpaths;
