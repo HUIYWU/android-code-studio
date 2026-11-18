@@ -61,6 +61,8 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaE
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
+import org.jetbrains.kotlin.com.intellij.psi.search.searches.ImplicitClassSearch
+import org.jetbrains.kotlin.com.intellij.util.QueryExecutor
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
 import org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.BlockSupportImpl
@@ -103,6 +105,19 @@ internal class LiveAnalysisServiceRegistrar(
     application.registerService(KotlinAnalysisPermissionOptions::class.java, AnalysisPermissionOptions::class.java)
     application.registerService(AsyncExecutionService::class.java, NoOpAsyncExecutionService::class.java)
     application.registerService(FileBasedIndex::class.java, LiveFileBasedIndex())
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        ImplicitClassSearch.EP_NAME.name,
+        QueryExecutor::class.java,
+    )
+    application.extensionArea.getExtensionPoint(ImplicitClassSearch.EP_NAME)
+        .registerExtension(LiveImplicitClassesSearcher(), application)
+    KlsLogs.info(
+        "Kotlin Analysis Java search extension registered: application={}, point={}, executor={}",
+        System.identityHashCode(application),
+        ImplicitClassSearch.EP_NAME.name,
+        LiveImplicitClassesSearcher::class.java.name,
+    )
   }
 
   @Suppress("UnstableApiUsage")

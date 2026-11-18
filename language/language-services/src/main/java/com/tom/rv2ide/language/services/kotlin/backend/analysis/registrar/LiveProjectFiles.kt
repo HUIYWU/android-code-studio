@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.com.intellij.openapi.progress.ProgressManager
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.StandardFileSystems
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
 import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
+import org.jetbrains.kotlin.com.intellij.psi.util.JavaImplicitClassUtil
 import org.jetbrains.kotlin.com.intellij.util.Processor
 import java.nio.file.Files
 import java.nio.file.Path
@@ -25,13 +26,18 @@ internal class LiveProjectFiles(
     }
   }
 
+  private data class Snapshot(
+      val byName: Map<String, List<Entry>>,
+      val javaByJvmName: Map<String, List<Entry>>,
+  )
+
   private val contentRoots = minimalRoots(context.modules.flatMap { module ->
     listOf(module.projectDirectory) + module.sourceRoots + module.generatedSourceRoots + module.moduleOutputRoots
   })
   private val libraryRoots = context.modules.flatMap { module ->
     module.binaryRoots + module.bootClasspaths + module.libraryAttachments.flatMap { it.binaryPaths + it.sourcePaths }
   }.map { it.toAbsolutePath().normalize() }.distinct()
-  private val snapshots = HashMap<Path, Map<String, List<Entry>>>()
+  private val snapshots = HashMap<Path, Snapshot>()
   private val revision = AtomicLong()
   private var closed = false
 
@@ -54,6 +60,19 @@ internal class LiveProjectFiles(
       scope: GlobalSearchScope?,
       names: Set<String>?,
       processor: Processor<in VirtualFile>,
+  ): Boolean = process(scope, names, null, processor)
+
+  fun processJavaFilesWithJvmName(
+      scope: GlobalSearchScope,
+      name: String,
+      processor: Processor<in VirtualFile>,
+  ): Boolean = process(scope, null, name, processor)
+
+  private fun process(
+      scope: GlobalSearchScope?,
+      names: Set<String>?,
+      javaJvmName: String?,
+      processor: Processor<in VirtualFile>,
   ): Boolean {
     val active = registry.virtualFilesSnapshot()
     val seen = HashSet<Entry>()
@@ -61,7 +80,11 @@ internal class LiveProjectFiles(
     for (root in roots) {
       ProgressManager.checkCanceled()
       val snapshot = snapshot(root)
-      val groups = names?.mapNotNull(snapshot::get) ?: snapshot.values
+      val groups = when {
+        javaJvmName != null -> listOfNotNull(snapshot.javaByJvmName[javaJvmName])
+        names != null -> names.mapNotNull(snapshot.byName::get)
+        else -> snapshot.byName.values
+      }
       for (entries in groups) {
         for (entry in entries) {
           ProgressManager.checkCanceled()
@@ -75,6 +98,8 @@ internal class LiveProjectFiles(
     for ((path, file) in active) {
       ProgressManager.checkCanceled()
       if (names != null && path.fileName.toString() !in names) continue
+      if (javaJvmName != null && (!file.name.endsWith(".java", ignoreCase = true) ||
+          JavaImplicitClassUtil.getJvmName(file.name) != javaJvmName)) continue
       if (!belongsToContent(path)) continue
       val accepted = scope == null || scope.contains(file)
       if (accepted && !processor.process(file)) return false
@@ -100,13 +125,13 @@ internal class LiveProjectFiles(
     }
   }
 
-  private fun snapshot(root: Path): Map<String, List<Entry>> = synchronized(snapshots) {
+  private fun snapshot(root: Path): Snapshot = synchronized(snapshots) {
     check(!closed) { "Analysis file set is closed" }
     snapshots.getOrPut(root) { scan(root) }
   }
 
-  private fun scan(root: Path): Map<String, List<Entry>> {
-    if (!Files.exists(root)) return emptyMap()
+  private fun scan(root: Path): Snapshot {
+    if (!Files.exists(root)) return Snapshot(emptyMap(), emptyMap())
     val byName = HashMap<String, MutableList<Entry>>()
     if (Files.isDirectory(root)) {
       Files.walk(root).use { paths ->
@@ -134,7 +159,14 @@ internal class LiveProjectFiles(
     } else {
       byName[root.fileName.toString()] = arrayListOf(Entry(root))
     }
-    return byName
+    val javaByJvmName = HashMap<String, MutableList<Entry>>()
+    for ((name, entries) in byName) {
+      ProgressManager.checkCanceled()
+      if (name.endsWith(".java", ignoreCase = true)) {
+        javaByJvmName.getOrPut(JavaImplicitClassUtil.getJvmName(name)) { ArrayList(entries.size) }.addAll(entries)
+      }
+    }
+    return Snapshot(byName, javaByJvmName)
   }
 
   override fun close() {
