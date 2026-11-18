@@ -48,6 +48,7 @@ import org.jetbrains.kotlin.analysis.api.platform.projectStructure.KaResolutionS
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.AnalysisApiSimpleServiceRegistrar
 import org.jetbrains.kotlin.analysis.api.standalone.base.projectStructure.PluginStructureProvider
 import org.jetbrains.kotlin.asJava.finder.JavaElementFinder
+import org.jetbrains.kotlin.com.intellij.codeInsight.CustomExceptionHandler
 import org.jetbrains.kotlin.com.intellij.core.CoreApplicationEnvironment
 import org.jetbrains.kotlin.com.intellij.mock.MockApplication
 import org.jetbrains.kotlin.com.intellij.openapi.editor.Document
@@ -101,6 +102,17 @@ internal class LiveAnalysisServiceRegistrar(
         application.extensionArea,
         DocumentWriteAccessGuard.EP_NAME,
         AnalysisDocumentWriteAccessGuard::class.java,
+    )
+    // TODO(ACS-ANALYSIS-EXPERIMENT): Validate checked-exception diagnostics and throws/catch handling on device.
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        CustomExceptionHandler.KEY,
+        CustomExceptionHandler::class.java,
+    )
+    KlsLogs.info(
+        "Kotlin Analysis Java exception extension registered: application={}, point={}",
+        System.identityHashCode(application),
+        CustomExceptionHandler.KEY.name,
     )
     application.registerService(KotlinAnalysisPermissionOptions::class.java, AnalysisPermissionOptions::class.java)
     application.registerService(AsyncExecutionService::class.java, NoOpAsyncExecutionService::class.java)
