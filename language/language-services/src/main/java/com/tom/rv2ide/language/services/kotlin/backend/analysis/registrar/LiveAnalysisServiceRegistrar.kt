@@ -8,6 +8,7 @@ import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectFileIndex
 import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootManager
 import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootModificationTracker
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
+import org.jetbrains.kotlin.com.intellij.openapi.util.registry.Registry
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiJavaModuleModificationTracker
 import org.jetbrains.kotlin.com.intellij.util.indexing.FileBasedIndex
 import org.jetbrains.kotlin.com.intellij.platform.backend.workspace.WorkspaceModel
@@ -62,7 +63,10 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaE
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
+import org.jetbrains.kotlin.com.intellij.psi.augment.PsiAugmentProvider
+import org.jetbrains.kotlin.com.intellij.psi.impl.RecordAugmentProvider
 import org.jetbrains.kotlin.com.intellij.psi.impl.search.MethodSuperSearcher
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.JShellPsiAugmentProvider
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.DirectClassInheritorsSearch
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.ImplicitClassSearch
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.SuperMethodsSearch
@@ -158,6 +162,17 @@ internal class LiveAnalysisServiceRegistrar(
         System.identityHashCode(application),
         SuperMethodsSearch.EP_NAME.name,
         MethodSuperSearcher::class.java.name,
+    )
+    // TODO(ACS-ANALYSIS-EXPERIMENT): Validate record synthetic fields, accessors, and canonical constructors on device.
+    application.extensionArea.getExtensionPoint(PsiAugmentProvider.EP_NAME)
+        .registerExtension(JShellPsiAugmentProvider(), application)
+    application.extensionArea.getExtensionPoint(PsiAugmentProvider.EP_NAME)
+        .registerExtension(RecordAugmentProvider(), application)
+    KlsLogs.info(
+        "Kotlin Analysis Java PSI augment extension registered: application={}, point={}, providers={}",
+        System.identityHashCode(application),
+        PsiAugmentProvider.EP_NAME.name,
+        listOf(JShellPsiAugmentProvider::class.java.name, RecordAugmentProvider::class.java.name),
     )
   }
 
