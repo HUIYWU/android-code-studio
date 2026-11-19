@@ -33,6 +33,10 @@ class JavaPsiWarningDiagnosticsTest {
         class WarningAndError {
           int warning() { return new StaticAccessTarget().VALUE; }
           int error() { return new StaticAccessTarget().VALUE + missingJavaSymbol(); }
+          int overflow() { return 1000000000 * 3; }
+          boolean suspiciousArrays() {
+            return java.util.Arrays.equals(new String[0], new Integer[0]);
+          }
         }
 
         @SuppressWarnings("static-access")
@@ -50,11 +54,16 @@ class JavaPsiWarningDiagnosticsTest {
           KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
             KotlinAnalysisTestSupport.runAnalysis { runtime.onFileOpened(file) }
             val initial = sharedDiagnostics(file)
-            val warnings = initial.filter { it.code == "AccessStaticViaInstance" }
-            assertEquals(2, warnings.size)
-            assertTrue(warnings.all { it.source == "java-inspection" })
-            assertTrue(warnings.all { it.severity == DiagnosticSeverity.WARNING })
-            assertTrue(warnings.all { it.message.isNotEmpty() })
+            val staticAccessWarnings = initial.filter { it.code == "AccessStaticViaInstance" }
+            assertEquals(2, staticAccessWarnings.size)
+            assertTrue(staticAccessWarnings.all { it.severity == DiagnosticSeverity.WARNING })
+            val overflow = initial.single { it.code == "NumericOverflow" }
+            assertEquals(DiagnosticSeverity.WARNING, overflow.severity)
+            assertEquals("java-inspection", overflow.source)
+            val suspiciousArray = initial.single { it.code == "SuspiciousArrayMethodCall" }
+            assertEquals(DiagnosticSeverity.WARNING, suspiciousArray.severity)
+            assertEquals("java-inspection", suspiciousArray.source)
+            assertTrue(initial.filter { it.source == "java-inspection" }.all { it.message.isNotEmpty() })
             assertTrue(initial.any { it.severity == DiagnosticSeverity.ERROR })
 
             val edited = content.replace("@SuppressWarnings(\"static-access\")", "")

@@ -17,20 +17,27 @@ import org.jetbrains.kotlin.com.intellij.lang.LanguageUtil
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
+import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
+import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptor
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
+import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
 import org.jetbrains.kotlin.com.intellij.lang.annotation.HighlightSeverity
 import org.jetbrains.kotlin.com.intellij.openapi.util.TextRange
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiElementVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiModifierListOwner
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
@@ -120,18 +127,26 @@ internal class LiveJavaDiagnosticsResolver(
         semanticDiagnostics++
       }
       var inspectionDiagnostics = 0
-      // TODO(ACS-ANALYSIS-EXPERIMENT): Validate official inspection execution and descriptor anchoring on device.
-      val inspection = AccessStaticViaInstanceBase()
-      val inspectionHolder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
-      val inspectionSession = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
-      val inspectionVisitor = InspectionEngine.createVisitor(inspection, inspectionHolder, true, inspectionSession)
-      inspection.inspectionStarted(inspectionSession, true)
+      // TODO(ACS-ANALYSIS-EXPERIMENT): Validate NumericOverflow and SuspiciousArrayMethodCall diagnostics on device.
+      val inspections =
+          listOf(
+              AccessStaticViaInstanceBase(),
+              NumericOverflowInspection(),
+              SuspiciousArrayMethodCallInspection(),
+          )
+      val inspectionRuns = inspections.map { inspection ->
+        val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
+        val session = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
+        val visitor = InspectionEngine.createVisitor(inspection, holder, true, session)
+        inspection.inspectionStarted(session, true)
+        InspectionRun(inspection, holder, session, visitor)
+      }
       try {
         file.accept(object : PsiRecursiveElementWalkingVisitor() {
           override fun visitElement(element: PsiElement) {
             cancelChecker.abortIfCancelled()
             visitedElements++
-            element.accept(inspectionVisitor)
+            inspectionRuns.forEach { run -> element.accept(run.visitor) }
             if (element is PsiErrorElement) {
               val rawRange = requireNotNull(element.textRange)
               val diagnostic = toSyntaxDiagnostic(element, rawRange, lineIndex)
@@ -152,25 +167,28 @@ internal class LiveJavaDiagnosticsResolver(
           }
         })
       } finally {
-        inspection.inspectionFinished(inspectionSession, inspectionHolder)
+        inspectionRuns.forEach { run -> run.tool.inspectionFinished(run.session, run.holder) }
       }
-      inspectionHolder.results.forEach { descriptor ->
-        cancelChecker.abortIfCancelled()
-        val anchor = requireNotNull(descriptor.psiElement)
-        if (SuppressionUtil.inspectionResultSuppressed(anchor, inspection)) return@forEach
-        val descriptorRange = descriptor.absoluteRange()
-        val severity = descriptor.highlightType.toSeverity() ?: return@forEach
-        result += DiagnosticItem(
-            message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
-            code = inspection.suppressId,
-            range = Range(
-                lineIndex.indexToPosition(descriptorRange.startOffset),
-                lineIndex.indexToPosition(descriptorRange.endOffset),
-            ),
-            source = "java-inspection",
-            severity = severity,
-        )
-        inspectionDiagnostics++
+      inspectionRuns.forEach { run ->
+        run.holder.results.forEach descriptorLoop@{ descriptor ->
+          cancelChecker.abortIfCancelled()
+          val anchor = requireNotNull(descriptor.psiElement)
+          logSuppressionDecision(anchor, run.tool)
+          if (SuppressionUtil.inspectionResultSuppressed(anchor, run.tool)) return@descriptorLoop
+          val descriptorRange = descriptor.absoluteRange()
+          val severity = descriptor.highlightType.toSeverity() ?: return@descriptorLoop
+          result += DiagnosticItem(
+              message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
+              code = run.tool.shortName,
+              range = Range(
+                  lineIndex.indexToPosition(descriptorRange.startOffset),
+                  lineIndex.indexToPosition(descriptorRange.endOffset),
+              ),
+              source = "java-inspection",
+              severity = severity,
+          )
+          inspectionDiagnostics++
+        }
       }
       result.sortedWith(DiagnosticItem.START_COMPARATOR).also { diagnostics ->
         KlsLogs.info(
@@ -227,6 +245,50 @@ internal class LiveJavaDiagnosticsResolver(
         range = Range(lineIndex.indexToPosition(startOffset), lineIndex.indexToPosition(endOffset)),
         source = "java-psi-parser",
         severity = DiagnosticSeverity.ERROR,
+    )
+  }
+
+  private data class InspectionRun(
+      val tool: LocalInspectionTool,
+      val holder: ProblemsHolder,
+      val session: LocalInspectionToolSession,
+      val visitor: PsiElementVisitor,
+  )
+
+  private fun logSuppressionDecision(
+      anchor: PsiElement,
+      tool: InspectionProfileEntry,
+  ) {
+    val suppressors = InspectionProfileEntry.getSuppressors(anchor)
+    val suppressId = tool.suppressId
+    val alternativeId = tool.alternativeID
+    val suppressorResults = suppressors.joinToString("|") { suppressor ->
+      val primary = suppressor.isSuppressedFor(anchor, suppressId)
+      val alternative = alternativeId?.let { suppressor.isSuppressedFor(anchor, it) } ?: false
+      "${suppressor.javaClass.name}(primary=$primary,alternative=$alternative)"
+    }
+    val parentChain = generateSequence(anchor) { it.parent }
+        .take(8)
+        .joinToString(" > ") { element ->
+          "${element.javaClass.simpleName}:${element.text.replace("\\n", "\\\\n").take(48)}"
+        }
+    val modifierOwner = PsiTreeUtil.getParentOfType(anchor, PsiModifierListOwner::class.java, false)
+    val modifierList = modifierOwner?.modifierList
+    KlsLogs.info(
+        "Java inspection suppression: file={}, anchorClass={}, anchorRange={}, language={}, tool={}, suppressId={}, alternativeId={}, officialSuppressed={}, suppressors={}, suppressorResults={}, parentChain={}, modifierOwner={}, modifierList={}",
+        anchor.containingFile?.virtualFile?.path,
+        anchor.javaClass.name,
+        anchor.textRange,
+        anchor.language.id,
+        tool.shortName,
+        suppressId,
+        alternativeId,
+        tool.isSuppressedFor(anchor),
+        suppressors.map { it.javaClass.name },
+        suppressorResults,
+        parentChain,
+        modifierOwner?.javaClass?.name,
+        modifierList?.text,
     )
   }
 

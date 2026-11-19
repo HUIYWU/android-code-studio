@@ -11,10 +11,12 @@ import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.openapi.util.registry.Registry
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionSuppressor
+import org.jetbrains.kotlin.com.intellij.codeInspection.LanguageInspectionSuppressors
 import org.jetbrains.kotlin.com.intellij.codeInspection.ex.InspectionElementsMerger
 import org.jetbrains.kotlin.com.intellij.codeInspection.lang.InspectionExtensionsFactory
 import org.jetbrains.kotlin.com.intellij.openapi.extensions.DefaultPluginDescriptor
 import org.jetbrains.kotlin.com.intellij.openapi.extensions.PluginId
+import org.jetbrains.kotlin.com.intellij.lang.Language
 import org.jetbrains.kotlin.com.intellij.lang.LanguageExtensionPoint
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiJavaModuleModificationTracker
 import org.jetbrains.kotlin.com.intellij.util.indexing.FileBasedIndex
@@ -135,19 +137,47 @@ internal class LiveAnalysisServiceRegistrar(
     }
     val suppressorPoint = application.extensionArea
         .getExtensionPoint<LanguageExtensionPoint<InspectionSuppressor>>("com.intellij.lang.inspectionSuppressor")
-    if (suppressorPoint.extensionList.none {
-      it.implementationClass == "org.jetbrains.kotlin.com.intellij.codeInspection.JavaInspectionSuppressor"
-    }) {
+    val javaSuppressorImplementation = "org.jetbrains.kotlin.com.intellij.codeInspection.JavaInspectionSuppressor"
+    var javaInspectionSuppressor: LanguageExtensionPoint<InspectionSuppressor>? =
+        suppressorPoint.extensionList.firstOrNull { it.implementationClass == javaSuppressorImplementation }
+    if (javaInspectionSuppressor == null) {
       val javaPluginDescriptor = DefaultPluginDescriptor(
           PluginId.getId("com.intellij.java.analysis"),
           InspectionSuppressor::class.java.classLoader,
       )
-      val javaInspectionSuppressor = LanguageExtensionPoint<InspectionSuppressor>().apply {
+      javaInspectionSuppressor = LanguageExtensionPoint<InspectionSuppressor>().apply {
         language = "JAVA"
-        implementationClass = "org.jetbrains.kotlin.com.intellij.codeInspection.JavaInspectionSuppressor"
+        implementationClass = javaSuppressorImplementation
         setPluginDescriptor(javaPluginDescriptor)
       }
       suppressorPoint.registerExtension(javaInspectionSuppressor, javaPluginDescriptor, application)
+    }
+    LanguageInspectionSuppressors.INSTANCE.invalidateCacheForExtension("JAVA")
+    val javaLanguage = Language.findLanguageByID("JAVA")
+    if (javaLanguage != null &&
+        LanguageInspectionSuppressors.INSTANCE.allForLanguageOrAny(javaLanguage)
+            .none { it.javaClass.name == javaSuppressorImplementation }) {
+      val javaSuppressor = javaInspectionSuppressor!!.createInstance(application)
+      LanguageInspectionSuppressors.INSTANCE.addExplicitExtension(javaLanguage, javaSuppressor, application)
+    }
+    KlsLogs.info(
+        "Kotlin Analysis inspection suppressor EP registered: application={}, count={}, entries={}",
+        System.identityHashCode(application),
+        suppressorPoint.extensionList.size,
+        suppressorPoint.extensionList.map { "${it.language}:${it.implementationClass}" },
+    )
+    runCatching {
+      val javaLanguage = Language.findLanguageByID("JAVA")
+      val resolvedSuppressors = javaLanguage?.let {
+        LanguageInspectionSuppressors.INSTANCE.allForLanguageOrAny(it)
+      }.orEmpty()
+      KlsLogs.info(
+          "Kotlin Analysis inspection suppressor resolution: language={}, resolved={}",
+          javaLanguage?.id ?: "missing",
+          resolvedSuppressors.map { it.javaClass.name },
+      )
+    }.onFailure { error ->
+      KlsLogs.warn("Kotlin Analysis inspection suppressor resolution failed", error)
     }
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
