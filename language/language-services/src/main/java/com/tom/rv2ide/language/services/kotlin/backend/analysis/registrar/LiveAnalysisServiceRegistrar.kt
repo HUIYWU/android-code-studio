@@ -160,25 +160,6 @@ internal class LiveAnalysisServiceRegistrar(
       val javaSuppressor = javaInspectionSuppressor!!.createInstance(application)
       LanguageInspectionSuppressors.INSTANCE.addExplicitExtension(javaLanguage, javaSuppressor, application)
     }
-    KlsLogs.info(
-        "Kotlin Analysis inspection suppressor EP registered: application={}, count={}, entries={}",
-        System.identityHashCode(application),
-        suppressorPoint.extensionList.size,
-        suppressorPoint.extensionList.map { "${it.language}:${it.implementationClass}" },
-    )
-    runCatching {
-      val javaLanguage = Language.findLanguageByID("JAVA")
-      val resolvedSuppressors = javaLanguage?.let {
-        LanguageInspectionSuppressors.INSTANCE.allForLanguageOrAny(it)
-      }.orEmpty()
-      KlsLogs.info(
-          "Kotlin Analysis inspection suppressor resolution: language={}, resolved={}",
-          javaLanguage?.id ?: "missing",
-          resolvedSuppressors.map { it.javaClass.name },
-      )
-    }.onFailure { error ->
-      KlsLogs.warn("Kotlin Analysis inspection suppressor resolution failed", error)
-    }
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
         DocumentWriteAccessGuard.EP_NAME,

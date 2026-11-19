@@ -17,13 +17,14 @@ import org.jetbrains.kotlin.com.intellij.lang.LanguageUtil
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
-import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
 import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptor
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
+import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
@@ -36,8 +37,6 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiElementVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
-import org.jetbrains.kotlin.com.intellij.psi.PsiModifierListOwner
-import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
@@ -127,12 +126,14 @@ internal class LiveJavaDiagnosticsResolver(
         semanticDiagnostics++
       }
       var inspectionDiagnostics = 0
-      // TODO(ACS-ANALYSIS-EXPERIMENT): Validate NumericOverflow and SuspiciousArrayMethodCall diagnostics on device.
+      // TODO(ACS-ANALYSIS-EXPERIMENT): Validate the newly added local inspections on device.
       val inspections =
           listOf(
               AccessStaticViaInstanceBase(),
               NumericOverflowInspection(),
               SuspiciousArrayMethodCallInspection(),
+              SafeVarargsHasNoEffectInspection(),
+              SafeVarargsOnNonReifiableTypeInspection(),
           )
       val inspectionRuns = inspections.map { inspection ->
         val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
@@ -173,7 +174,6 @@ internal class LiveJavaDiagnosticsResolver(
         run.holder.results.forEach descriptorLoop@{ descriptor ->
           cancelChecker.abortIfCancelled()
           val anchor = requireNotNull(descriptor.psiElement)
-          logSuppressionDecision(anchor, run.tool)
           if (SuppressionUtil.inspectionResultSuppressed(anchor, run.tool)) return@descriptorLoop
           val descriptorRange = descriptor.absoluteRange()
           val severity = descriptor.highlightType.toSeverity() ?: return@descriptorLoop
@@ -254,43 +254,6 @@ internal class LiveJavaDiagnosticsResolver(
       val session: LocalInspectionToolSession,
       val visitor: PsiElementVisitor,
   )
-
-  private fun logSuppressionDecision(
-      anchor: PsiElement,
-      tool: InspectionProfileEntry,
-  ) {
-    val suppressors = InspectionProfileEntry.getSuppressors(anchor)
-    val suppressId = tool.suppressId
-    val alternativeId = tool.alternativeID
-    val suppressorResults = suppressors.joinToString("|") { suppressor ->
-      val primary = suppressor.isSuppressedFor(anchor, suppressId)
-      val alternative = alternativeId?.let { suppressor.isSuppressedFor(anchor, it) } ?: false
-      "${suppressor.javaClass.name}(primary=$primary,alternative=$alternative)"
-    }
-    val parentChain = generateSequence(anchor) { it.parent }
-        .take(8)
-        .joinToString(" > ") { element ->
-          "${element.javaClass.simpleName}:${element.text.replace("\\n", "\\\\n").take(48)}"
-        }
-    val modifierOwner = PsiTreeUtil.getParentOfType(anchor, PsiModifierListOwner::class.java, false)
-    val modifierList = modifierOwner?.modifierList
-    KlsLogs.info(
-        "Java inspection suppression: file={}, anchorClass={}, anchorRange={}, language={}, tool={}, suppressId={}, alternativeId={}, officialSuppressed={}, suppressors={}, suppressorResults={}, parentChain={}, modifierOwner={}, modifierList={}",
-        anchor.containingFile?.virtualFile?.path,
-        anchor.javaClass.name,
-        anchor.textRange,
-        anchor.language.id,
-        tool.shortName,
-        suppressId,
-        alternativeId,
-        tool.isSuppressedFor(anchor),
-        suppressors.map { it.javaClass.name },
-        suppressorResults,
-        parentChain,
-        modifierOwner?.javaClass?.name,
-        modifierList?.text,
-    )
-  }
 
   private fun ProblemDescriptor.absoluteRange(): TextRange {
     if (this is ProblemDescriptorBase) return requireNotNull(textRange)

@@ -17,7 +17,7 @@ import org.robolectric.annotation.Config
 class JavaPsiWarningDiagnosticsTest {
 
   @Test
-  fun officialStaticAccessInspectionPublishesWarningAndHonorsSuppressionAfterEdit() {
+  fun officialLocalInspectionsPublishWarningsAndHonorSuppressionAfterEdit() {
     val dir =
         KotlinAnalysisTestSupport.fixturePath(
             "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app",
@@ -36,6 +36,17 @@ class JavaPsiWarningDiagnosticsTest {
           int overflow() { return 1000000000 * 3; }
           boolean suspiciousArrays() {
             return java.util.Arrays.equals(new String[0], new Integer[0]);
+          }
+        }
+
+        class SafeVarargsProblems {
+          @SafeVarargs
+          public final <T> void reassigned(T[] values, T... items) {
+            items = values;
+          }
+
+          @SafeVarargs
+          public final void reifiable(String... values) {
           }
         }
 
@@ -63,6 +74,12 @@ class JavaPsiWarningDiagnosticsTest {
             val suspiciousArray = initial.single { it.code == "SuspiciousArrayMethodCall" }
             assertEquals(DiagnosticSeverity.WARNING, suspiciousArray.severity)
             assertEquals("java-inspection", suspiciousArray.source)
+            val safeVarargsAssignment = initial.single { it.code == "SafeVarargsHasNoEffect" }
+            assertEquals(DiagnosticSeverity.WARNING, safeVarargsAssignment.severity)
+            assertEquals("java-inspection", safeVarargsAssignment.source)
+            val safeVarargsReifiable = initial.single { it.code == "SafeVarargsOnNonReifiableType" }
+            assertEquals(DiagnosticSeverity.WARNING, safeVarargsReifiable.severity)
+            assertEquals("java-inspection", safeVarargsReifiable.source)
             assertTrue(initial.filter { it.source == "java-inspection" }.all { it.message.isNotEmpty() })
             assertTrue(initial.any { it.severity == DiagnosticSeverity.ERROR })
 
