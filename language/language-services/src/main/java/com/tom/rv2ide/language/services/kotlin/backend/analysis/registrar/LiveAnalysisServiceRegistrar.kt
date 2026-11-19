@@ -9,6 +9,13 @@ import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootManager
 import org.jetbrains.kotlin.com.intellij.openapi.roots.ProjectRootModificationTracker
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.openapi.util.registry.Registry
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionSuppressor
+import org.jetbrains.kotlin.com.intellij.codeInspection.ex.InspectionElementsMerger
+import org.jetbrains.kotlin.com.intellij.codeInspection.lang.InspectionExtensionsFactory
+import org.jetbrains.kotlin.com.intellij.openapi.extensions.DefaultPluginDescriptor
+import org.jetbrains.kotlin.com.intellij.openapi.extensions.PluginId
+import org.jetbrains.kotlin.com.intellij.lang.LanguageExtensionPoint
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiJavaModuleModificationTracker
 import org.jetbrains.kotlin.com.intellij.util.indexing.FileBasedIndex
 import org.jetbrains.kotlin.com.intellij.platform.backend.workspace.WorkspaceModel
@@ -105,6 +112,43 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerApplicationServices(application: MockApplication) {
     PluginStructureProvider.registerApplicationServices(application, PLUGIN_PATH)
+    if (!application.extensionArea.hasExtensionPoint(InspectionExtensionsFactory.EP_NAME.name)) {
+      CoreApplicationEnvironment.registerExtensionPoint(
+          application.extensionArea,
+          InspectionExtensionsFactory.EP_NAME,
+          InspectionExtensionsFactory::class.java,
+      )
+    }
+    if (!application.extensionArea.hasExtensionPoint("com.intellij.lang.inspectionSuppressor")) {
+      CoreApplicationEnvironment.registerExtensionPoint(
+          application.extensionArea,
+          "com.intellij.lang.inspectionSuppressor",
+          LanguageExtensionPoint::class.java,
+      )
+    }
+    if (!application.extensionArea.hasExtensionPoint(InspectionElementsMerger.EP_NAME.name)) {
+      CoreApplicationEnvironment.registerExtensionPoint(
+          application.extensionArea,
+          InspectionElementsMerger.EP_NAME,
+          InspectionElementsMerger::class.java,
+      )
+    }
+    val suppressorPoint = application.extensionArea
+        .getExtensionPoint<LanguageExtensionPoint<InspectionSuppressor>>("com.intellij.lang.inspectionSuppressor")
+    if (suppressorPoint.extensionList.none {
+      it.implementationClass == "org.jetbrains.kotlin.com.intellij.codeInspection.JavaInspectionSuppressor"
+    }) {
+      val javaPluginDescriptor = DefaultPluginDescriptor(
+          PluginId.getId("com.intellij.java.analysis"),
+          InspectionSuppressor::class.java.classLoader,
+      )
+      val javaInspectionSuppressor = LanguageExtensionPoint<InspectionSuppressor>().apply {
+        language = "JAVA"
+        implementationClass = "org.jetbrains.kotlin.com.intellij.codeInspection.JavaInspectionSuppressor"
+        setPluginDescriptor(javaPluginDescriptor)
+      }
+      suppressorPoint.registerExtension(javaInspectionSuppressor, javaPluginDescriptor, application)
+    }
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
         DocumentWriteAccessGuard.EP_NAME,
@@ -206,6 +250,8 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerProjectServices(project: MockProject) {
     PluginStructureProvider.registerProjectServices(project, PLUGIN_PATH)
+    project.picoContainer.unregisterComponent(InspectionManager::class.java.name)
+    project.registerService(InspectionManager::class.java, LiveInspectionManager(project))
     project.picoContainer.unregisterComponent(IncompleteDependenciesService::class.java.name)
     project.registerService(IncompleteDependenciesService::class.java, LiveIncompleteDependenciesService(project))
     val workspaceModel = LiveWorkspaceModel(projectContext)

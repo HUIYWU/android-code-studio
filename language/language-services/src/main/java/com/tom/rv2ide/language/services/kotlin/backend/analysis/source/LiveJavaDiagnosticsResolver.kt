@@ -16,6 +16,17 @@ import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.Jav
 import org.jetbrains.kotlin.com.intellij.lang.LanguageUtil
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
+import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
+import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptor
+import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
+import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
+import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
+import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
+import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorBase
+import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
+import org.jetbrains.kotlin.com.intellij.lang.annotation.HighlightSeverity
 import org.jetbrains.kotlin.com.intellij.openapi.util.TextRange
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
@@ -108,37 +119,68 @@ internal class LiveJavaDiagnosticsResolver(
         result += toDiagnostic(error, lineIndex)
         semanticDiagnostics++
       }
-      file.accept(object : PsiRecursiveElementWalkingVisitor() {
-        override fun visitElement(element: PsiElement) {
-          cancelChecker.abortIfCancelled()
-          visitedElements++
-          if (element is PsiErrorElement) {
-            val rawRange = requireNotNull(element.textRange)
-            val diagnostic = toSyntaxDiagnostic(element, rawRange, lineIndex)
-            result += diagnostic
-            syntaxDiagnostics++
-            KlsLogs.info(
-                "Java codeserver parser error: file={}, psi={}, rawStart={}, rawEnd={}, range={}, message={}",
-                file.virtualFile?.path,
-                System.identityHashCode(file),
-                rawRange.startOffset,
-                rawRange.endOffset,
-                diagnostic.range,
-                diagnostic.message,
-            )
+      var inspectionDiagnostics = 0
+      // TODO(ACS-ANALYSIS-EXPERIMENT): Validate official inspection execution and descriptor anchoring on device.
+      val inspection = AccessStaticViaInstanceBase()
+      val inspectionHolder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
+      val inspectionSession = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
+      val inspectionVisitor = InspectionEngine.createVisitor(inspection, inspectionHolder, true, inspectionSession)
+      inspection.inspectionStarted(inspectionSession, true)
+      try {
+        file.accept(object : PsiRecursiveElementWalkingVisitor() {
+          override fun visitElement(element: PsiElement) {
+            cancelChecker.abortIfCancelled()
+            visitedElements++
+            element.accept(inspectionVisitor)
+            if (element is PsiErrorElement) {
+              val rawRange = requireNotNull(element.textRange)
+              val diagnostic = toSyntaxDiagnostic(element, rawRange, lineIndex)
+              result += diagnostic
+              syntaxDiagnostics++
+              KlsLogs.info(
+                  "Java codeserver parser error: file={}, psi={}, rawStart={}, rawEnd={}, range={}, message={}",
+                  file.virtualFile?.path,
+                  System.identityHashCode(file),
+                  rawRange.startOffset,
+                  rawRange.endOffset,
+                  diagnostic.range,
+                  diagnostic.message,
+              )
+            }
+            collector.processElement(element)
+            super.visitElement(element)
           }
-          collector.processElement(element)
-          super.visitElement(element)
-        }
-      })
+        })
+      } finally {
+        inspection.inspectionFinished(inspectionSession, inspectionHolder)
+      }
+      inspectionHolder.results.forEach { descriptor ->
+        cancelChecker.abortIfCancelled()
+        val anchor = requireNotNull(descriptor.psiElement)
+        if (SuppressionUtil.inspectionResultSuppressed(anchor, inspection)) return@forEach
+        val descriptorRange = descriptor.absoluteRange()
+        val severity = descriptor.highlightType.toSeverity() ?: return@forEach
+        result += DiagnosticItem(
+            message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
+            code = inspection.suppressId,
+            range = Range(
+                lineIndex.indexToPosition(descriptorRange.startOffset),
+                lineIndex.indexToPosition(descriptorRange.endOffset),
+            ),
+            source = "java-inspection",
+            severity = severity,
+        )
+        inspectionDiagnostics++
+      }
       result.sortedWith(DiagnosticItem.START_COMPARATOR).also { diagnostics ->
         KlsLogs.info(
-            "Java codeserver collector end: file={}, psi={}, visitedElements={}, syntaxDiagnostics={}, semanticDiagnostics={}, visitedDiagnostics={}, durationUs={}",
+            "Java codeserver collector end: file={}, psi={}, visitedElements={}, syntaxDiagnostics={}, semanticDiagnostics={}, inspectionDiagnostics={}, visitedDiagnostics={}, durationUs={}",
             file.virtualFile?.path,
             System.identityHashCode(file),
             visitedElements,
             syntaxDiagnostics,
             semanticDiagnostics,
+            inspectionDiagnostics,
             diagnostics.size,
             (System.nanoTime() - startedAt) / 1_000L,
         )
@@ -187,6 +229,37 @@ internal class LiveJavaDiagnosticsResolver(
         severity = DiagnosticSeverity.ERROR,
     )
   }
+
+  private fun ProblemDescriptor.absoluteRange(): TextRange {
+    if (this is ProblemDescriptorBase) return requireNotNull(textRange)
+    val start = requireNotNull(startElement.textRange)
+    val end = requireNotNull(endElement.textRange)
+    val range = start.union(end)
+    val rangeInElement = textRangeInElement ?: return range
+    return TextRange(
+        start.startOffset + rangeInElement.startOffset,
+        start.startOffset + rangeInElement.endOffset,
+    )
+  }
+
+  private fun ProblemHighlightType.toSeverity(): DiagnosticSeverity? =
+      when (this) {
+        ProblemHighlightType.POSSIBLE_PROBLEM -> null
+        ProblemHighlightType.ERROR,
+        ProblemHighlightType.GENERIC_ERROR,
+        -> DiagnosticSeverity.ERROR
+        ProblemHighlightType.INFO,
+        ProblemHighlightType.INFORMATION,
+        -> DiagnosticSeverity.INFO
+        ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
+        ProblemHighlightType.LIKE_UNKNOWN_SYMBOL,
+        ProblemHighlightType.LIKE_DEPRECATED,
+        ProblemHighlightType.LIKE_MARKED_FOR_REMOVAL,
+        ProblemHighlightType.LIKE_UNUSED_SYMBOL,
+        ProblemHighlightType.WARNING,
+        ProblemHighlightType.WEAK_WARNING,
+        -> DiagnosticSeverity.WARNING
+      }
 
   private fun toDiagnostic(
       error: JavaCompilationError<*, *>,
