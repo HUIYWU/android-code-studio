@@ -57,6 +57,9 @@ internal class LiveJavaFileManager(
     val normalized = path.normalize()
     if (!normalized.toString().endsWith(".java")) return
     val snapshot = FileManager.getActiveDocumentSnapshot(normalized)
+    val previous = read { files[normalized] }
+    if (snapshot == null && previous == null) return
+    if (snapshot != null && previous?.let { it.version == snapshot.version && it.revision == snapshot.revision } == true) return
     ApplicationManager.getApplication().runWriteAction {
       project.analysisWrite {
         val previous = files[normalized]
@@ -130,6 +133,11 @@ internal class LiveJavaFileManager(
 
   /** Returns the active PSI for [path]. Callers must already hold the analysis read lock. */
   fun currentFile(path: Path): PsiJavaFile? = files[path.normalize()]?.file
+
+  fun currentFile(path: Path, version: Int, revision: Long): PsiJavaFile? =
+      files[path.normalize()]
+          ?.takeIf { it.version == version && it.revision == revision }
+          ?.file
 
   fun isShadowed(file: PsiFile): Boolean = read {
     if (file.getUserData(liveJavaFileInvalidKey) == true) return@read true

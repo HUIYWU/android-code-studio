@@ -17,7 +17,16 @@
 
 package com.tom.rv2ide.lsp.models
 
+import com.tom.rv2ide.lsp.CancellableRequestParams
 import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 
-data class ExpandSelectionParams(var file: Path, var selection: Range)
+data class ExpandSelectionParams @JvmOverloads constructor(
+    var file: Path,
+    var selection: Range,
+    override val cancelChecker: ICancelChecker = ICancelChecker.NOOP,
+) : CancellableRequestParams {
+  var documentVersion: Int = -1
+  var documentRevision: Long = -1L
+}

@@ -141,6 +141,45 @@ internal class LiveJavaPsiResolver(
     }
   }
 
+  override fun expandJavaSelection(
+      javaFile: Path,
+      selection: Range,
+      documentVersion: Int,
+      documentRevision: Long,
+      cancelChecker: ICancelChecker,
+  ): Range? {
+    val normalized = javaFile.normalize()
+    cancelChecker.abortIfCancelled()
+    val snapshot = FileManager.getActiveDocumentSnapshot(normalized) ?: return null
+    if (
+        documentVersion >= 0 && snapshot.version != documentVersion ||
+            documentRevision >= 0L && snapshot.revision != documentRevision
+    ) {
+      return null
+    }
+    val version = snapshot.version
+    val revision = snapshot.revision
+    return AnalysisApiGuard.withAccess(cancelChecker) {
+      if (!isCurrentDocument(normalized, version, revision)) return@withAccess null
+      environment.javaFiles.refresh(normalized)
+      ApplicationManager.getApplication().runReadAction(Computable {
+        environment.project.analysisRead {
+          cancelChecker.abortIfCancelled()
+          if (!isCurrentDocument(normalized, version, revision)) return@analysisRead null
+          val file = environment.javaFiles.currentFile(normalized, version, revision)
+              ?: return@analysisRead null
+          val expanded = expandSelectionInJavaPsi(file, selection, cancelChecker)
+          if (isCurrentDocument(normalized, version, revision)) expanded else null
+        }
+      })
+    }
+  }
+
+  private fun isCurrentDocument(path: Path, version: Int, revision: Long): Boolean {
+    val snapshot = FileManager.getActiveDocumentSnapshot(path) ?: return false
+    return snapshot.version == version && snapshot.revision == revision
+  }
+
   override fun kotlinSignature(
       javaFile: Path,
       offset: Int,

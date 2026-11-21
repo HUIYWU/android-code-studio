@@ -1,14 +1,16 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.app.BaseApplication
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
-import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisApiGuard
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
+import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
+import com.tom.rv2ide.lsp.models.ExpandSelectionParams
 import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.language.services.interop.KotlinSourceResolver
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisApiGuard
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaFileType
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
@@ -42,6 +44,121 @@ import org.robolectric.annotation.Config
 @Config(application = BaseApplication::class)
 @OptIn(org.jetbrains.kotlin.analysis.api.KaExperimentalApi::class, org.jetbrains.kotlin.analysis.api.KaPlatformInterface::class)
 class JavaPsiInteropCapabilityTest {
+
+  @Test
+  fun javaSelectionExpansionUsesTheActivePsiFile() {
+    KotlinAnalysisTestSupport.withWorkspace {
+      val path = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/Selection.java",
+      )
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+
+          class Selection {
+            void run() {
+              try {
+                call();
+              } finally {
+                done();
+              }
+            }
+          }
+      """.trimIndent()
+      fun rangeAt(start: Int, end: Int): com.tom.rv2ide.models.Range {
+        val index = com.tom.rv2ide.lsp.models.LineIndex.from(content)
+        val startPosition = index.indexToPosition(start).apply { this.index = -1 }
+        val endPosition = index.indexToPosition(end).apply { this.index = -1 }
+        return com.tom.rv2ide.models.Range(startPosition, endPosition)
+      }
+      fun assertRangeEquals(expected: com.tom.rv2ide.models.Range, actual: com.tom.rv2ide.models.Range) {
+        assertEquals(expected.start.line, actual.start.line)
+        assertEquals(expected.start.column, actual.start.column)
+        assertEquals(expected.end.line, actual.end.line)
+        assertEquals(expected.end.column, actual.end.column)
+      }
+      val disk = "package com.tom.rv2ide.testing.kotlinfixture.app; class Selection {}"
+      Files.write(path, disk.toByteArray(Charsets.UTF_8))
+      try {
+        openDocument(path, content, version = 1, revision = 81L)
+        KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
+          KotlinAnalysisTestSupport.runAnalysis { runtime.onFileOpened(path) }
+          fun expand(
+              start: Int,
+              end: Int,
+              version: Int = 1,
+              revision: Long = 81L,
+          ): com.tom.rv2ide.models.Range =
+              KotlinAnalysisTestSupport.runAnalysis {
+                JavaSelectionProvider().expandSelection(
+                    ExpandSelectionParams(path, rangeAt(start, end)).apply {
+                      documentVersion = version
+                      documentRevision = revision
+                    },
+                )
+              }
+
+          val callStart = content.indexOf("call()")
+          val statementStart = content.lastIndexOf("call();", callStart)
+          assertRangeEquals(
+              rangeAt(statementStart, statementStart + "call();".length),
+              expand(callStart, callStart + "call()".length),
+          )
+
+          val methodStart = content.indexOf("void run()")
+          val methodBodyStart = content.indexOf('{', methodStart)
+          val methodEnd = content.indexOf("\n  }", methodBodyStart) + "\n  }".length
+          assertRangeEquals(
+              rangeAt(methodStart, methodEnd),
+              expand(methodBodyStart, methodEnd),
+          )
+
+          val tryStart = content.indexOf("try {")
+          val tryBlockStart = content.indexOf('{', tryStart)
+          val finallyStart = content.indexOf("finally", tryStart)
+          val tryBlockEnd = content.lastIndexOf('}', finallyStart) + 1
+          val finallyBlockStart = content.indexOf('{', finallyStart)
+          val finallyBlockEnd = content.indexOf('}', finallyBlockStart) + 1
+          assertRangeEquals(
+              rangeAt(tryStart, finallyBlockEnd),
+              expand(tryBlockStart, tryBlockEnd),
+          )
+          assertRangeEquals(
+              rangeAt(tryStart, finallyBlockEnd),
+              expand(finallyBlockStart, finallyBlockEnd),
+          )
+
+          val classStart = content.indexOf("class Selection")
+          val classEnd = content.lastIndexOf('}')
+          assertRangeEquals(rangeAt(0, content.length), expand(classStart, classEnd + 1))
+          val packageEnd = content.indexOf(';') + 1
+          assertRangeEquals(rangeAt(0, content.length), expand(0, packageEnd))
+          assertRangeEquals(rangeAt(0, content.length), expand(0, content.length))
+          assertRangeEquals(
+              rangeAt(callStart, callStart + "call()".length),
+              expand(callStart, callStart + "call()".length, version = 0),
+          )
+          assertRangeEquals(
+              rangeAt(callStart, callStart + "call()".length),
+              expand(callStart, callStart + "call()".length, revision = 80L),
+          )
+          val cancelled = ICancelChecker.Default().apply { cancel() }
+          var cancellationPropagated = false
+          try {
+            JavaSelectionProvider().expandSelection(
+                ExpandSelectionParams(path, rangeAt(callStart, callStart + "call()".length), cancelled),
+            )
+          } catch (_: java.util.concurrent.CancellationException) {
+            cancellationPropagated = true
+          }
+          assertTrue("Selection cancellation must propagate", cancellationPropagated)
+          assertEquals(disk, String(Files.readAllBytes(path), Charsets.UTF_8))
+        }
+      } finally {
+        closeDocument(path)
+        Files.deleteIfExists(path)
+      }
+    }
+  }
 
   @Test
   fun kotlinBackendNavigatesToUnsavedJavaAndRestoresDiskAfterClose() {
@@ -164,6 +281,19 @@ class JavaPsiInteropCapabilityTest {
             }
           }
           verify(activeExpected = true)
+          fun currentJavaPsi(version: Int = 1, revision: Long = 11L) =
+              AnalysisApiGuard.withAccess(ICancelChecker.NOOP) {
+                ApplicationManager.getApplication().runReadAction(Computable {
+                  environment.project.analysisRead {
+                    environment.javaFiles.currentFile(path, version, revision)
+                  }
+                })
+              }
+          val activePsi = requireNotNull(currentJavaPsi())
+          assertNull(currentJavaPsi(version = 0))
+          assertNull(currentJavaPsi(revision = 10L))
+          environment.javaFiles.refresh(path)
+          assertTrue(activePsi === currentJavaPsi())
           closeDocument(path)
           environment.javaFiles.refresh(path)
           verify(activeExpected = false)

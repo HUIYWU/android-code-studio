@@ -5,6 +5,7 @@ import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.ReferenceResult
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.models.Location
+import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
@@ -23,6 +24,14 @@ interface KotlinSourceResolver {
   fun kotlinHover(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): MarkupContent?
 
   fun kotlinSignature(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): SignatureHelp?
+
+  fun expandJavaSelection(
+      javaFile: Path,
+      selection: Range,
+      documentVersion: Int,
+      documentRevision: Long,
+      cancelChecker: ICancelChecker,
+  ): Range? = null
 
   fun kotlinReferences(
       javaFile: Path,
@@ -186,6 +195,28 @@ object JavaPsiInterop {
   fun kotlinSignature(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): SignatureHelp? {
     val current = state.get().resolver ?: return null
     return current.kotlinSignature(javaFile, offset, cancelChecker)
+  }
+
+  @JvmStatic
+  fun expandJavaSelection(
+      javaFile: Path,
+      selection: Range,
+      documentVersion: Int,
+      documentRevision: Long,
+      cancelChecker: ICancelChecker,
+  ): Range? {
+    cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.expandJavaSelection(
+        javaFile,
+        selection,
+        documentVersion,
+        documentRevision,
+        cancelChecker,
+    )
+    cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
   }
 
   @JvmStatic

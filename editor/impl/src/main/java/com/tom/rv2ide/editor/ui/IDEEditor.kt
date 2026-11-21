@@ -406,16 +406,31 @@ constructor(
     }
     val languageServer = this.languageServer ?: return
     val file = file ?: return
+    val requestFile = file.toPath()
+    val requestVersion = fileVersion
+    val requestRevision = documentRevision
+    val initialRange = cursorLSPRange
 
-    launchCancellableAsyncWithProgress(string.please_wait) { _, _ ->
-          val initialRange = cursorLSPRange
+    launchCancellableAsyncWithProgress(string.please_wait) { _, cancelChecker ->
           val result =
               safeGet("expand selection request") {
-                val params = ExpandSelectionParams(file.toPath(), initialRange)
+                val params = ExpandSelectionParams(requestFile, initialRange, cancelChecker).apply {
+                  documentVersion = requestVersion
+                  documentRevision = requestRevision
+                }
                 languageServer.expandSelection(params)
               } ?: initialRange
 
-          withContext(Dispatchers.Main) { setSelection(result) }
+          withContext(Dispatchers.Main) {
+            if (
+                !isReleased &&
+                    this@IDEEditor.file?.toPath() == requestFile &&
+                    fileVersion == requestVersion &&
+                    documentRevision == requestRevision
+            ) {
+              setSelection(result)
+            }
+          }
         }
         ?.logError("expand selection request")
   }

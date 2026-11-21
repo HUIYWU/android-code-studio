@@ -171,7 +171,7 @@ class JavaLanguageServer : ILanguageServer {
 
   private fun acquireSharedAnalysis(workspace: IWorkspace) {
     releaseSharedAnalysis()
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled || VMUtils.isJvm()) {
+    if ((!JavaPreferences.isJavaKotlinRecognitionEnabled && !settings.smartSelectionsEnabled()) || VMUtils.isJvm()) {
       return
     }
     val pluginRoot = BaseApplication.getBaseInstance()?.applicationInfo?.sourceDir ?: return
@@ -485,14 +485,27 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override suspend fun expandSelection(params: ExpandSelectionParams): Range {
-    if (!settings.smartSelectionsEnabled()) {
+    params.cancelChecker.abortIfCancelled()
+    if (
+        !settings.smartSelectionsEnabled() ||
+            !isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
+    ) {
       return params.selection
     }
     val semanticSession = getModuleScope(params.file)
+    val requestEpoch = semanticSession?.epoch
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
-      val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      return JavaSelectionProvider(compiler).expandSelection(params)
+      val result = JavaSelectionProvider().expandSelection(params)
+      params.cancelChecker.abortIfCancelled()
+      return if (
+          isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
+              isCurrentScope(semanticSession, requestEpoch)
+      ) {
+        result
+      } else {
+        params.selection
+      }
     } finally {
       foregroundLease?.close()
     }
