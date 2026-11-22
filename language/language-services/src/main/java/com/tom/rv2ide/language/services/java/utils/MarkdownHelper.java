@@ -17,14 +17,10 @@
 
 package com.tom.rv2ide.language.services.java.utils;
 
-import com.tom.rv2ide.lsp.models.MarkupContent;
-import com.tom.rv2ide.lsp.models.MarkupKind;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.nio.CharBuffer;
-import java.util.List;
-import java.util.StringJoiner;
 import java.util.function.Function;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
@@ -38,8 +34,6 @@ import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
-import openjdk.source.doctree.DocCommentTree;
-import openjdk.source.doctree.DocTree;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -55,19 +49,6 @@ public class MarkdownHelper {
       Pattern.compile("\\\\u+([0-9a-fA-F]{4})");
   private static final Logger LOG = Logger.getLogger("main");
 
-  public static MarkupContent asMarkupContent(DocCommentTree comment) {
-    String markdown = asMarkdown(comment);
-    MarkupContent content = new MarkupContent();
-    content.setKind(MarkupKind.MARKDOWN);
-    content.setValue(markdown);
-    return content;
-  }
-
-  public static String asMarkdown(DocCommentTree comment) {
-    List<? extends DocTree> lines = comment.getFirstSentence();
-    return asMarkdown(lines);
-  }
-
   /** If `commentText` looks like HTML, convert it to markdown */
   public static String asMarkdown(String commentText) {
     if (isHtml(commentText)) {
@@ -75,13 +56,6 @@ public class MarkdownHelper {
     }
     commentText = replaceTags(commentText);
     return decodeJavaUnicodeEscapes(decodeNumericHtmlEntities(commentText));
-  }
-
-  private static String asMarkdown(List<? extends DocTree> lines) {
-    StringJoiner join = new StringJoiner("\n");
-    for (DocTree l : lines) join.add(l.toString());
-    String html = join.toString();
-    return asMarkdown(html);
   }
 
   private static String decodeJavaUnicodeEscapes(String text) {

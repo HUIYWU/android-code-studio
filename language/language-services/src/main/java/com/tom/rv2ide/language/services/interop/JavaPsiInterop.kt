@@ -1,9 +1,7 @@
 package com.tom.rv2ide.language.services.interop
 
-import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.ReferenceResult
-import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
@@ -22,16 +20,6 @@ interface KotlinSourceResolver {
   fun kotlinDefinition(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): Location?
 
   fun kotlinHover(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): MarkupContent?
-
-  fun kotlinSignature(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): SignatureHelp?
-
-  fun expandJavaSelection(
-      javaFile: Path,
-      selection: Range,
-      documentVersion: Int,
-      documentRevision: Long,
-      cancelChecker: ICancelChecker,
-  ): Range? = null
 
   fun kotlinReferences(
       javaFile: Path,
@@ -52,31 +40,6 @@ interface KotlinSourceResolver {
 
   /** Monotonic revision of the shared source metadata that backs [kotlinTopLevelTypes]. */
   fun metadataRevision(): Long
-
-  fun kotlinOwner(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      cancelChecker: ICancelChecker,
-  ): Boolean = false
-
-  fun kotlinMembers(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      staticContext: Boolean,
-      prefix: String,
-      addParentheses: Boolean,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem>
-
-  fun kotlinInnerClasses(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      prefix: String,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem>
 }
 
 object JavaPsiInterop {
@@ -192,34 +155,6 @@ object JavaPsiInterop {
   }
 
   @JvmStatic
-  fun kotlinSignature(javaFile: Path, offset: Int, cancelChecker: ICancelChecker): SignatureHelp? {
-    val current = state.get().resolver ?: return null
-    return current.kotlinSignature(javaFile, offset, cancelChecker)
-  }
-
-  @JvmStatic
-  fun expandJavaSelection(
-      javaFile: Path,
-      selection: Range,
-      documentVersion: Int,
-      documentRevision: Long,
-      cancelChecker: ICancelChecker,
-  ): Range? {
-    cancelChecker.abortIfCancelled()
-    val current = state.get()
-    val resolver = current.resolver ?: return null
-    val result = resolver.expandJavaSelection(
-        javaFile,
-        selection,
-        documentVersion,
-        documentRevision,
-        cancelChecker,
-    )
-    cancelChecker.abortIfCancelled()
-    return if (state.get() === current) result else null
-  }
-
-  @JvmStatic
   fun kotlinReferences(
       javaFile: Path,
       offset: Int,
@@ -240,50 +175,5 @@ object JavaPsiInterop {
   fun kotlinTypeSourceFiles(modulePath: String, qualifiedName: String): List<Path> {
     val current = state.get().resolver ?: return emptyList()
     return current.kotlinTypeSourceFiles(modulePath, qualifiedName)
-  }
-
-  @JvmStatic
-  fun kotlinOwner(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      cancelChecker: ICancelChecker,
-  ): Boolean {
-    val current = state.get().resolver ?: return false
-    return current.kotlinOwner(javaFile, offset, ownerQualifiedName, cancelChecker)
-  }
-
-  @JvmStatic
-  fun kotlinMembers(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      staticContext: Boolean,
-      prefix: String,
-      addParentheses: Boolean,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem> {
-    val current = state.get().resolver ?: return emptyList()
-    return current.kotlinMembers(
-        javaFile,
-        offset,
-        ownerQualifiedName,
-        staticContext,
-        prefix,
-        addParentheses,
-        cancelChecker,
-    )
-  }
-
-  @JvmStatic
-  fun kotlinInnerClasses(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      prefix: String,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem> {
-    val current = state.get().resolver ?: return emptyList()
-    return current.kotlinInnerClasses(javaFile, offset, ownerQualifiedName, prefix, cancelChecker)
   }
 }

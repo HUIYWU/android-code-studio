@@ -19,6 +19,7 @@ package com.tom.rv2ide.language.services.java.providers;
 
 import androidx.annotation.NonNull;
 import com.tom.rv2ide.language.services.java.compiler.CompileTask;
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop;
 import com.tom.rv2ide.language.services.java.compiler.CompilerProvider;
 import com.tom.rv2ide.language.services.java.compiler.SynchronizedTask;
 import com.tom.rv2ide.language.services.java.utils.CancelChecker;
@@ -65,6 +66,11 @@ public class ReferenceProvider extends CancelableServiceProvider {
             file, line - 1, column - 1, params.getIncludeDeclaration(), this);
     if (kotlinReferences != null) {
       return kotlinReferences;
+    }
+
+    final ReferenceResult javaPsiReferences = JavaPsiServiceInterop.references(params);
+    if (javaPsiReferences != null) {
+      return javaPsiReferences;
     }
 
     List<Location> locations;

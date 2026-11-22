@@ -4,8 +4,14 @@ import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
+import com.tom.rv2ide.language.services.java.interop.JavaPsiDefinitionTarget
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
+import com.tom.rv2ide.language.services.java.providers.JavaHoverProvider
 import com.tom.rv2ide.lsp.models.ExpandSelectionParams
+import com.tom.rv2ide.lsp.models.DefinitionParams
+import com.tom.rv2ide.lsp.models.ReferenceParams
+import com.tom.rv2ide.lsp.models.ReferenceRole
 import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.language.services.interop.KotlinSourceResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
@@ -156,6 +162,251 @@ class JavaPsiInteropCapabilityTest {
       } finally {
         closeDocument(path)
         Files.deleteIfExists(path)
+      }
+    }
+  }
+
+  @Test
+  fun javaDefinitionResolvesActiveJavaPsiAndRejectsStaleDocumentStamp() {
+    KotlinAnalysisTestSupport.withWorkspace {
+      val path = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java",
+      )
+      val content = path.toFile().readText() + """
+
+          class JavaCaller {
+            String call() { return new JavaInterop().value("x"); }
+          }
+      """.trimIndent()
+      openDocument(path, content, version = 4, revision = 91L)
+      try {
+        KotlinAnalysisTestSupport.withRuntime(workspace) {
+          val callOffset = content.indexOf("value(\"x\")")
+          val position = com.tom.rv2ide.lsp.models.LineIndex.from(content)
+              .indexToPosition(callOffset)
+          val params = DefinitionParams(path, position, ICancelChecker.NOOP).apply {
+            documentVersion = 4
+            documentRevision = 91L
+          }
+          val target = requireNotNull(
+              KotlinAnalysisTestSupport.runAnalysis { JavaPsiServiceInterop.definition(params) },
+          )
+          assertEquals(JavaPsiDefinitionTarget.Kind.JAVA_SOURCE, target.kind)
+          val location = target.locations.single()
+          assertEquals(path, location.file)
+          assertEquals(
+              com.tom.rv2ide.lsp.models.LineIndex.from(content).indexToPosition(content.indexOf("value(String")),
+              location.range.start,
+          )
+          params.documentRevision = 90L
+          assertNull(KotlinAnalysisTestSupport.runAnalysis { JavaPsiServiceInterop.definition(params) })
+        }
+      } finally {
+        closeDocument(path)
+      }
+    }
+  }
+
+  @Test
+  fun javaReferencesResolveMethodsFieldsAndTypesAcrossJavaSources() {
+    KotlinAnalysisTestSupport.withWorkspace {
+      val directory = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app",
+      )
+      val declarationPath = directory.resolve("JavaPsiReferenceTarget.java")
+      val callerPath = directory.resolve("JavaPsiReferenceCaller.java")
+      val declaration = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+          public class JavaPsiReferenceTarget {
+            public String value;
+            public String call() { return value; }
+          }
+      """.trimIndent()
+      val caller = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+          class JavaReferenceCaller {
+            String run(JavaPsiReferenceTarget target) {
+              target.value = new JavaPsiReferenceTarget().call();
+              return target.value;
+            }
+          }
+      """.trimIndent()
+      Files.write(declarationPath, declaration.toByteArray(Charsets.UTF_8))
+      Files.write(callerPath, caller.toByteArray(Charsets.UTF_8))
+      openDocument(declarationPath, declaration, version = 1, revision = 101L)
+      openDocument(callerPath, caller, version = 1, revision = 102L)
+      try {
+        KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
+          KotlinAnalysisTestSupport.runAnalysis {
+            runtime.onFileCreated(declarationPath)
+            runtime.onFileCreated(callerPath)
+            runtime.onFileOpened(declarationPath)
+            runtime.onFileOpened(callerPath)
+          }
+          fun references(
+              path: java.nio.file.Path,
+              content: String,
+              marker: String,
+              includeDeclaration: Boolean = false,
+          ) = KotlinAnalysisTestSupport.runAnalysis {
+                JavaPsiServiceInterop.references(
+                    ReferenceParams(
+                        path,
+                        com.tom.rv2ide.lsp.models.LineIndex.from(content)
+                            .indexToPosition(content.indexOf(marker)),
+                        includeDeclaration,
+                        ICancelChecker.NOOP,
+                    ).apply {
+                      documentVersion = 1
+                      documentRevision = if (path == declarationPath) 101L else 102L
+                    },
+                )
+              }
+
+          val fieldReferences = requireNotNull(references(declarationPath, declaration, "value", true))
+          assertTrue(fieldReferences.locations.count { it.file == callerPath } >= 2)
+          assertTrue(fieldReferences.roles.contains(ReferenceRole.DEFINITION))
+          assertTrue(fieldReferences.roles.contains(ReferenceRole.USAGE))
+
+          val methodReferences = requireNotNull(references(declarationPath, declaration, "call()", true))
+          assertTrue(methodReferences.locations.any { it.file == callerPath })
+
+          val typeReferences = requireNotNull(references(callerPath, caller, "JavaPsiReferenceTarget target", true))
+          assertTrue(typeReferences.locations.count { it.file == callerPath } >= 2)
+          assertTrue(typeReferences.locations.any { it.file == declarationPath })
+
+          val stale = ReferenceParams(
+              declarationPath,
+              com.tom.rv2ide.lsp.models.LineIndex.from(declaration).indexToPosition(declaration.indexOf("value;")),
+              true,
+              ICancelChecker.NOOP,
+          ).apply {
+            documentVersion = 1
+            documentRevision = 100L
+          }
+          assertNull(KotlinAnalysisTestSupport.runAnalysis { JavaPsiServiceInterop.references(stale) })
+        }
+      } finally {
+        closeDocument(declarationPath)
+        closeDocument(callerPath)
+        Files.deleteIfExists(declarationPath)
+        Files.deleteIfExists(callerPath)
+      }
+    }
+  }
+
+  @Test
+  fun javaHoverUsesActivePsiSignatureAndJavaDocAndRejectsStaleStamp() {
+    KotlinAnalysisTestSupport.withWorkspace {
+      val path = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaPsiHover.java",
+      )
+      val content = """
+          package com.tom.rv2ide.testing.kotlinfixture.app;
+          /** Hover API documentation. */
+          public class JavaPsiHover {
+            /** Returns the supplied value. */
+            public String value(String input) { return input; }
+          }
+      """.trimIndent()
+      val disk = "package com.tom.rv2ide.testing.kotlinfixture.app; public class JavaPsiHover {}"
+      Files.write(path, disk.toByteArray(Charsets.UTF_8))
+      openDocument(path, content, version = 2, revision = 111L)
+      try {
+        KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
+          KotlinAnalysisTestSupport.runAnalysis {
+            runtime.onFileCreated(path)
+            runtime.onFileOpened(path)
+          }
+          val offset = content.indexOf("value(String")
+          val params = DefinitionParams(
+              path,
+              com.tom.rv2ide.lsp.models.LineIndex.from(content).indexToPosition(offset),
+              ICancelChecker.NOOP,
+          ).apply {
+            documentVersion = 2
+            documentRevision = 111L
+          }
+          val hover = requireNotNull(
+              KotlinAnalysisTestSupport.runAnalysis { JavaPsiServiceInterop.hover(params) },
+          )
+          assertTrue(hover.content.value.contains("String value(String input)"))
+          assertTrue(hover.content.value.contains("Returns the supplied value."))
+          params.documentRevision = 110L
+          assertNull(KotlinAnalysisTestSupport.runAnalysis { JavaPsiServiceInterop.hover(params) })
+          assertEquals(disk, String(Files.readAllBytes(path), Charsets.UTF_8))
+        }
+      } finally {
+        closeDocument(path)
+        Files.deleteIfExists(path)
+      }
+    }
+  }
+
+  @Test
+  fun kotlinSourceHoverStillUsesTheKotlinSemanticHoverBridge() {
+    KotlinAnalysisTestSupport.withWorkspace {
+      val previousRecognition = JavaPreferences.isJavaKotlinRecognitionEnabled
+      val javaPath = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java",
+      )
+      val kotlinPath = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/ActiveDocument.kt",
+      )
+      val callerPath = KotlinAnalysisTestSupport.fixturePath(
+          "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/KotlinHoverCaller.java",
+      )
+      try {
+        JavaPreferences.isJavaKotlinRecognitionEnabled = true
+        val javaContent = String(Files.readAllBytes(javaPath), Charsets.UTF_8)
+        val kotlinContent = """
+            package com.tom.rv2ide.testing.kotlinfixture.app
+            /** Kotlin hover documentation. */
+            fun kotlinHoverTarget(value: String): String = value
+        """.trimIndent()
+        openDocument(javaPath, javaContent, version = 1, revision = 121L)
+        openDocument(kotlinPath, kotlinContent, version = 1, revision = 122L)
+        KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
+          KotlinAnalysisTestSupport.runAnalysis {
+            runtime.onFileOpened(javaPath)
+            runtime.onFileOpened(kotlinPath)
+          }
+          val javaCall = """
+              package com.tom.rv2ide.testing.kotlinfixture.app;
+              class KotlinHoverCaller {
+                String call() { return ActiveDocumentKt.kotlinHoverTarget("value"); }
+              }
+          """.trimIndent()
+          Files.write(callerPath, javaCall.toByteArray(Charsets.UTF_8))
+          openDocument(callerPath, javaCall, version = 1, revision = 123L)
+          KotlinAnalysisTestSupport.runAnalysis {
+            runtime.onFileCreated(callerPath)
+            runtime.onFileOpened(callerPath)
+          }
+          val hover = requireNotNull(
+              KotlinAnalysisTestSupport.runAnalysis {
+                JavaHoverProvider(ICancelChecker.NOOP).hover(
+                    DefinitionParams(
+                        callerPath,
+                        com.tom.rv2ide.lsp.models.LineIndex.from(javaCall)
+                            .indexToPosition(javaCall.indexOf("kotlinHoverTarget")),
+                        ICancelChecker.NOOP,
+                    ).apply {
+                      documentVersion = 1
+                      documentRevision = 123L
+                    },
+                )
+              },
+          )
+          assertTrue(hover.value.contains("fun kotlinHoverTarget(value: String): String"))
+          assertTrue(hover.value.contains("Kotlin hover documentation."))
+        }
+      } finally {
+        closeDocument(javaPath)
+        closeDocument(kotlinPath)
+        closeDocument(callerPath)
+        Files.deleteIfExists(callerPath)
+        JavaPreferences.isJavaKotlinRecognitionEnabled = previousRecognition
       }
     }
   }
@@ -429,7 +680,7 @@ class JavaPsiInteropCapabilityTest {
         assertTrue(hover.value.contains("fun load"))
         val signature = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("load(") + "load(".length,
                   ICancelChecker.NOOP,
@@ -480,7 +731,7 @@ class JavaPsiInteropCapabilityTest {
       KotlinAnalysisTestSupport.withRuntime(workspace) {
         val constructor = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("InteropOverloads(\"label\")") + "InteropOverloads(".length,
                   ICancelChecker.NOOP,
@@ -492,7 +743,7 @@ class JavaPsiInteropCapabilityTest {
 
         val overloads = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf(".pick(") + ".pick(".length,
                   ICancelChecker.NOOP,
@@ -508,7 +759,7 @@ class JavaPsiInteropCapabilityTest {
 
         val topLevel = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("libraryExtension(") + "libraryExtension(".length,
                   ICancelChecker.NOOP,
@@ -519,7 +770,7 @@ class JavaPsiInteropCapabilityTest {
 
         val extension = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("decorated(") + "decorated(".length,
                   ICancelChecker.NOOP,
@@ -531,7 +782,7 @@ class JavaPsiInteropCapabilityTest {
 
         val extensionTail = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("\"suffix\"") + 1,
                   ICancelChecker.NOOP,
@@ -542,7 +793,7 @@ class JavaPsiInteropCapabilityTest {
 
         val defaultConstructor = requireNotNull(
             KotlinAnalysisTestSupport.runAnalysis {
-              com.tom.rv2ide.language.services.interop.JavaPsiInterop.kotlinSignature(
+              javaSignature(
                   javaPath,
                   content.indexOf("new LibraryApi(") + "new LibraryApi(".length,
                   ICancelChecker.NOOP,
@@ -1102,6 +1353,30 @@ class JavaPsiInteropCapabilityTest {
     }
   }
 
+  private fun javaSignature(
+      file: java.nio.file.Path,
+      offset: Int,
+      cancelChecker: ICancelChecker,
+  ): com.tom.rv2ide.lsp.models.SignatureHelp? {
+    val snapshot = requireNotNull(com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file))
+    val previousRecognition = JavaPreferences.isJavaKotlinRecognitionEnabled
+    try {
+      JavaPreferences.isJavaKotlinRecognitionEnabled = true
+      return JavaPsiServiceInterop.signatureHelp(
+          com.tom.rv2ide.lsp.models.SignatureHelpParams(
+              file,
+              com.tom.rv2ide.lsp.models.LineIndex.from(snapshot.content).indexToPosition(offset),
+              snapshot.content,
+              cancelChecker,
+          ).apply {
+            documentVersion = snapshot.version
+            documentRevision = snapshot.revision
+          },
+      )
+    } finally {
+      JavaPreferences.isJavaKotlinRecognitionEnabled = previousRecognition
+    }
+  }
 }
 
 private class FakeTopLevelTypesResolver(
@@ -1123,12 +1398,6 @@ private class FakeTopLevelTypesResolver(
       cancelChecker: ICancelChecker,
   ): com.tom.rv2ide.lsp.models.MarkupContent? = null
 
-  override fun kotlinSignature(
-      javaFile: java.nio.file.Path,
-      offset: Int,
-      cancelChecker: ICancelChecker,
-  ): com.tom.rv2ide.lsp.models.SignatureHelp? = null
-
   override fun kotlinReferences(
       javaFile: java.nio.file.Path,
       offset: Int,
@@ -1149,22 +1418,4 @@ private class FakeTopLevelTypesResolver(
     beforeMetadataRevision?.invoke()
     return revision
   }
-
-  override fun kotlinMembers(
-      javaFile: java.nio.file.Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      staticContext: Boolean,
-      prefix: String,
-      addParentheses: Boolean,
-      cancelChecker: ICancelChecker,
-  ): List<com.tom.rv2ide.lsp.models.CompletionItem> = emptyList()
-
-  override fun kotlinInnerClasses(
-      javaFile: java.nio.file.Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      prefix: String,
-      cancelChecker: ICancelChecker,
-  ): List<com.tom.rv2ide.lsp.models.CompletionItem> = emptyList()
 }

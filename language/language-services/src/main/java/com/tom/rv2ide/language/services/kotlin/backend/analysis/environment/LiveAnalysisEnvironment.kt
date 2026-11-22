@@ -11,6 +11,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourc
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaDiagnosticsResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaPsiResolver
+import com.tom.rv2ide.language.services.java.psi.LiveJavaPsiServiceResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaResolveScopeManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.ResolveScopeManager
 import org.jetbrains.kotlin.resolve.jvm.KotlinCliJavaFileManager
@@ -141,6 +142,10 @@ internal class LiveAnalysisEnvironment(
   lateinit var javaFiles: LiveJavaFileManager
     private set
   val javaPsiResolver: LiveJavaPsiResolver = LiveJavaPsiResolver(this)
+  private val javaPsiProjectAccess = LiveJavaPsiProjectAccess(this)
+  val javaServicePsiResolver: LiveJavaPsiServiceResolver =
+      LiveJavaPsiServiceResolver(javaPsiProjectAccess, javaPsiResolver::renderSignature)
+
   val javaDiagnosticsResolver: LiveJavaDiagnosticsResolver = LiveJavaDiagnosticsResolver(this)
   private val diagnosticFacadeServiceLazy = lazy(LazyThreadSafetyMode.PUBLICATION) {
     LLResolutionFacadeService(project)
@@ -228,7 +233,9 @@ val registrar = LiveAnalysisServiceRegistrar(
       runtimeGraph = LiveAnalysisModuleGraph.build(projectContext.modules)
       binaryClassIndex = JvmClassIndex()
       javaSourceIndex =
-          JavaSourceIndex { modulePath -> projectContext.module(modulePath)?.javaSourceRoots.orEmpty() }
+          JavaSourceIndex { modulePath ->
+             projectContext.module(modulePath)?.let { it.javaSourceRoots + it.generatedSourceRoots }.orEmpty()
+           }
       logMissingRoots(runtimeGraph)
 val libraryModules = linkedMapOf<String, KaLibraryModule>()
        val librarySourceModules = linkedMapOf<String, KaLibrarySourceModule>()

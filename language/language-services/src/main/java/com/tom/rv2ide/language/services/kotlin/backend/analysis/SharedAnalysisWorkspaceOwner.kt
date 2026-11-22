@@ -2,6 +2,7 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.language.services.interop.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.interop.JavaPsiInterop
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
 import com.tom.rv2ide.language.services.kotlin.classpath.KotlinProjectClasspathProvider
 import com.tom.rv2ide.projects.IWorkspace
@@ -60,6 +61,7 @@ internal object SharedAnalysisWorkspaceOwner {
           return Lease(null, failure, reason)
         }
         JavaPsiInterop.register(created.javaPsiResolver)
+        JavaPsiServiceInterop.register(created.javaServicePsiResolver)
         JavaDiagnosticsInterop.register(created.javaDiagnosticsResolver)
         states += State(classpathProvider.workspace, created, 1)
         Lease(created, null, null)
@@ -79,10 +81,12 @@ internal object SharedAnalysisWorkspaceOwner {
         }
     val closed = released.first
     JavaPsiInterop.unregister(closed.environment.javaPsiResolver)
+    JavaPsiServiceInterop.unregister(closed.environment.javaServicePsiResolver)
     JavaDiagnosticsInterop.unregister(closed.environment.javaDiagnosticsResolver)
     // The released environment may have owned the interop slot; fall back to a surviving one.
     released.second?.let {
       JavaPsiInterop.register(it.environment.javaPsiResolver)
+      JavaPsiServiceInterop.register(it.environment.javaServicePsiResolver)
       JavaDiagnosticsInterop.register(it.environment.javaDiagnosticsResolver)
     }
     closed.environment.close()

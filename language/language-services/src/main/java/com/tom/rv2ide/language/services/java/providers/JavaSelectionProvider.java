@@ -18,7 +18,7 @@
 package com.tom.rv2ide.language.services.java.providers;
 
 import androidx.annotation.NonNull;
-import com.tom.rv2ide.language.services.interop.JavaPsiInterop;
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop;
 import com.tom.rv2ide.lsp.models.ExpandSelectionParams;
 import com.tom.rv2ide.models.Range;
 
@@ -32,12 +32,7 @@ public class JavaSelectionProvider {
   @NonNull
   public Range expandSelection(@NonNull ExpandSelectionParams params) {
     final Range expanded =
-        JavaPsiInterop.expandJavaSelection(
-            params.getFile(),
-            params.getSelection(),
-            params.getDocumentVersion(),
-            params.getDocumentRevision(),
-            params.getCancelChecker());
+        JavaPsiServiceInterop.expandSelection(params);
     return expanded == null ? params.getSelection() : expanded;
   }
 }

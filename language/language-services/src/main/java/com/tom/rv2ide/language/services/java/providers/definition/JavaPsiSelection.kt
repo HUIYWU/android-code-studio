@@ -1,4 +1,4 @@
-package com.tom.rv2ide.language.services.kotlin.backend.analysis.source
+package com.tom.rv2ide.language.services.java.providers.definition
 
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.models.Range
@@ -30,6 +30,7 @@ internal fun expandSelectionInJavaPsi(
   cancelChecker.abortIfCancelled()
   val common = PsiTreeUtil.findCommonParent(startElement, endElement) ?: file
   cancelChecker.abortIfCancelled()
+
   PsiTreeUtil.getParentOfType(common, PsiMethod::class.java, true)?.let { method ->
     cancelChecker.abortIfCancelled()
     method.body?.let { body ->

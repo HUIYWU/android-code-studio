@@ -20,7 +20,6 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.definit
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.documentationText
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.semantic.parameterLabel
 import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
-import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MarkupContent
 import com.tom.rv2ide.lsp.models.MarkupKind
@@ -52,17 +51,9 @@ import org.jetbrains.kotlin.analysis.api.symbols.symbol
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.progress.ProcessCanceledException
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
-import org.jetbrains.kotlin.com.intellij.psi.JavaPsiFacade
-import org.jetbrains.kotlin.com.intellij.psi.PsiCall
-import org.jetbrains.kotlin.com.intellij.psi.PsiClass
-import org.jetbrains.kotlin.com.intellij.psi.PsiConstructorCall
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.com.intellij.psi.PsiExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaCodeReferenceElement
-import org.jetbrains.kotlin.com.intellij.psi.PsiMethod
-import org.jetbrains.kotlin.com.intellij.psi.PsiNewExpression
-import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.psi.KtClassOrObject
 import org.jetbrains.kotlin.psi.KtConstructor
@@ -141,59 +132,16 @@ internal class LiveJavaPsiResolver(
     }
   }
 
-  override fun expandJavaSelection(
-      javaFile: Path,
-      selection: Range,
-      documentVersion: Int,
-      documentRevision: Long,
+  fun renderSignature(
+      declaration: KtDeclaration,
+      jvmParameterCount: Int?,
+      argumentIndex: Int,
       cancelChecker: ICancelChecker,
-  ): Range? {
-    val normalized = javaFile.normalize()
+  ): SignatureHelp? {
     cancelChecker.abortIfCancelled()
-    val snapshot = FileManager.getActiveDocumentSnapshot(normalized) ?: return null
-    if (
-        documentVersion >= 0 && snapshot.version != documentVersion ||
-            documentRevision >= 0L && snapshot.revision != documentRevision
-    ) {
-      return null
-    }
-    val version = snapshot.version
-    val revision = snapshot.revision
-    return AnalysisApiGuard.withAccess(cancelChecker) {
-      if (!isCurrentDocument(normalized, version, revision)) return@withAccess null
-      environment.javaFiles.refresh(normalized)
-      ApplicationManager.getApplication().runReadAction(Computable {
-        environment.project.analysisRead {
-          cancelChecker.abortIfCancelled()
-          if (!isCurrentDocument(normalized, version, revision)) return@analysisRead null
-          val file = environment.javaFiles.currentFile(normalized, version, revision)
-              ?: return@analysisRead null
-          val expanded = expandSelectionInJavaPsi(file, selection, cancelChecker)
-          if (isCurrentDocument(normalized, version, revision)) expanded else null
-        }
-      })
-    }
-  }
-
-  private fun isCurrentDocument(path: Path, version: Int, revision: Long): Boolean {
-    val snapshot = FileManager.getActiveDocumentSnapshot(path) ?: return false
-    return snapshot.version == version && snapshot.revision == revision
-  }
-
-  override fun kotlinSignature(
-      javaFile: Path,
-      offset: Int,
-      cancelChecker: ICancelChecker,
-  ): SignatureHelp? = withJavaFile(javaFile, offset, cancelChecker) { _, leaf ->
-    val call = PsiTreeUtil.getParentOfType(leaf, PsiCall::class.java, false)
-        ?: return@withJavaFile null
-    val arguments = call.argumentList ?: return@withJavaFile null
-    val range = arguments.textRange ?: return@withJavaFile null
-    if (offset !in range.startOffset..range.endOffset) return@withJavaFile null
-    val method = resolveCall(call)
-    val declaration = resolveCallTarget(call, method, javaFile) ?: return@withJavaFile null
-    val argumentIndex = argumentIndexAt(arguments.expressions, offset)
-    analyze(declaration) { signatureFor(declaration, method, argumentIndex) }
+    val result = analyze(declaration) { signatureFor(declaration, jvmParameterCount, argumentIndex) }
+    cancelChecker.abortIfCancelled()
+    return result
   }
 
   override fun kotlinReferences(
@@ -295,20 +243,6 @@ internal class LiveJavaPsiResolver(
 
   override fun metadataRevision(): Long = environment.metadataIndex.revision()
 
-  override fun kotlinOwner(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      cancelChecker: ICancelChecker,
-  ): Boolean = withJavaFile(javaFile, offset, cancelChecker) { _, _ ->
-    val owner =
-        JavaPsiFacade.getInstance(environment.project)
-            .findClass(ownerQualifiedName, GlobalSearchScope.allScope(environment.project))
-            ?: return@withJavaFile false
-    val navigation = owner.navigationElement
-    navigation is KtClassOrObject || navigation is KtFile
-  } ?: false
-
   override fun kotlinTypeSourceFiles(modulePath: String, qualifiedName: String): List<Path> {
     if (environment.sourceModulesByPath[modulePath] == null) return emptyList()
     val metadataIndex = environment.metadataIndex
@@ -330,83 +264,27 @@ internal class LiveJavaPsiResolver(
     return (classPaths + facadePaths).distinct()
   }
 
-  override fun kotlinMembers(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      staticContext: Boolean,
-      prefix: String,
-      addParentheses: Boolean,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem> =
-      AnalysisApiGuard.withAccess(cancelChecker) {
-        ApplicationManager.getApplication().runReadAction(Computable {
-          environment.project.analysisRead {
-            val file = environment.javaFiles.currentFile(javaFile.normalize())
-                ?: return@analysisRead emptyList()
-            if (offset !in 0 until file.textLength) return@analysisRead emptyList()
-            cancelChecker.abortIfCancelled()
-            collectKotlinMembers(
-                environment.project,
-                file,
-                offset,
-                ownerQualifiedName,
-                staticContext,
-                prefix,
-                addParentheses,
-                cancelChecker,
-            )
-          }
-        })
-      }
-
-  override fun kotlinInnerClasses(
-      javaFile: Path,
-      offset: Int,
-      ownerQualifiedName: String,
-      prefix: String,
-      cancelChecker: ICancelChecker,
-  ): List<CompletionItem> =
-      AnalysisApiGuard.withAccess(cancelChecker) {
-        ApplicationManager.getApplication().runReadAction(Computable {
-          environment.project.analysisRead {
-            val file = environment.javaFiles.currentFile(javaFile.normalize())
-                ?: return@analysisRead emptyList()
-            if (offset !in 0 until file.textLength) return@analysisRead emptyList()
-            cancelChecker.abortIfCancelled()
-            collectKotlinInnerClasses(
-                environment.project,
-                file,
-                offset,
-                ownerQualifiedName,
-                prefix,
-                cancelChecker,
-            )
-          }
-        })
-      }
-
   private fun KaSession.signatureFor(
       declaration: KtDeclaration,
-      method: PsiMethod?,
+      jvmParameterCount: Int?,
       argumentIndex: Int,
   ): SignatureHelp? =
       when (declaration) {
         is KtConstructor<*>, is KtClassOrObject -> constructorSignature(declaration, argumentIndex)
-        is KtNamedFunction -> method?.let { functionSignature(declaration, it, argumentIndex) }
+        is KtNamedFunction -> jvmParameterCount?.let { functionSignature(declaration, it, argumentIndex) }
         else -> null
       }
 
   private fun KaSession.functionSignature(
       declaration: KtNamedFunction,
-      method: PsiMethod,
+      jvmParameterCount: Int,
       argumentIndex: Int,
   ): SignatureHelp? {
     val symbol = declaration.symbol as? KaNamedFunctionSymbol ?: return null
     if (symbol.isSuspend) return null
     val isExtension = symbol.receiverParameter != null
     val expected = symbol.valueParameters.size + if (isExtension) 1 else 0
-    if (method.parameterList.parametersCount > expected) return null
+    if (jvmParameterCount > expected) return null
     val name = symbol.callableId?.let { it.callableName.asString() } ?: return null
     val candidates = listOf(declaration) + declaration.overloads(name).filter { it !== declaration }
     val entries = candidates.mapNotNull { candidate ->
@@ -487,11 +365,6 @@ internal class LiveJavaPsiResolver(
     )
   }
 
-  private fun argumentIndexAt(arguments: Array<PsiExpression>, offset: Int): Int {
-    val index = arguments.indexOfFirst { offset <= (it.textRange?.endOffset ?: Int.MAX_VALUE) }
-    return if (index >= 0) index else arguments.size
-  }
-
   private fun KtNamedFunction.overloads(name: String): List<KtNamedFunction> {
     val container: KtDeclarationContainer =
         containingClassOrObject ?: containingFile as? KtFile ?: return emptyList()
@@ -543,30 +416,6 @@ internal class LiveJavaPsiResolver(
           }
       else -> null
     }
-  }
-
-  private fun resolveCall(call: PsiCall): PsiMethod? =
-      resolving {
-        if (call is PsiConstructorCall) call.resolveConstructor() else call.resolveMethod()
-      }
-
-  private fun resolveCallTarget(
-      call: PsiCall,
-      method: PsiMethod?,
-      javaFile: Path,
-  ): KtDeclaration? {
-    if (method != null) {
-      val navigation = resolving { method.navigationElement } as? KtDeclaration
-      if (navigation != null && isKotlinSourceDeclaration(navigation, javaFile)) return navigation
-    }
-    // Implicit constructors have no source PSI of their own; the new expression's class reference
-    // still maps to the Kotlin class that owns the constructor.
-    if (call is PsiNewExpression && !call.isArrayCreation) {
-      val psiClass = resolving { call.classReference?.resolve() } as? PsiClass ?: return null
-      val navigation = resolving { psiClass.navigationElement } as? KtDeclaration
-      if (navigation != null && isKotlinSourceDeclaration(navigation, javaFile)) return navigation
-    }
-    return null
   }
 
   private fun isKotlinSourceDeclaration(declaration: KtDeclaration, javaFile: Path): Boolean {

@@ -35,6 +35,7 @@ import com.tom.rv2ide.lsp.internal.model.CachedCompletion
 import com.tom.rv2ide.language.services.java.actions.JavaCodeActionsMenu
 import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
 import com.tom.rv2ide.language.services.java.models.JavaServerSettings
 import com.tom.rv2ide.language.services.java.providers.CodeFormatProvider
@@ -45,7 +46,6 @@ import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsAnalyzer
 import com.tom.rv2ide.language.services.java.diagnostics.PublishDecision
 import com.tom.rv2ide.language.services.java.providers.JavaHoverProvider
 import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
-import com.tom.rv2ide.language.services.java.providers.KotlinSourceSignature
 import com.tom.rv2ide.language.services.java.providers.ReferenceProvider
 import com.tom.rv2ide.language.services.java.providers.SignatureProvider
 import com.tom.rv2ide.language.services.java.providers.snippet.JavaSnippetRepository.init
@@ -171,7 +171,7 @@ class JavaLanguageServer : ILanguageServer {
 
   private fun acquireSharedAnalysis(workspace: IWorkspace) {
     releaseSharedAnalysis()
-    if ((!JavaPreferences.isJavaKotlinRecognitionEnabled && !settings.smartSelectionsEnabled()) || VMUtils.isJvm()) {
+    if (VMUtils.isJvm()) {
       return
     }
     val pluginRoot = BaseApplication.getBaseInstance()?.applicationInfo?.sourceDir ?: return
@@ -393,12 +393,14 @@ class JavaLanguageServer : ILanguageServer {
       if (diagnosticsAnalyzer.isAnalyzing()) {
         diagnosticsAnalyzer.cancel()
       }
-      val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      val completionProvider =
-          CompletionProvider(compiler, settings, cachedCompletion.get()) { completion ->
-            updateCachedCompletion(completion, request, semanticSession, epoch)
-          }
-      val result = completionProvider.complete(request)
+      val result = JavaPsiServiceInterop.completeMember(request) ?: run {
+        if (!isCurrentDocument(request.file, request.documentVersion, request.documentRevision) ||
+            !isCurrentScope(semanticSession, epoch)) return CompletionResult.EMPTY
+        val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
+        CompletionProvider(compiler, settings, cachedCompletion.get()) { completion ->
+          updateCachedCompletion(completion, request, semanticSession, epoch)
+        }.complete(request)
+      }
       val currentDocument =
           isCurrentDocument(request.file, request.documentVersion, request.documentRevision)
       val currentSession = isCurrentScope(semanticSession, epoch)
@@ -457,28 +459,55 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override suspend fun findReferences(params: ReferenceParams): ReferenceResult {
-    if (!settings.referencesEnabled()) {
+    params.cancelChecker.abortIfCancelled()
+    if (
+        !settings.referencesEnabled() ||
+            !isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
+    ) {
       return ReferenceResult(emptyList())
     }
     val semanticSession = getModuleScope(params.file)
+    val requestEpoch = semanticSession?.epoch
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
       val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      return ReferenceProvider(compiler, params.cancelChecker).findReferences(params)
+      val result = ReferenceProvider(compiler, params.cancelChecker).findReferences(params)
+      params.cancelChecker.abortIfCancelled()
+      return if (
+          isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
+              isCurrentScope(semanticSession, requestEpoch)
+      ) {
+        result
+      } else {
+        ReferenceResult(emptyList())
+      }
     } finally {
       foregroundLease?.close()
     }
   }
 
   override suspend fun findDefinition(params: DefinitionParams): DefinitionResult {
-    if (!settings.definitionsEnabled()) {
+    params.cancelChecker.abortIfCancelled()
+    if (
+        !settings.definitionsEnabled() ||
+            !isCurrentDocument(params.file, params.documentVersion, params.documentRevision)
+    ) {
       return DefinitionResult(emptyList())
     }
     val semanticSession = getModuleScope(params.file)
+    val requestEpoch = semanticSession?.epoch
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
-      val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      return DefinitionProvider(compiler, settings, params.cancelChecker).findDefinition(params)
+      val result = DefinitionProvider(params.cancelChecker).findDefinition(params)
+      params.cancelChecker.abortIfCancelled()
+      return if (
+          isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
+              isCurrentScope(semanticSession, requestEpoch)
+      ) {
+        result
+      } else {
+        DefinitionResult(emptyList())
+      }
     } finally {
       foregroundLease?.close()
     }
@@ -519,14 +548,11 @@ class JavaLanguageServer : ILanguageServer {
       return SignatureHelp(emptyList(), -1, -1)
     }
     val semanticSession = getModuleScope(params.file)
-    // Preserve legacy behavior where no module session/environment identity is available. Unknown
-    // document stamps are likewise kept on the non-shared compatibility path: a strict key must
-    // never merge requests whose source snapshot cannot be proven identical.
     if (
         semanticSession == null ||
             params.documentVersion < 0 ||
             params.documentRevision < 0L ||
-            params.position.requireIndex() < 0
+            params.position.index < 0
     ) {
       return executeSignatureHelp(params, semanticSession, semanticSession?.epoch)
     }
@@ -626,14 +652,12 @@ class JavaLanguageServer : ILanguageServer {
   ): SignatureHelp {
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
-      val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      val result =
-          KotlinSourceSignature.find(
-              params.file,
-              params.position.line,
-              params.position.column,
-              params.cancelChecker,
-          ) ?: SignatureProvider(compiler, params.cancelChecker).signatureHelp(params)
+      params.cancelChecker.abortIfCancelled()
+      if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+        return SignatureHelp(emptyList(), -1, -1)
+      }
+      val result = SignatureProvider(params.cancelChecker).signatureHelp(params)
+      params.cancelChecker.abortIfCancelled()
       return if (
           isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
               isCurrentScope(semanticSession, epoch)
@@ -656,7 +680,7 @@ class JavaLanguageServer : ILanguageServer {
             com.tom.rv2ide.models.Position(
                 source.position.line,
                 source.position.column,
-                source.position.requireIndex(),
+                source.position.index,
             ),
             source.content?.toString(),
             cancelChecker,
@@ -683,11 +707,24 @@ class JavaLanguageServer : ILanguageServer {
   }
 
   override suspend fun hover(params: DefinitionParams): com.tom.rv2ide.lsp.models.MarkupContent {
+    params.cancelChecker.abortIfCancelled()
+    if (!isCurrentDocument(params.file, params.documentVersion, params.documentRevision)) {
+      return com.tom.rv2ide.lsp.models.MarkupContent()
+    }
     val semanticSession = getModuleScope(params.file)
+    val requestEpoch = semanticSession?.epoch
     val foregroundLease = semanticSession?.beginForegroundSemantic()
     try {
-      val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER
-      return JavaHoverProvider(compiler, params.cancelChecker).hover(params)
+      val result = JavaHoverProvider(params.cancelChecker).hover(params)
+      params.cancelChecker.abortIfCancelled()
+      return if (
+          isCurrentDocument(params.file, params.documentVersion, params.documentRevision) &&
+              isCurrentScope(semanticSession, requestEpoch)
+      ) {
+        result
+      } else {
+        com.tom.rv2ide.lsp.models.MarkupContent()
+      }
     } finally {
       foregroundLease?.close()
     }

@@ -9,150 +9,28 @@
 package com.tom.rv2ide.language.services.java.providers;
 
 import androidx.annotation.NonNull;
-import com.tom.rv2ide.language.services.java.compiler.CompileTask;
-import com.tom.rv2ide.language.services.java.compiler.JavaCompilerService;
-import com.tom.rv2ide.language.services.java.utils.MarkdownHelper;
-import com.tom.rv2ide.language.services.java.utils.NavigationHelper;
-import com.tom.rv2ide.language.services.java.utils.ShortTypePrinter;
+import com.tom.rv2ide.language.services.java.interop.JavaPsiHoverTarget;
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop;
 import com.tom.rv2ide.lsp.models.DefinitionParams;
 import com.tom.rv2ide.lsp.models.MarkupContent;
-import com.tom.rv2ide.lsp.models.MarkupKind;
 import com.tom.rv2ide.progress.ICancelChecker;
-import java.util.List;
-import java.util.StringJoiner;
-import jdkx.lang.model.element.Element;
-import jdkx.lang.model.element.ElementKind;
-import jdkx.lang.model.element.ExecutableElement;
-import jdkx.lang.model.element.TypeElement;
-import jdkx.lang.model.element.TypeParameterElement;
-import jdkx.lang.model.element.VariableElement;
-import jdkx.lang.model.type.TypeMirror;
-import openjdk.source.doctree.DocCommentTree;
-import openjdk.source.util.DocTrees;
 
-/** Provides conservative, attribution-backed Java and Kotlin ABI signature hover content. */
 public final class JavaHoverProvider extends CancelableServiceProvider {
-  private final JavaCompilerService compiler;
-
-  public JavaHoverProvider(JavaCompilerService compiler, ICancelChecker cancelChecker) {
+  public JavaHoverProvider(ICancelChecker cancelChecker) {
     super(cancelChecker);
-    this.compiler = compiler;
   }
 
   @NonNull
   public MarkupContent hover(@NonNull DefinitionParams params) {
     abortIfCancelled();
-    final MarkupContent kotlinHover =
-        KotlinSourceHover.find(
-            params.getFile(),
-            params.getPosition().getLine(),
-            params.getPosition().getColumn(),
-            this);
-    if (kotlinHover != null) {
-      return kotlinHover;
+    final JavaPsiHoverTarget target = JavaPsiServiceInterop.hover(params);
+    if (target == null) {
+      return new MarkupContent();
     }
-    final int line = params.getPosition().getLine() + 1;
-    final int column = params.getPosition().getColumn() + 1;
-    return compiler.compile(params.getFile()).get(task -> hover(task, params, line, column));
-  }
-
-  @NonNull
-  private MarkupContent hover(
-      CompileTask task, DefinitionParams params, int line, int column) {
+    final MarkupContent content = target.kind == JavaPsiHoverTarget.Kind.KOTLIN_SOURCE
+        ? KotlinSourceHover.find(params)
+        : target.content;
     abortIfCancelled();
-    final Element element =
-        NavigationHelper.findElement(task, params.getFile(), line, column, this);
-    if (element == null) {
-      return new MarkupContent();
-    }
-    final String signature = formatSignature(element);
-    if (signature.isEmpty()) {
-      return new MarkupContent();
-    }
-    final String documentation = javaDocumentation(task, element);
-    return new MarkupContent(formatHoverMarkdown(signature, documentation), MarkupKind.MARKDOWN);
-  }
-
-  static String formatHoverMarkdown(String signature, String documentation) {
-    final String codeBlock = "```java\n" + signature + "\n```";
-    return documentation.isEmpty() ? codeBlock : codeBlock + "\n---\n" + documentation;
-  }
-
-  private static String javaDocumentation(CompileTask task, Element element) {
-    final DocCommentTree documentation = DocTrees.instance(task.task).getDocCommentTree(element);
-    if (documentation == null) {
-      return "";
-    }
-    return MarkdownHelper.asMarkdown(documentation).trim();
-  }
-
-  static String formatSignature(Element element) {
-    if (element == null) {
-      return "";
-    }
-    if (element instanceof TypeElement) {
-      final TypeElement type = (TypeElement) element;
-      return typeKeyword(type.getKind()) + " " + type.getSimpleName() + typeParameters(type.getTypeParameters());
-    }
-    if (element instanceof ExecutableElement) {
-      final ExecutableElement executable = (ExecutableElement) element;
-      final String name = executable.getKind() == ElementKind.CONSTRUCTOR
-          ? executable.getEnclosingElement().getSimpleName().toString()
-          : executable.getSimpleName().toString();
-      final String returnType = executable.getKind() == ElementKind.CONSTRUCTOR
-          ? ""
-          : ShortTypePrinter.NO_PACKAGE.print(executable.getReturnType()) + " ";
-      final StringJoiner parameters = new StringJoiner(", ");
-      for (VariableElement parameter : executable.getParameters()) {
-        parameters.add(ShortTypePrinter.NO_PACKAGE.print(parameter.asType()) + " " + parameter.getSimpleName());
-      }
-      final String typeParameters = typeParameters(executable.getTypeParameters());
-      return (typeParameters.isEmpty() ? "" : typeParameters + " ")
-          + returnType + name + "(" + parameters + ")";
-    }
-    if (element instanceof VariableElement) {
-      final VariableElement variable = (VariableElement) element;
-      return ShortTypePrinter.NO_PACKAGE.print(variable.asType()) + " " + variable.getSimpleName();
-    }
-    if (element instanceof TypeParameterElement) {
-      final TypeParameterElement parameter = (TypeParameterElement) element;
-      return parameter.getSimpleName() + typeParameterBoundSuffix(parameter);
-    }
-    return "";
-  }
-
-  private static String typeKeyword(ElementKind kind) {
-    switch (kind) {
-      case INTERFACE:
-        return "interface";
-      case ENUM:
-        return "enum";
-      case ANNOTATION_TYPE:
-        return "@interface";
-      default:
-        return "class";
-    }
-  }
-
-  private static String typeParameters(List<? extends TypeParameterElement> parameters) {
-    if (parameters.isEmpty()) {
-      return "";
-    }
-    final StringJoiner joiner = new StringJoiner(", ", "<", ">");
-    for (TypeParameterElement parameter : parameters) {
-      joiner.add(parameter.getSimpleName() + typeParameterBoundSuffix(parameter));
-    }
-    return joiner.toString();
-  }
-
-  private static String typeParameterBoundSuffix(TypeParameterElement parameter) {
-    final StringJoiner bounds = new StringJoiner(" & ");
-    for (TypeMirror bound : parameter.getBounds()) {
-      final String printed = ShortTypePrinter.NO_PACKAGE.print(bound);
-      if (!"Object".equals(printed)) {
-        bounds.add(printed);
-      }
-    }
-    return bounds.length() == 0 ? "" : " extends " + bounds;
+    return content == null ? new MarkupContent() : content;
   }
 }

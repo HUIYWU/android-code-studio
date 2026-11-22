@@ -41,9 +41,6 @@ import com.tom.rv2ide.language.services.java.providers.completion.IJavaCompletio
 import com.tom.rv2ide.language.services.java.providers.completion.IdentifierCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.ImportCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.KeywordCompletionProvider;
-import com.tom.rv2ide.language.services.java.providers.completion.MemberReferenceCompletionProvider;
-import com.tom.rv2ide.language.services.java.providers.completion.MemberSelectCompletionProvider;
-import com.tom.rv2ide.language.services.java.providers.completion.QualifiedNewClassCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.SwitchConstantCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.ts.TSCompletionSuppression;
 import com.tom.rv2ide.language.services.java.providers.completion.ts.TSCompletionSuppressionReason;
@@ -416,8 +413,6 @@ final long classifyStartedNs = System.nanoTime();
     abortIfCancelled();
     abortCompletionIfCancelled();
 
-    // Kotlin source ABI stubs are added by JavaCompilerService's stable compilation path when
-    // Kotlin recognition is enabled, so completion always uses one consistent request shape.
     final openjdk.tools.javac.util.Context[] completionContext =
         new openjdk.tools.javac.util.Context[1];
     final CompilationRequest request = new CompilationRequest(
@@ -477,9 +472,6 @@ final long classifyStartedNs = System.nanoTime();
           if (newPartial.endsWith(ASTFixer.IDENT)) {
             newPartial = newPartial.substring(0, newPartial.length() - ASTFixer.IDENT.length());
           }
-        } else if (path.getLeaf().getKind() == Tree.Kind.NEW_CLASS && "new".equals(newPartial)) {
-          // At `qualifier.new|`, `new` is syntax rather than the member-type prefix.
-          newPartial = "";
         }
 
         final long providerStartedNs = System.nanoTime();
@@ -512,11 +504,8 @@ final long classifyStartedNs = System.nanoTime();
         klass = IdentifierCompletionProvider.class;
         break;
       case MEMBER_SELECT:
-        klass = MemberSelectCompletionProvider.class;
-        break;
       case NEW_CLASS:
-        klass = QualifiedNewClassCompletionProvider.class;
-        break;
+        return CompletionResult.EMPTY;
       case MEMBER_REFERENCE:
         LOG.debug(
             "Skipping member reference completion file={} cursor={} leafKind={} partial={} endsWithParen={} reason=temporarily disabled to avoid repeated full fallback and memory pressure",
