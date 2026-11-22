@@ -22,8 +22,10 @@ import com.tom.rv2ide.projects.classpath.ZipFileClasspathReader;
 import com.tom.rv2ide.utils.ClassTrie;
 import com.tom.rv2ide.utils.StopWatch;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -126,8 +128,25 @@ public class BootClasspathProvider {
     return result;
   }
 
-  public static synchronized Collection<ClassTrie> getAllEntries() {
-    return bootClasspathClasses.values();
+  public static synchronized List<ClassTrie> getTopLevelClassTries(Collection<String> classpaths) {
+    final var missing = new ArrayList<String>();
+    for (final var classpath : classpaths) {
+      if (!bootClasspathClasses.containsKey(classpath) && new File(classpath).isFile()) {
+        missing.add(classpath);
+      }
+    }
+    if (!missing.isEmpty()) {
+      update(missing);
+    }
+
+    final var result = new ArrayList<ClassTrie>(classpaths.size());
+    for (final var classpath : classpaths) {
+      final var trie = bootClasspathClasses.get(classpath);
+      if (trie != null) {
+        result.add(trie);
+      }
+    }
+    return result;
   }
 }
 

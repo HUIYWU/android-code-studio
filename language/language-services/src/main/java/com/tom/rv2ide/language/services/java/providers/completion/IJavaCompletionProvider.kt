@@ -257,20 +257,7 @@ abstract class IJavaCompletionProvider(
   ): CompletionItem {
     abortIfCancelled()
     abortCompletionIfCancelled()
-    val item = JavaCompletionItem()
-    item.ideLabel = simpleName(className).toString()
-    item.completionKind = CompletionItemKind.CLASS
-    item.detail = packageName(className).toString()
-    item.ideSortText = item.ideLabel
-    item.matchLevel = matchLevel
-
-    // TODO(itsaky): This will result in incorrect flatName if 'className' is a nested or local
-    // class
-    item.data = ClassCompletionData(className)
-
-    // If file is not provided, we are probably completing an import path
-    item.additionalEditHandler = if (file == null) null else ClassImportEditHandler(imports, file)
-    return item
+    return indexedClassItem(className, matchLevel, file?.let { ClassImportEditHandler(imports, it) })
   }
 
   protected open fun simpleName(name: String): CharSequence {
@@ -279,46 +266,11 @@ abstract class IJavaCompletionProvider(
     } else name
   }
 
-  private fun packageName(name: CharSequence): CharSequence {
-    return if (name.contains(".")) {
-      name.subSequence(0, name.lastIndexOf('.'))
-    } else name
-  }
-
-  protected open fun packageItem(name: String, matchLevel: MatchLevel): CompletionItem {
-    abortIfCancelled()
-    abortCompletionIfCancelled()
-    val simpleName = simpleName(name).toString()
-    var packageName = packageName(name).toString()
-    if (packageName == name) {
-      packageName = " "
-    }
-    return JavaCompletionItem().apply {
-      this.ideLabel = simpleName
-      this.detail = packageName
-      this.insertText = simpleName
-      this.completionKind = MODULE
-      this.ideSortText = name
-      this.matchLevel = matchLevel
-    }
-  }
-
   protected open fun snippetItem(
       snippet: ISnippet,
       matchLevel: MatchLevel,
   ): CompletionItem {
-    return JavaCompletionItem().apply {
-      this.ideLabel = snippet.prefix
-      this.detail = snippet.description
-      this.completionKind = CompletionItemKind.SNIPPET
-      this.matchLevel = matchLevel
-      this.ideSortText = "00000${snippet.prefix}"
-      this.snippetDescription = SnippetDescription(selectedLength = 0, deleteSelected = true)
-
-      this.insertTextFormat = SNIPPET
-      this.insertText =
-          snippet.body.joinToString(separator = "\n").replace("\t", indentationString)
-    }
+    return javaSnippetItem(snippet, matchLevel)
   }
 
   protected open fun kind(e: Element): CompletionItemKind {
@@ -435,5 +387,20 @@ abstract class IJavaCompletionProvider(
     }
 
     return element!!
+  }
+}
+
+internal fun javaSnippetItem(snippet: ISnippet, matchLevel: MatchLevel): CompletionItem {
+  return JavaCompletionItem().apply {
+    this.ideLabel = snippet.prefix
+    this.detail = snippet.description
+    this.completionKind = CompletionItemKind.SNIPPET
+    this.matchLevel = matchLevel
+    this.ideSortText = "00000${snippet.prefix}"
+    this.snippetDescription = SnippetDescription(selectedLength = 0, deleteSelected = true)
+
+    this.insertTextFormat = SNIPPET
+    this.insertText =
+        snippet.body.joinToString(separator = "\n").replace("\t", indentationString)
   }
 }

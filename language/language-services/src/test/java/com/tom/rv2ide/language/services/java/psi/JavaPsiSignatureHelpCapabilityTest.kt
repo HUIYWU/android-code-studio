@@ -22,6 +22,7 @@ import com.tom.rv2ide.lsp.models.SignatureHelpParams
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.ModuleProject
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
@@ -308,7 +309,11 @@ class JavaPsiSignatureHelpCapabilityTest {
     override fun references(params: ReferenceParams): ReferenceResult? = null
     override fun hover(params: DefinitionParams): JavaPsiHoverTarget? = null
     override fun signatureHelp(params: SignatureHelpParams): SignatureHelp = render()
-    override fun completeMember(params: CompletionParams): CompletionResult? = null
+    override fun complete(
+        params: CompletionParams,
+        module: ModuleProject?,
+        matchAllLowerCase: Boolean,
+    ): CompletionResult? = null
   }
 
   private fun params(path: Path, content: String, offset: Int): SignatureHelpParams =

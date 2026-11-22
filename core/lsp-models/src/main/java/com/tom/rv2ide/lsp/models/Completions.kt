@@ -72,12 +72,13 @@ data class CompletionParams(
 
 open class CompletionResult(items: Collection<CompletionItem>) {
   val items: List<CompletionItem> = run {
-    var temp = items.toMutableList()
-    temp.sort()
-    if (TRIM_TO_MAX && temp.size > MAX_ITEMS) {
-      temp = temp.subList(0, MAX_ITEMS)
+    val sorted = items.toMutableList()
+    sorted.sort()
+    if (TRIM_TO_MAX && sorted.size > MAX_ITEMS) {
+      sorted.subList(0, MAX_ITEMS).toMutableList()
+    } else {
+      sorted
     }
-    return@run temp
   }
 
   var isIncomplete = this.items.size < items.size

@@ -32,22 +32,19 @@ import com.tom.rv2ide.language.services.java.models.ReparsePlan;
 import com.tom.rv2ide.preferences.internal.JavaPreferences;
 import com.tom.rv2ide.language.services.java.parser.ParseTask;
 import com.tom.rv2ide.language.services.java.parser.Parser;
+import com.tom.rv2ide.language.services.java.providers.completion.JavaCompletionTypeIndex;
 import com.tom.rv2ide.language.services.java.utils.Extractors;
 import com.tom.rv2ide.language.services.java.visitors.FindTypeDeclarations;
 import com.tom.rv2ide.models.Range;
 import com.tom.rv2ide.projects.FileManager;
 import com.tom.rv2ide.projects.ModuleProject;
-import com.tom.rv2ide.projects.android.AndroidModule;
-import com.tom.rv2ide.projects.java.JavaModule;
 import com.tom.rv2ide.progress.ICancelChecker;
 
 import com.tom.rv2ide.projects.util.BootClasspathProvider;
 import com.tom.rv2ide.projects.util.StringSearch;
 import com.tom.rv2ide.utils.Cache;
-import com.tom.rv2ide.utils.Environment;
 import com.tom.rv2ide.utils.SourceClassTrie;
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -64,7 +61,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import jdkx.tools.Diagnostic;
 import jdkx.tools.JavaFileObject;
 import jdkx.tools.StandardLocation;
@@ -95,9 +91,7 @@ public class JavaCompilerService implements CompilerProvider {
   protected final SourceFileManager fileManager;
   protected final ModuleProject module;
   public ReusableCompiler compiler = new JCReusableCompiler();
-  protected Set<String> bootClasspathClasses =
-      BootClasspathProvider.getTopLevelClasses(
-          Collections.singleton(Environment.ANDROID_JAR.getAbsolutePath()));
+  protected final Set<String> bootClasspathClasses;
   private CompileBatch cachedCompile;
   /** Set when a failed in-place reparse has already mutated the cached javac task. */
   private boolean reparseCorruptedTask;
@@ -113,72 +107,12 @@ public class JavaCompilerService implements CompilerProvider {
       this.fileManager = SourceFileManager.forModule(module);
       this.classPathClasses =
           Collections.unmodifiableSet(module.compileClasspathClasses.allClassNames());
-      this.bootClasspathClasses = Collections.unmodifiableSet(getBootclasspathClasses());
     }
-  }
-  private Set<String> getBootclasspathClasses() {
-    final List<String> classpaths = new ArrayList<>();
-
-    if (module instanceof AndroidModule) {
-      classpaths.addAll(
-          ((AndroidModule) module)
-              .getBootClassPaths().stream().map(File::getPath).collect(Collectors.toList()));
-    } else if (module instanceof JavaModule) {
-      final JavaModule javaModule = (JavaModule) module;
-      for (ModuleProject dependency : javaModule.getCompileModuleProjects()) {
-        if (dependency instanceof AndroidModule) {
-          classpaths.addAll(
-              ((AndroidModule) dependency)
-                  .getBootClassPaths().stream().map(File::getPath).collect(Collectors.toList()));
-        }
-      }
-
-      if (classpaths.isEmpty()) {
-        classpaths.addAll(
-            javaModule.getInheritedBootClassPaths().stream()
-                .filter(Objects::nonNull)
-                .map(File::getPath)
-                .distinct()
-                .collect(Collectors.toList()));
-      }
-
-      if (classpaths.isEmpty()) {
-        classpaths.addAll(
-            module.getCompileClasspaths().stream()
-                .filter(Objects::nonNull)
-                .map(File::getPath)
-                .filter(
-                    path ->
-                        path.endsWith("/android.jar")
-                            || path.endsWith(File.separator + "android.jar"))
-                .distinct()
-                .collect(Collectors.toList()));
-      }
+    final Set<String> bootClasspaths = JavaCompletionTypeIndex.bootClasspaths(module);
+    if (module != null && !bootClasspaths.isEmpty()) {
+      BootClasspathProvider.update(bootClasspaths);
     }
-
-    final List<String> normalizedClasspaths =
-        classpaths.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
-
-    if (normalizedClasspaths.isEmpty()) {
-      return Collections.emptySet();
-    }
-
-    BootClasspathProvider.update(normalizedClasspaths);
-    this.bootClasspathClasses =
-        Collections.unmodifiableSet(BootClasspathProvider.getTopLevelClasses(normalizedClasspaths));
-    return bootClasspathClasses;
-  }
-
-
-  private JavaCompilerService(
-      @Nullable ModuleProject module,
-      SourceFileManager fileManager,
-      Set<String> bootClasspathClasses,
-      Set<String> classPathClasses) {
-    this.module = module;
-    this.fileManager = fileManager;
-    this.bootClasspathClasses = bootClasspathClasses;
-    this.classPathClasses = classPathClasses;
+    this.bootClasspathClasses = Collections.unmodifiableSet(BootClasspathProvider.getTopLevelClasses(bootClasspaths));
   }
 
   public ModuleProject getModule() {

@@ -10,6 +10,7 @@ import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.lsp.models.SignatureHelpParams
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.projects.ModuleProject
 import java.util.concurrent.atomic.AtomicReference
 
 interface JavaPsiServiceResolver {
@@ -23,7 +24,7 @@ interface JavaPsiServiceResolver {
 
   fun signatureHelp(params: SignatureHelpParams): SignatureHelp?
 
-  fun completeMember(params: CompletionParams): CompletionResult?
+  fun complete(params: CompletionParams, module: ModuleProject?, matchAllLowerCase: Boolean): CompletionResult?
 }
 
 class JavaPsiDefinitionTarget(
@@ -102,11 +103,11 @@ object JavaPsiServiceInterop {
   }
 
   @JvmStatic
-  fun completeMember(params: CompletionParams): CompletionResult? {
+  fun complete(params: CompletionParams, module: ModuleProject?, matchAllLowerCase: Boolean): CompletionResult? {
     params.cancelChecker.abortIfCancelled()
     val current = state.get()
     val resolver = current.resolver ?: return null
-    val result = resolver.completeMember(params)
+    val result = resolver.complete(params, module, matchAllLowerCase)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }

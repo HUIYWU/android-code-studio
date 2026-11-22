@@ -393,7 +393,10 @@ class JavaLanguageServer : ILanguageServer {
       if (diagnosticsAnalyzer.isAnalyzing()) {
         diagnosticsAnalyzer.cancel()
       }
-      val result = JavaPsiServiceInterop.completeMember(request) ?: run {
+      val psiResult = JavaPsiServiceInterop.complete(
+          request, semanticSession?.module, settings.shouldMatchAllLowerCase(),
+      )
+      val result = psiResult ?: run {
         if (!isCurrentDocument(request.file, request.documentVersion, request.documentRevision) ||
             !isCurrentScope(semanticSession, epoch)) return CompletionResult.EMPTY
         val compiler = semanticSession?.compiler() ?: JavaCompilerService.NO_MODULE_COMPILER

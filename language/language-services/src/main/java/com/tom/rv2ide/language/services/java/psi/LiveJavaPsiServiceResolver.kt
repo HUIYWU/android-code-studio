@@ -20,6 +20,8 @@ import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.models.Location
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.projects.ModuleProject
 import java.nio.file.Path
 import java.util.LinkedHashMap
 import org.jetbrains.kotlin.com.intellij.psi.JavaRecursiveElementVisitor
@@ -90,21 +92,44 @@ internal class LiveJavaPsiServiceResolver(
         JavaPsiHoverTarget(JavaPsiHoverTarget.Kind.JAVA, content)
       }
 
-  override fun completeMember(params: CompletionParams): CompletionResult? =
-      projectAccess.withCurrentJavaFile(
-          params.file,
-          params.documentVersion,
-          params.documentRevision,
-          params.cancelChecker,
-      ) { file ->
-        JavaPsiMemberCompletion.complete(
-            file,
-            params.position.requireIndex(),
-            params.content,
-            JavaPreferences.isJavaKotlinRecognitionEnabled,
-            params.cancelChecker,
-        )
+  override fun complete(
+      params: CompletionParams,
+      module: ModuleProject?,
+      matchAllLowerCase: Boolean,
+  ): CompletionResult? {
+    val snapshot = FileManager.getActiveDocumentSnapshot(params.file) ?: return null
+    if ((params.documentVersion >= 0 && params.documentVersion != snapshot.version) ||
+        (params.documentRevision >= 0 && params.documentRevision != snapshot.revision)) return null
+    val recognizeKotlin = JavaPreferences.isJavaKotlinRecognitionEnabled
+    val cancelChecker = params.cancelChecker
+    val finish = projectAccess.withCurrentJavaFile<() -> CompletionResult>(
+        params.file,
+        snapshot.version,
+        snapshot.revision,
+        cancelChecker,
+    ) { file ->
+      val content = params.content
+      if (content != null && !file.viewProvider.contents.contentEquals(content)) {
+        return@withCurrentJavaFile { CompletionResult.EMPTY }
       }
+      val offset = params.position.requireIndex()
+      val imports = JavaPsiImportCompletion.collect(file, offset, recognizeKotlin, cancelChecker)
+      if (imports != null) return@withCurrentJavaFile { imports.finish(module, recognizeKotlin, cancelChecker) }
+      val member = JavaPsiMemberCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
+      if (member != null) return@withCurrentJavaFile { member }
+      val switchConstants = JavaPsiSwitchCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
+      if (switchConstants != null) return@withCurrentJavaFile { switchConstants }
+      val identifier = JavaPsiIdentifierCompletion.collect(file, offset, recognizeKotlin, cancelChecker)
+          ?: return@withCurrentJavaFile null
+      return@withCurrentJavaFile {
+        identifier.finish(params.file, module, matchAllLowerCase, recognizeKotlin, cancelChecker)
+      }
+    }
+    val result = finish?.invoke() ?: return null
+    cancelChecker.abortIfCancelled()
+    val current = FileManager.getActiveDocumentSnapshot(params.file) ?: return null
+    return if (current.version == snapshot.version && current.revision == snapshot.revision) result else null
+  }
 
   override fun signatureHelp(params: SignatureHelpParams): SignatureHelp? =
       projectAccess.withCurrentJavaFile(

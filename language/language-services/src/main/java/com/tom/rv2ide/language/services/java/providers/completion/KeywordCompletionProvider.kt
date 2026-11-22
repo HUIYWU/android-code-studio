@@ -59,7 +59,7 @@ class KeywordCompletionProvider(
         when (level) {
           is CompilationUnitTree -> UNRESOLVED_KEYWORDS
           is ClassTree -> CLASS_BODY_KEYWORDS
-          is MethodTree -> METHOD_BODY_KEYWORDS
+          is MethodTree -> methodBodyKeywords
           else -> EMPTY_KEYWORDS
         }
 
@@ -127,46 +127,46 @@ class KeywordCompletionProvider(
             "false",
             "null",
         )
-    private val METHOD_BODY_KEYWORDS =
-        arrayOf(
-            "new",
-            "assert",
-            "try",
-            "catch",
-            "finally",
-            "throw",
-            "return",
-            "break",
-            "case",
-            "continue",
-            "default",
-            "do",
-            "while",
-            "for",
-            "switch",
-            "if",
-            "else",
-            "instanceof",
-            "var",
-            "final",
-            "class",
-            "void",
-            "boolean",
-            "int",
-            "long",
-            "float",
-            "double",
-            "synchronized",
-            "true",
-            "false",
-            "null",
-        )
-
     private val UNRESOLVED_KEYWORDS =
-        (TOP_LEVEL_KEYWORDS.asList() + CLASS_BODY_KEYWORDS.asList() + METHOD_BODY_KEYWORDS.asList())
+        (TOP_LEVEL_KEYWORDS.asList() + CLASS_BODY_KEYWORDS.asList() + methodBodyKeywords.asList())
             .distinct()
             .toTypedArray()
 
     private val EMPTY_KEYWORDS = emptyArray<String>()
   }
 }
+
+internal val methodBodyKeywords =
+    arrayOf(
+        "new",
+        "assert",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "return",
+        "break",
+        "case",
+        "continue",
+        "default",
+        "do",
+        "while",
+        "for",
+        "switch",
+        "if",
+        "else",
+        "instanceof",
+        "var",
+        "final",
+        "class",
+        "void",
+        "boolean",
+        "int",
+        "long",
+        "float",
+        "double",
+        "synchronized",
+        "true",
+        "false",
+        "null",
+    )

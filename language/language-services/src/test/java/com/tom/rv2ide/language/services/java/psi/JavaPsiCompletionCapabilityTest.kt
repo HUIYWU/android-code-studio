@@ -98,13 +98,13 @@ class JavaPsiCompletionCapabilityTest {
         assertEquals("String", complete(path, content, "bounded.val").items.single { it.ideLabel == "value" }.overrideTypeText)
         assertTrue(complete(path, content, "super.removeRan").items.any { it.ideLabel == "removeRange" })
         assertFalse(complete(path, content, "list.removeRan").items.any { it.ideLabel == "removeRange" })
-        for (marker in listOf("nonMember", "import java.util.Li", "receiver::co")) {
-          assertNull(marker, runAnalysis { JavaPsiServiceInterop.completeMember(params(path, content, marker)) })
+        for (marker in listOf("receiver::co", "nonMember")) {
+          assertNull(marker, runAnalysis { JavaPsiServiceInterop.complete(params(path, content, marker), null, false) })
         }
         val stale = params(path, content, "receiver.").apply { documentRevision = 50L }
-        assertNull(runAnalysis { JavaPsiServiceInterop.completeMember(stale) })
+        assertNull(runAnalysis { JavaPsiServiceInterop.complete(stale, null, false) })
         val mismatched = params(path, content, "receiver.").apply { this.content = disk }
-        assertTrue(runAnalysis { JavaPsiServiceInterop.completeMember(mismatched) }?.items?.isEmpty() == true)
+        assertTrue(runAnalysis { JavaPsiServiceInterop.complete(mismatched, null, false) }?.items?.isEmpty() == true)
         assertEquals(disk, Files.readAllBytes(path).decodeToString())
       }
     }
@@ -160,7 +160,7 @@ class JavaPsiCompletionCapabilityTest {
   }
 
   private fun complete(path: Path, content: String, marker: String): CompletionResult =
-      requireNotNull(runAnalysis { JavaPsiServiceInterop.completeMember(params(path, content, marker)) }) { marker }
+      requireNotNull(runAnalysis { JavaPsiServiceInterop.complete(params(path, content, marker), null, false) }) { marker }
 
   private fun params(path: Path, content: String, marker: String): CompletionParams {
     val start = content.indexOf(marker)

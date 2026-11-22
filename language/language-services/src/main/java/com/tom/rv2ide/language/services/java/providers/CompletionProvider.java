@@ -39,7 +39,6 @@ import com.tom.rv2ide.language.services.java.models.ReparsePlan;
 
 import com.tom.rv2ide.language.services.java.providers.completion.IJavaCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.IdentifierCompletionProvider;
-import com.tom.rv2ide.language.services.java.providers.completion.ImportCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.KeywordCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.SwitchConstantCompletionProvider;
 import com.tom.rv2ide.language.services.java.providers.completion.ts.TSCompletionSuppression;
@@ -465,22 +464,11 @@ final long classifyStartedNs = System.nanoTime();
 
         abortIfCancelled();
         abortCompletionIfCancelled();
-        String newPartial = partial;
-
-        if (path.getLeaf().getKind() == Tree.Kind.IMPORT) {
-          newPartial = qualifiedPartialIdentifier(contents, (int) cursor);
-          if (newPartial.endsWith(ASTFixer.IDENT)) {
-            newPartial = newPartial.substring(0, newPartial.length() - ASTFixer.IDENT.length());
-          }
-        }
-
         final long providerStartedNs = System.nanoTime();
-        final var result =
-            doComplete(file, contents, cursor, newPartial, endsWithParen, task, path);
+        final var result = doComplete(file, cursor, partial, endsWithParen, task, path);
         pipelineTiming.providerUs = elapsedUs(providerStartedNs);
         pipelineTiming.logContextOutcome(file, cursor, TSCompletionSuppressionReason.NONE, "CONTINUED_TO_JAVAC");
-        pipelineTiming.log(file, cursor, path.getLeaf().getKind(), TSCompletionSuppressionReason.NONE, newPartial, result);
-
+        pipelineTiming.log(file, cursor, path.getLeaf().getKind(), TSCompletionSuppressionReason.NONE, partial, result);
         return result;
       });
     } finally {
@@ -492,7 +480,7 @@ final long classifyStartedNs = System.nanoTime();
   }
 
   @NonNull
-  private CompletionResult doComplete(final Path file, final String contents, final long cursor,
+  private CompletionResult doComplete(final Path file, final long cursor,
       final String partial, final boolean endsWithParen,
       final CompileTask task, final TreePath path
   ) {
@@ -503,6 +491,7 @@ final long classifyStartedNs = System.nanoTime();
       case IDENTIFIER:
         klass = IdentifierCompletionProvider.class;
         break;
+      case IMPORT:
       case MEMBER_SELECT:
       case NEW_CLASS:
         return CompletionResult.EMPTY;
@@ -518,9 +507,6 @@ final long classifyStartedNs = System.nanoTime();
       case SWITCH:
         klass = SwitchConstantCompletionProvider.class;
         break;
-      case IMPORT:
-        klass = ImportCompletionProvider.class;
-        break;
       default:
         klass = KeywordCompletionProvider.class;
         break;
@@ -529,18 +515,6 @@ final long classifyStartedNs = System.nanoTime();
     final IJavaCompletionProvider provider = ReflectUtils.reflect(klass)
         .newInstance(file, cursor, compiler, getSettings())
         .get();
-
-    if (provider instanceof ImportCompletionProvider) {
-      final String importPath = qualifiedPartialIdentifier(contents, (int) cursor);
-      ((ImportCompletionProvider) provider).setImportPath(importPath);
-      if (IdeLogConfig.shouldLogDebug()) {
-        LOG.debug("Routing completion to ImportCompletionProvider file={} cursor={} leafKind={} importPath={}",
-            file,
-            cursor,
-            path.getLeaf().getKind(),
-            importPath);
-      }
-    }
 
     abortIfCancelled();
     abortCompletionIfCancelled();
@@ -641,16 +615,4 @@ final long classifyStartedNs = System.nanoTime();
     return false;
   }
 
-  @NonNull
-  private String qualifiedPartialIdentifier(String contents, int end) {
-    int start = end;
-    while (start > 0 && isQualifiedIdentifierChar(contents.charAt(start - 1))) {
-      start--;
-    }
-    return contents.substring(start, end);
-  }
-
-  private boolean isQualifiedIdentifierChar(char c) {
-    return c == '.' || Character.isJavaIdentifierPart(c);
-  }
 }
