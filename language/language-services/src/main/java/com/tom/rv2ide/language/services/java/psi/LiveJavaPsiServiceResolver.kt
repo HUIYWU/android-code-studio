@@ -1,11 +1,14 @@
 package com.tom.rv2ide.language.services.java.psi
 
+import com.tom.rv2ide.language.services.java.interop.JavaPsiAccessorsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiAccessorsResultStatus
 import com.tom.rv2ide.language.services.java.interop.JavaPsiDefinitionTarget
 import com.tom.rv2ide.language.services.java.interop.JavaPsiConstructorResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiConstructorResultStatus
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldInfo
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateAccessorsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateConstructorParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiHoverTarget
 import com.tom.rv2ide.language.services.java.interop.JavaPsiProjectAccess
@@ -99,6 +102,23 @@ internal class LiveJavaPsiServiceResolver(
     val owner = classAt(file, start) ?: classAt(file, end)
         ?: return@withCurrentJavaFile JavaPsiConstructorResult(JavaPsiConstructorResultStatus.UNSUPPORTED, null)
     JavaPsiConstructorGeneration.generate(content, index, owner, params)
+  }
+
+  override fun generateAccessors(
+      params: JavaPsiGenerateAccessorsParams,
+  ): JavaPsiAccessorsResult? = projectAccess.withCurrentJavaFile(
+      params.file,
+      params.documentVersion,
+      params.documentRevision,
+      params.cancelChecker,
+  ) { file ->
+    val content = file.text
+    val index = LineIndex.from(content)
+    val start = index.lineColumnToIndex(params.selection.start.line, params.selection.start.column)
+    val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
+    val owner = classAt(file, start) ?: classAt(file, end)
+        ?: return@withCurrentJavaFile JavaPsiAccessorsResult(JavaPsiAccessorsResultStatus.UNSUPPORTED, null)
+    JavaPsiAccessorsGeneration.generate(content, index, owner, params)
   }
 
   private fun classAt(file: PsiJavaFile, offset: Int): PsiClass? {

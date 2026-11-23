@@ -110,7 +110,10 @@ class JavaPsiConstructorActionCapabilityTest {
           assertFalse(shortTypesEdit.newText.contains("java."))
           val shortTypesConstructor = StaticJavaParser.parse(apply(content, shortTypesEdit))
               .getClassByName("ShortTypes").get().constructors.single()
-          assertEquals("Map<String, List<T[]>>[]", shortTypesConstructor.parameters.single().type.asString())
+          assertEquals(
+              StaticJavaParser.parseType("Map<String, List<T[]>>[]").asString(),
+              shortTypesConstructor.parameters.single().type.asString(),
+          )
           assertEquals(JavaPsiConstructorResultStatus.CONSTRUCTOR_EXISTS, generate("class Duplicate", "values").status)
           assertEquals(JavaPsiConstructorResultStatus.GENERATED, generate("class Overloaded", "value").status)
           assertEquals(JavaPsiConstructorResultStatus.CONSTRUCTOR_EXISTS, generate("class ArrayDuplicate", "values").status)

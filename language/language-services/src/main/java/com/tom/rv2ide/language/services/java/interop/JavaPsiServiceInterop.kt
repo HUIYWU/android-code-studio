@@ -18,6 +18,8 @@ interface JavaPsiServiceResolver {
 
   fun generateConstructor(params: JavaPsiGenerateConstructorParams): JavaPsiConstructorResult? = null
 
+  fun generateAccessors(params: JavaPsiGenerateAccessorsParams): JavaPsiAccessorsResult? = null
+
   fun expandSelection(params: ExpandSelectionParams): Range?
 
   fun definition(params: DefinitionParams): JavaPsiDefinitionTarget?
@@ -82,6 +84,16 @@ object JavaPsiServiceInterop {
     val current = state.get()
     val resolver = current.resolver ?: return null
     val result = resolver.generateConstructor(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun generateAccessors(params: JavaPsiGenerateAccessorsParams): JavaPsiAccessorsResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.generateAccessors(params)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }

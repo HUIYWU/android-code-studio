@@ -16,37 +16,24 @@
  */
 package com.tom.rv2ide.language.services.java.actions.generators
 
-import com.tom.rv2ide.common.logging.IdeLogConfig
-import android.content.Context
 import com.blankj.utilcode.util.ThreadUtils
-import com.github.javaparser.StaticJavaParser
-import com.github.javaparser.ast.Modifier
-import com.github.javaparser.ast.body.MethodDeclaration
-import com.github.javaparser.ast.expr.SimpleName
-import com.github.javaparser.ast.stmt.BlockStmt
-import com.github.javaparser.ast.type.Type
-import com.github.javaparser.ast.type.VoidType
 import com.tom.rv2ide.actions.ActionData
-import com.tom.rv2ide.actions.requireFile
-import com.tom.rv2ide.actions.requirePath
-import com.tom.rv2ide.language.services.java.JavaCompilerProvider
+import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.language.services.java.actions.FieldBasedAction
-import com.tom.rv2ide.language.services.java.compiler.CompileTask
-import com.tom.rv2ide.language.services.java.utils.EditHelper
-import com.tom.rv2ide.language.services.java.utils.JavaParserUtils
-import com.tom.rv2ide.language.services.java.utils.TypeUtils.toType
+import com.tom.rv2ide.language.services.java.interop.JavaPsiAccessorsResultStatus
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateAccessorsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
+import com.tom.rv2ide.models.Position
+import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.preferences.internal.EditorPreferences
-import com.tom.rv2ide.preferences.utils.indentationString
-import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.resources.R
 import com.tom.rv2ide.utils.flashError
 import io.github.rosemoe.sora.widget.CodeEditor
 import java.util.concurrent.CompletableFuture
-import jdkx.lang.model.element.Modifier.FINAL
-import jdkx.lang.model.element.VariableElement
-import openjdk.source.tree.ClassTree
-import openjdk.source.util.TreePath
-import openjdk.source.util.Trees
 import org.slf4j.LoggerFactory
 
 /**
@@ -67,139 +54,59 @@ class GenerateSettersAndGettersAction : FieldBasedAction() {
     private val log = LoggerFactory.getLogger(GenerateSettersAndGettersAction::class.java)
   }
 
-  override fun onGetFields(fields: List<String>, data: ActionData) {
+  override val requiresPsiFields: Boolean = true
 
-    showFieldSelector(fields, data) { checkedNames ->
-      CompletableFuture.runAsync { generateForFields(data, checkedNames) }
-          .whenComplete { _, error,
-            ->
-            if (error != null) {
-              if (IdeLogConfig.shouldLogError()) {
-                log.error("Unable to generate setters and getters", error)
+  override fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData) {
+    val editor = data[CodeEditor::class.java] ?: return
+    val labels = result.fields.map { "${it.name}: ${it.typeText}" }
+    showFieldSelector(labels, data, result.fields.map { it.name }) { selected ->
+      val params = JavaPsiGenerateAccessorsParams(
+          result.file,
+          Range(
+              Position(result.selectionStartLine, result.selectionStartColumn),
+              Position(result.selectionEndLine, result.selectionEndColumn),
+          ),
+          selected.toSet(),
+          result.documentVersion,
+          result.documentRevision,
+          EditorPreferences.tabSize,
+          EditorPreferences.useSoftTab,
+          ICancelChecker.NOOP,
+      )
+      CompletableFuture.supplyAsync { JavaPsiServiceInterop.generateAccessors(params) }
+          .whenComplete { generated, error ->
+            ThreadUtils.runOnUiThread {
+              if (editor.isReleased || (editor as? IEditor)?.file?.toPath()?.normalize() != result.file) {
+                return@runOnUiThread
               }
-              ThreadUtils.runOnUiThread {
-                flashError(
-                    data[Context::class.java]!!.getString(
-                        R.string.msg_cannot_generate_setters_getters
-                    )
-                )
+              val arguments = editor.extraArguments
+              if (arguments.getInt(IEditor.KEY_DOCUMENT_VERSION, -1) != result.documentVersion ||
+                  arguments.getLong(IEditor.KEY_DOCUMENT_REVISION, -1L) != result.documentRevision) {
+                return@runOnUiThread
               }
-              return@whenComplete
+              val snapshot = FileManager.getActiveDocumentSnapshot(result.file) ?: return@runOnUiThread
+              if (snapshot.version != result.documentVersion || snapshot.revision != result.documentRevision) {
+                return@runOnUiThread
+              }
+              if (error != null) {
+                if (IdeLogConfig.shouldLogError()) log.error("Unable to generate setters and getters", error)
+                flashError(R.string.msg_cannot_generate_setters_getters)
+                return@runOnUiThread
+              }
+              when (generated?.status) {
+                JavaPsiAccessorsResultStatus.GENERATED -> {
+                  val edit = checkNotNull(checkNotNull(generated).edit)
+                  if (edit.file != result.file || edit.documentVersion != snapshot.version ||
+                      edit.documentRevision != snapshot.revision) return@runOnUiThread
+                  editor.text.insert(edit.startLine, edit.startColumn, edit.newText)
+                  editor.formatCodeAsync()
+                }
+                JavaPsiAccessorsResultStatus.UNSUPPORTED,
+                JavaPsiAccessorsResultStatus.EMPTY_SELECTION -> flashError(R.string.msg_cannot_generate_setters_getters)
+                null -> Unit
+              }
             }
           }
     }
-  }
-
-  private fun generateForFields(data: ActionData, names: MutableSet<String>) {
-    val compiler =
-        JavaCompilerProvider.get(
-            IProjectManager.getInstance()
-                .getWorkspace()
-                ?.findModuleForFile(data.requireFile(), false) ?: return
-        )
-    val range = data[com.tom.rv2ide.models.Range::class.java]!!
-    val file = data.requirePath()
-
-    compiler.compile(file).run { task ->
-      val triple = findFields(task, file, range)
-      val typeFinder = triple.first
-      val type = triple.second
-      val fields = triple.third
-
-      fields.removeIf { !names.contains("${it.name}: ${it.type}") }
-
-      if (IdeLogConfig.shouldLogDebug()) {
-        log.debug("Creating setters/getters for fields: {}", fields.map { it.name })
-      }
-
-      generateForFields(data, task, type, fields.map { TreePath(typeFinder.path, it) })
-    }
-  }
-
-  private fun generateForFields(
-      data: ActionData,
-      task: CompileTask,
-      type: ClassTree,
-      paths: List<TreePath>,
-  ) {
-    val file = data.requirePath()
-    val editor = data[CodeEditor::class.java]!!
-    val trees = Trees.instance(task.task)
-    val insert = EditHelper.insertAtEndOfClass(task.task, task.root(file), type)
-    val sb = StringBuilder()
-
-    for (path in paths) {
-      val element = trees.getElement(path) ?: continue
-      if (element !is VariableElement) {
-        continue
-      }
-
-      val leaf = path.leaf
-      val indent = EditHelper.indent(task.task, task.root(file), leaf) + EditorPreferences.tabSize
-      sb.append(createGetter(element, indent))
-      if (!element.modifiers.contains(FINAL)) {
-        sb.append(createSetter(element, indent))
-      }
-    }
-
-    ThreadUtils.runOnUiThread {
-      editor.text.insert(insert.line, insert.column, sb)
-      editor.formatCodeAsync()
-    }
-  }
-
-  private fun createGetter(variable: VariableElement, indent: Int): String {
-    val name = variable.simpleName.toString()
-    val method =
-        createMethod(variable, "get", toType(variable.asType())) { _, body ->
-          body.addStatement(createReturnStmt(name))
-        }
-    var text = "\n" + JavaParserUtils.prettyPrint(method) { false }
-    text = text.replace("\n", "\n${indentationString(indent)}")
-
-    return text
-  }
-
-  private fun createReturnStmt(name: String) = StaticJavaParser.parseStatement("return this.$name;")
-
-  private fun createSetter(variable: VariableElement, indent: Int): String {
-    val name: String = variable.simpleName.toString()
-    val method =
-        createMethod(variable, "set", VoidType()) { method, body ->
-          method.addParameter(toType(variable.asType()), name)
-          body.addStatement(createAssignmentStmt(name))
-        }
-
-    var text = "\n" + JavaParserUtils.prettyPrint(method) { false }
-    text = text.replace("\n", "\n${indentationString(indent)}")
-
-    return text
-  }
-
-  private fun createMethod(
-      variable: VariableElement,
-      prefix: String,
-      returnType: Type,
-      vararg modifiers: Modifier.Keyword = arrayOf(Modifier.Keyword.PUBLIC),
-      block: (MethodDeclaration, BlockStmt) -> Unit,
-  ): MethodDeclaration {
-    val name = variable.simpleName.toString()
-    val method = MethodDeclaration()
-    val body = method.createBody()
-    method.name = SimpleName(createName(name, prefix))
-    method.type = returnType
-    method.addModifier(*modifiers)
-    block(method, body)
-    return method
-  }
-
-  private fun createAssignmentStmt(name: String) =
-      StaticJavaParser.parseStatement("this.$name = $name;")
-
-  private fun createName(name: String, prefix: String): String {
-    val sb = StringBuilder(name)
-    sb.setCharAt(0, Character.toUpperCase(sb[0]))
-    sb.insert(0, prefix)
-    return sb.toString()
   }
 }
