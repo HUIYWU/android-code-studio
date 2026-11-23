@@ -26,7 +26,12 @@ import com.tom.rv2ide.actions.newDialogBuilder
 import com.tom.rv2ide.actions.requirePath
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.visitors.FindTypeDeclarationAt
+import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.IProjectManager
 import com.tom.rv2ide.resources.R
 import com.tom.rv2ide.utils.flashInfo
@@ -46,11 +51,13 @@ import org.slf4j.LoggerFactory
  * @author Akash Yadav
  */
 abstract class FieldBasedAction : BaseJavaCodeAction() {
-
   companion object {
 
     private val log = LoggerFactory.getLogger(FieldBasedAction::class.java)
+    private object StaleFieldsResult
   }
+
+  protected open val requiresPsiFields: Boolean = false
 
   override fun prepare(data: ActionData) {
     super.prepare(data)
@@ -68,12 +75,35 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
     }
 
     visible = true
-    enabled = true
+    enabled = !requiresPsiFields || JavaPsiServiceInterop.isAvailable()
   }
 
   override suspend fun execAction(data: ActionData): Any {
     val range = data[com.tom.rv2ide.models.Range::class.java]!!
     val file = data.requirePath()
+    val editor = data[CodeEditor::class.java]
+    val snapshot = FileManager.getActiveDocumentSnapshot(file)
+    val identity = data[com.tom.rv2ide.projects.models.DocumentSnapshotIdentity::class.java]
+    if (requiresPsiFields && (identity == null || snapshot == null ||
+            identity.file.normalize() != file.normalize() || identity.version != snapshot.version ||
+            identity.revision != snapshot.revision)) return StaleFieldsResult
+    if (editor != null && snapshot != null && JavaPsiServiceInterop.isAvailable()) {
+      val fields = JavaPsiServiceInterop.fields(
+          JavaPsiFieldsParams(
+              file,
+              range,
+              snapshot.version,
+              snapshot.revision,
+              ICancelChecker.NOOP,
+          ),
+      )
+      if (fields != null) return fields
+      val current = FileManager.getActiveDocumentSnapshot(file)
+      if (current == null || current.version != snapshot.version || current.revision != snapshot.revision) {
+        return StaleFieldsResult
+      }
+    }
+    if (requiresPsiFields) return StaleFieldsResult
     val module =
         IProjectManager.getInstance().getWorkspace()?.findModuleForFile(file, false) ?: return Any()
 
@@ -135,6 +165,17 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
 
   @Suppress("UNCHECKED_CAST")
   override fun postExec(data: ActionData, result: Any) {
+    if (result === StaleFieldsResult) return
+    if (result is JavaPsiFieldsResult) {
+      val snapshot = FileManager.getActiveDocumentSnapshot(result.file) ?: return
+      if (snapshot.version != result.documentVersion || snapshot.revision != result.documentRevision) return
+      if (result.fields.isEmpty()) {
+        flashInfo(data[Context::class.java]!!.getString(R.string.msg_no_fields_found))
+        return
+      }
+      onGetPsiFields(result, data)
+      return
+    }
     if (result !is List<*>) {
       if (IdeLogConfig.shouldLogError()) {
         log.error("Unable to find fields in the current class")
@@ -154,7 +195,11 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
    * Called when the fields of the current class are found. As this method is called inside
    * [postExec], the current thread is the UI thread.
    */
-  abstract fun onGetFields(fields: List<String>, data: ActionData)
+  open fun onGetFields(fields: List<String>, data: ActionData) = Unit
+
+  protected open fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData) {
+    onGetFields(result.fields.map { "${it.name}: ${it.typeText}" }, data)
+  }
 
   /**
    * Shows the field selector dialog. Returns a [CompletableFuture] which is completed when the user
@@ -164,14 +209,21 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
       fields: List<String>,
       data: ActionData,
       listener: OnFieldsSelectedListener?,
+  ) = showFieldSelector(fields, data, fields, listener)
+
+  protected fun showFieldSelector(
+      labels: List<String>,
+      data: ActionData,
+      fields: List<String>,
+      listener: OnFieldsSelectedListener?,
   ) {
-    val names = fields.toTypedArray()
+    val names = labels.toTypedArray()
     val checkedNames = mutableSetOf<String>()
     val builder = newDialogBuilder(data)
     builder.setTitle(data[Context::class.java]!!.getString(R.string.msg_select_fields))
     builder.setMultiChoiceItems(names, BooleanArray(fields.size)) { _, which, checked ->
       checkedNames.apply {
-        val item = names[which]
+        val item = fields[which]
         if (checked) {
           add(item)
         } else {

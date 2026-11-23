@@ -14,6 +14,10 @@ import com.tom.rv2ide.projects.ModuleProject
 import java.util.concurrent.atomic.AtomicReference
 
 interface JavaPsiServiceResolver {
+  fun fields(params: JavaPsiFieldsParams): JavaPsiFieldsResult? = null
+
+  fun generateConstructor(params: JavaPsiGenerateConstructorParams): JavaPsiConstructorResult? = null
+
   fun expandSelection(params: ExpandSelectionParams): Range?
 
   fun definition(params: DefinitionParams): JavaPsiDefinitionTarget?
@@ -61,6 +65,26 @@ object JavaPsiServiceInterop {
 
   @JvmStatic
   fun isAvailable(): Boolean = state.get().resolver != null
+
+  @JvmStatic
+  fun fields(params: JavaPsiFieldsParams): JavaPsiFieldsResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.fields(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun generateConstructor(params: JavaPsiGenerateConstructorParams): JavaPsiConstructorResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.generateConstructor(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
 
   @JvmStatic
   fun expandSelection(params: ExpandSelectionParams): Range? {

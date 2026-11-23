@@ -17,36 +17,24 @@
 
 package com.tom.rv2ide.language.services.java.actions.generators
 
-import com.tom.rv2ide.common.logging.IdeLogConfig
-import android.content.Context
 import com.blankj.utilcode.util.ThreadUtils
-import com.github.javaparser.StaticJavaParser
-import com.github.javaparser.ast.Modifier
-import com.github.javaparser.ast.body.ConstructorDeclaration
 import com.tom.rv2ide.actions.ActionData
-import com.tom.rv2ide.actions.requireFile
-import com.tom.rv2ide.actions.requirePath
-import com.tom.rv2ide.language.services.java.JavaCompilerProvider
+import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.language.services.java.actions.FieldBasedAction
-import com.tom.rv2ide.language.services.java.compiler.CompileTask
-import com.tom.rv2ide.language.services.java.utils.EditHelper
-import com.tom.rv2ide.language.services.java.utils.ShortTypePrinter.NO_PACKAGE
-import com.tom.rv2ide.preferences.utils.indentationString
-import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.language.services.java.interop.JavaPsiConstructorResultStatus
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateConstructorParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
+import com.tom.rv2ide.models.Position
+import com.tom.rv2ide.models.Range
+import com.tom.rv2ide.preferences.internal.EditorPreferences
+import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.resources.R.string
 import com.tom.rv2ide.utils.flashError
 import io.github.rosemoe.sora.widget.CodeEditor
 import java.util.concurrent.CompletableFuture
-import openjdk.source.tree.ClassTree
-import openjdk.source.tree.VariableTree
-import openjdk.source.util.TreePath
-import openjdk.tools.javac.api.JavacTrees
-import openjdk.tools.javac.code.Symbol.ClassSymbol
-import openjdk.tools.javac.code.Symbol.VarSymbol
-import openjdk.tools.javac.code.Type
-import openjdk.tools.javac.tree.JCTree
-import openjdk.tools.javac.tree.TreeInfo
-import openjdk.tools.javac.util.ListBuffer
 import org.slf4j.LoggerFactory
 
 /**
@@ -68,124 +56,60 @@ class GenerateConstructorAction : FieldBasedAction() {
     private val log = LoggerFactory.getLogger(GenerateConstructorAction::class.java)
   }
 
-  override fun onGetFields(fields: List<String>, data: ActionData) {
-    showFieldSelector(fields, data) { selected ->
-      CompletableFuture.runAsync { generateConstructor(data, selected) }
-          .whenComplete { _, error ->
-            if (error != null) {
-              if (IdeLogConfig.shouldLogError()) {
-                log.error("Unable to generate constructor for the selected fields", error)
+  override val requiresPsiFields: Boolean = true
+
+  override fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData) {
+    val editor = data[CodeEditor::class.java] ?: return
+    val labels = result.fields.map { "${it.name}: ${it.typeText}" }
+    showFieldSelector(labels, data, result.fields.map { it.name }) { selected ->
+      val params = JavaPsiGenerateConstructorParams(
+          result.file,
+          Range(
+              Position(result.selectionStartLine, result.selectionStartColumn),
+              Position(result.selectionEndLine, result.selectionEndColumn),
+          ),
+          selected.toSet(),
+          result.documentVersion,
+          result.documentRevision,
+          EditorPreferences.tabSize,
+          EditorPreferences.useSoftTab,
+          ICancelChecker.NOOP,
+      )
+      CompletableFuture.supplyAsync { JavaPsiServiceInterop.generateConstructor(params) }
+          .whenComplete { generated, error ->
+            ThreadUtils.runOnUiThread {
+              if (editor.isReleased || (editor as? IEditor)?.file?.toPath()?.normalize() != result.file) {
+                return@runOnUiThread
               }
-              flashError(string.msg_cannot_generate_constructor)
+              val arguments = editor.extraArguments
+              if (arguments.getInt(IEditor.KEY_DOCUMENT_VERSION, -1) != result.documentVersion ||
+                  arguments.getLong(IEditor.KEY_DOCUMENT_REVISION, -1L) != result.documentRevision) {
+                return@runOnUiThread
+              }
+              val snapshot = FileManager.getActiveDocumentSnapshot(result.file) ?: return@runOnUiThread
+              if (snapshot.version != result.documentVersion || snapshot.revision != result.documentRevision) {
+                return@runOnUiThread
+              }
+              if (error != null) {
+                if (IdeLogConfig.shouldLogError()) log.error("Unable to generate constructor", error)
+                flashError(string.msg_cannot_generate_constructor)
+                return@runOnUiThread
+              }
+              when (generated?.status) {
+                JavaPsiConstructorResultStatus.GENERATED -> {
+                  val edit = checkNotNull(checkNotNull(generated).edit)
+                  if (edit.file != result.file || edit.documentVersion != snapshot.version ||
+                      edit.documentRevision != snapshot.revision) return@runOnUiThread
+                  editor.text.insert(edit.startLine, edit.startColumn, edit.newText)
+                  editor.formatCodeAsync()
+                }
+                JavaPsiConstructorResultStatus.CONSTRUCTOR_EXISTS -> flashError(string.msg_constructor_available)
+                JavaPsiConstructorResultStatus.UNSUPPORTED,
+                JavaPsiConstructorResultStatus.EMPTY_SELECTION -> flashError(string.msg_cannot_generate_constructor)
+                null -> Unit
+              }
             }
           }
     }
-  }
-
-  private fun generateConstructor(data: ActionData, selected: MutableSet<String>) {
-    val compiler =
-        JavaCompilerProvider.get(
-            IProjectManager.getInstance()
-                .getWorkspace()
-                ?.findModuleForFile(data.requireFile(), false) ?: return
-        )
-    val range = data[com.tom.rv2ide.models.Range::class.java]!!
-    val file = data.requirePath()
-
-    compiler.compile(file).run { task ->
-      val triple = findFields(task, file, range)
-      val typeFinder = triple.first
-      val type = triple.second
-      val fields = triple.third
-
-      fields.removeIf { !selected.contains("${it.name}: ${it.type}") }
-
-      if (IdeLogConfig.shouldLogDebug()) {
-        log.debug("Creating toString() method with fields: {}", fields.map { it.name })
-      }
-
-      generateForFields(data, task, file, type, fields.map { TreePath(typeFinder.path, it) })
-    }
-  }
-
-  private fun generateForFields(
-      data: ActionData,
-      task: CompileTask,
-      file: java.nio.file.Path,
-      type: ClassTree,
-      paths: List<TreePath>,
-  ) {
-    val editor = data[CodeEditor::class.java]!!
-    val trees = JavacTrees.instance(task.task)
-    val sym = TreeInfo.symbolFor(type as JCTree) as ClassSymbol
-    val varTypes = mapTypes(paths)
-    val varNames = paths.map { it.leaf as VariableTree }.map { it.name.toString() }
-
-    if (paths.isEmpty() || trees.findConstructor(sym, varTypes) != null) {
-      if (IdeLogConfig.shouldLogWarn()) {
-        log.warn(
-            "A constructor with same parameter types is already available in class {}",
-            type.simpleName,
-        )
-      }
-      flashError(data[Context::class.java]!!.getString(string.msg_constructor_available))
-      return
-    }
-
-    val stopWatch = com.tom.rv2ide.utils.StopWatch("generateConstructorForFields()")
-    val constructor =
-        newConstructor(type.simpleName.toString(), varTypes.toTypedArray(), varNames.toTypedArray())
-    val body = constructor.createBody()
-    for (varName in varNames) {
-      body.addStatement(StaticJavaParser.parseStatement("this.$varName = $varName;"))
-    }
-
-    stopWatch.lap("Constructor generated")
-    if (IdeLogConfig.shouldLogInfo()) {
-      log.info("Inserting constructor into editor...")
-    }
-
-    val fileRoot = task.root(file)
-    val insertAt = EditHelper.insertAfter(task.task, fileRoot, paths.last().leaf)
-    val indent = EditHelper.indent(task.task, fileRoot, paths.last().leaf)
-    var text = constructor.toString()
-    text = text.replace("\n", "\n${indentationString(indent)}")
-    text += "\n"
-
-    ThreadUtils.runOnUiThread {
-      editor.text.insert(insertAt.line, insertAt.column, text)
-      editor.formatCodeAsync()
-      stopWatch.log()
-    }
-  }
-
-  private fun newConstructor(
-      name: String,
-      paramTypes: Array<Type>,
-      paramNames: Array<String>,
-  ): ConstructorDeclaration {
-    val constructor = ConstructorDeclaration()
-    constructor.setName(name)
-    constructor.addModifier(Modifier.Keyword.PUBLIC)
-
-    for (i in paramTypes.indices) {
-      val paramType = paramTypes[i]
-      val paramName = paramNames[i]
-
-      constructor.addParameter(NO_PACKAGE.print(paramType), paramName)
-    }
-
-    return constructor
-  }
-
-  private fun mapTypes(paths: List<TreePath>): openjdk.tools.javac.util.List<Type> {
-    val buffer = ListBuffer<Type>()
-    for (path in paths) {
-      val leaf = path.leaf
-      val sym = TreeInfo.symbolFor(leaf as JCTree) as VarSymbol
-      buffer.add(sym.type)
-    }
-
-    return buffer.toList()
   }
 }

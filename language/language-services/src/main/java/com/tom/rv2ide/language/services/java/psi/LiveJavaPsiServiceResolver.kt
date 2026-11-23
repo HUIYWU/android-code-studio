@@ -1,6 +1,12 @@
 package com.tom.rv2ide.language.services.java.psi
 
 import com.tom.rv2ide.language.services.java.interop.JavaPsiDefinitionTarget
+import com.tom.rv2ide.language.services.java.interop.JavaPsiConstructorResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiConstructorResultStatus
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldInfo
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateConstructorParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiHoverTarget
 import com.tom.rv2ide.language.services.java.interop.JavaPsiProjectAccess
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceResolver
@@ -32,6 +38,7 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiField
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaCodeReferenceElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiMethod
+import org.jetbrains.kotlin.com.intellij.psi.PsiModifier
 import org.jetbrains.kotlin.com.intellij.psi.PsiLocalVariable
 import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
@@ -49,6 +56,58 @@ internal class LiveJavaPsiServiceResolver(
     private val projectAccess: JavaPsiProjectAccess,
     private val kotlinSignature: (KtDeclaration, Int?, Int, ICancelChecker) -> SignatureHelp?,
 ) : JavaPsiServiceResolver {
+  override fun fields(params: JavaPsiFieldsParams): JavaPsiFieldsResult? =
+      projectAccess.withCurrentJavaFile(
+          params.file,
+          params.documentVersion,
+          params.documentRevision,
+          params.cancelChecker,
+      ) { file ->
+        val index = LineIndex.from(file.text)
+        val start = index.lineColumnToIndex(params.selection.start.line, params.selection.start.column)
+        val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
+        val owner = classAt(file, start) ?: classAt(file, end)
+        val fields = owner?.fields.orEmpty().mapNotNull { field ->
+          params.cancelChecker.abortIfCancelled()
+          if (field.hasModifierProperty(PsiModifier.STATIC)) return@mapNotNull null
+          JavaPsiFieldInfo(
+              field.name,
+              field.type.presentableText,
+              field.hasModifierProperty(PsiModifier.FINAL),
+          )
+        }
+        JavaPsiFieldsResult(
+            params.file.normalize(), params.documentVersion, params.documentRevision,
+            fields,
+            params.selection.start.line, params.selection.start.column,
+            params.selection.end.line, params.selection.end.column,
+        )
+      }
+
+  override fun generateConstructor(
+      params: JavaPsiGenerateConstructorParams,
+  ): JavaPsiConstructorResult? = projectAccess.withCurrentJavaFile(
+      params.file,
+      params.documentVersion,
+      params.documentRevision,
+      params.cancelChecker,
+  ) { file ->
+    val content = file.text
+    val index = LineIndex.from(content)
+    val start = index.lineColumnToIndex(params.selection.start.line, params.selection.start.column)
+    val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
+    val owner = classAt(file, start) ?: classAt(file, end)
+        ?: return@withCurrentJavaFile JavaPsiConstructorResult(JavaPsiConstructorResultStatus.UNSUPPORTED, null)
+    JavaPsiConstructorGeneration.generate(content, index, owner, params)
+  }
+
+  private fun classAt(file: PsiJavaFile, offset: Int): PsiClass? {
+    if (offset < 0 || offset >= file.textLength) return null
+    val element = file.findElementAt(offset) ?: return null
+    val owner = PsiTreeUtil.getParentOfType(element, PsiClass::class.java, false) ?: return null
+    return owner.takeIf { offset >= it.textRange.startOffset && offset < it.textRange.endOffset }
+  }
+
   override fun expandSelection(params: ExpandSelectionParams): Range? =
       projectAccess.withCurrentJavaFile(
           params.file,

@@ -355,6 +355,16 @@ open class EditorActionsMenu(val editor: IDEEditor) :
     data.put(File::class.java, editor.file)
     data.put(DiagnosticItem::class.java, getDiagnosticAtCursor())
     data.put(com.tom.rv2ide.models.Range::class.java, editor.cursorLSPRange)
+    editor.file?.let { file ->
+      data.put(
+          com.tom.rv2ide.projects.models.DocumentSnapshotIdentity::class.java,
+          com.tom.rv2ide.projects.models.DocumentSnapshotIdentity(
+              file.toPath().normalize(),
+              editor.currentDocumentVersion,
+              editor.currentDocumentRevision,
+          ),
+      )
+    }
     data.put(
         JavaLanguageServer::class.java,
         ILanguageServerRegistry.getDefault().getServer(JavaLanguageServer.SERVER_ID)
