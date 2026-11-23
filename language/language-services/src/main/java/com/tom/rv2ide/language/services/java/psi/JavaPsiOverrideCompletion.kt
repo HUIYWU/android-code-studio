@@ -145,7 +145,7 @@ internal object JavaPsiOverrideCompletion {
       val delegate = !context.context.owner.isInterface && !candidate.owner.isInterface && !abstractMethod
       val throwsTypes = method.throwsList.referencedTypes.map(::substitute)
       (context.context.owner.typeParameters.asList() + methodTypeParameters).mapNotNullTo(names) { it.name }
-      val annotation = "@java.lang.Override"
+      val annotation = "@Override"
       val visibility = when {
         context.context.owner.isInterface || candidate.owner.isInterface || method.hasModifierProperty(PsiModifier.PUBLIC) -> "public "
         method.hasModifierProperty(PsiModifier.PROTECTED) -> "protected "

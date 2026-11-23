@@ -54,6 +54,9 @@ class JavaPsiConstructorActionCapabilityTest {
             String[] values;
             ArrayDuplicate(String... other) {}
           }
+          class ShortTypes<T> {
+            java.util.Map<java.lang.String, java.util.List<T[]>>[] entries;
+          }
           class Initialized { final int value = 1; }
       """.trimIndent()
       Files.write(path, disk.toByteArray())
@@ -79,12 +82,15 @@ class JavaPsiConstructorActionCapabilityTest {
           assertEquals(401L, edit.documentRevision)
           assertEquals(edit.startLine, edit.endLine)
           assertEquals(edit.startColumn, edit.endColumn)
-          assertTrue(edit.newText.contains("java.util.List<T> values, java.util.Date utilDate, java.sql.Date sqlDate"))
+          assertTrue(edit.newText.contains("List<T> values, Date utilDate, Date sqlDate"))
+          assertFalse(edit.newText.contains("java.util."))
+          assertFalse(edit.newText.contains("java.sql."))
           assertFalse(edit.newText.contains("ignored"))
           val parsed = StaticJavaParser.parse(apply(content, edit))
           val owner = parsed.getClassByName("JavaPsiConstructors").get()
           val constructor = owner.constructors.single()
           assertEquals(listOf("values", "utilDate", "sqlDate"), constructor.parameters.map { it.nameAsString })
+          assertEquals(listOf("List<T>", "Date", "Date"), constructor.parameters.map { it.type.asString() })
           assertEquals(
               listOf("this.values = values;", "this.utilDate = utilDate;", "this.sqlDate = sqlDate;"),
               constructor.body.statements.map { it.toString() },
@@ -97,6 +103,14 @@ class JavaPsiConstructorActionCapabilityTest {
               .filterIsInstance<com.github.javaparser.ast.body.ClassOrInterfaceDeclaration>().single()
           assertEquals(listOf("first"), nestedType.constructors.single().parameters.map { it.nameAsString })
           assertTrue(nestedSource.contains("int first, second;"))
+          val shortTypes = generate("class ShortTypes", "entries")
+          assertEquals(JavaPsiConstructorResultStatus.GENERATED, shortTypes.status)
+          val shortTypesEdit = requireNotNull(shortTypes.edit)
+          assertTrue(shortTypesEdit.newText.contains("Map<String, List<T[]>>[] entries"))
+          assertFalse(shortTypesEdit.newText.contains("java."))
+          val shortTypesConstructor = StaticJavaParser.parse(apply(content, shortTypesEdit))
+              .getClassByName("ShortTypes").get().constructors.single()
+          assertEquals("Map<String, List<T[]>>[]", shortTypesConstructor.parameters.single().type.asString())
           assertEquals(JavaPsiConstructorResultStatus.CONSTRUCTOR_EXISTS, generate("class Duplicate", "values").status)
           assertEquals(JavaPsiConstructorResultStatus.GENERATED, generate("class Overloaded", "value").status)
           assertEquals(JavaPsiConstructorResultStatus.CONSTRUCTOR_EXISTS, generate("class ArrayDuplicate", "values").status)

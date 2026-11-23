@@ -99,7 +99,7 @@ internal object JavaPsiConstructorGeneration {
       val ownerLineStart = maxOf(content.lastIndexOf('\n', ownerStart - 1), content.lastIndexOf('\r', ownerStart - 1)) + 1
       content.substring(ownerLineStart, ownerStart).takeWhile { it == ' ' || it == '\t' } + unit
     }
-    val parameters = fields.indices.joinToString(", ") { "${types[it].canonicalText} ${fields[it].name}" }
+    val parameters = fields.indices.joinToString(", ") { "${types[it].presentableText} ${fields[it].name}" }
     val text = buildString {
       if (!atLineStart) append(newline)
       append(memberIndent).append("public ").append(name).append('(').append(parameters).append(") {").append(newline)

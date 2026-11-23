@@ -172,11 +172,12 @@ class JavaPsiIdentifierCompletionCapabilityTest {
         val copy = emptyBody.items.single { it.ideLabel == "copy" }
         assertEquals(CompletionItemKind.METHOD, copy.completionKind)
         assertEquals(0, (copy.data as MethodCompletionData).plusOverloads)
+        assertTrue(copy.insertText.startsWith("@Override\n"))
         assertTrue(copy.insertText.contains("super.copy(value)"))
         val prefixBody = requireNotNull(runAnalysis {
           JavaPsiServiceInterop.complete(params(path, content, "class OverridePrefix extends OverrideParent { cop"), module, false)
         })
-        assertTrue(prefixBody.items.any { it.ideLabel == "copy" })
+        assertTrue(prefixBody.items.single { it.ideLabel == "copy" }.insertText.startsWith("@Override\n"))
         val qualifiedLabel = params(path, content, "Integer.MAX_V")
         val members = requireNotNull(runAnalysis { JavaPsiServiceInterop.complete(qualifiedLabel, module, false) })
         assertTrue(members.items.any { it.ideLabel == "MAX_VALUE" })
