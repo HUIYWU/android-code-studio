@@ -61,6 +61,11 @@ class JavaPsiCompletionCapabilityTest {
               bounded.val;
               Object nonMember;
               java.util.function.Function<String, String> function = receiver::copy;
+              java.util.function.Function<String, String> partialReference = receiver::co;
+              java.util.function.Function<String, String> staticReference = String::valu;
+              java.util.function.BiFunction<String, Integer, String> unboundReference = String::sub;
+              java.util.function.Supplier<StringBuilder> constructorReference = StringBuilder::ne;
+              java.util.function.IntFunction<String[]> arrayConstructorReference = String[]::ne;
             }
           }
           class ProtectedCompletion extends java.util.ArrayList<String> {
@@ -98,11 +103,26 @@ class JavaPsiCompletionCapabilityTest {
         assertEquals("String", complete(path, content, "bounded.val").items.single { it.ideLabel == "value" }.overrideTypeText)
         assertTrue(complete(path, content, "super.removeRan").items.any { it.ideLabel == "removeRange" })
         assertFalse(complete(path, content, "list.removeRan").items.any { it.ideLabel == "removeRange" })
-        for (marker in listOf("receiver::co", "nonMember")) {
-          assertNull(marker, runAnalysis { JavaPsiServiceInterop.complete(params(path, content, marker), null, false) })
-        }
+        val emptyReference = complete(path, content, "receiver::")
+        assertTrue(emptyReference.items.any { it.ideLabel == "copy" })
+        assertFalse(emptyReference.items.any { it.ideLabel == "make" })
+        val instanceReference = complete(path, content, "receiver::co")
+        val referenceCopy = instanceReference.items.single { it.ideLabel == "copy" }
+        assertEquals("copy", referenceCopy.insertText)
+        assertEquals(1, (referenceCopy.data as MethodCompletionData).plusOverloads)
+        assertFalse(instanceReference.items.any { it.ideLabel == "make" })
+        val staticReference = complete(path, content, "String::valu")
+        assertTrue(staticReference.items.any { it.ideLabel == "valueOf" })
+        assertTrue(complete(path, content, "String::sub").items.any { it.ideLabel == "substring" })
+        assertEquals("new", complete(path, content, "StringBuilder::ne").items.single().ideLabel)
+        assertEquals("new", complete(path, content, "String[]::ne").items.single().ideLabel)
+        assertNull("nonMember", runAnalysis {
+          JavaPsiServiceInterop.complete(params(path, content, "nonMember"), null, false)
+        })
         val stale = params(path, content, "receiver.").apply { documentRevision = 50L }
         assertNull(runAnalysis { JavaPsiServiceInterop.complete(stale, null, false) })
+        val staleReference = params(path, content, "receiver::co").apply { documentRevision = 50L }
+        assertNull(runAnalysis { JavaPsiServiceInterop.complete(staleReference, null, false) })
         val mismatched = params(path, content, "receiver.").apply { this.content = disk }
         assertTrue(runAnalysis { JavaPsiServiceInterop.complete(mismatched, null, false) }?.items?.isEmpty() == true)
         assertEquals(disk, Files.readAllBytes(path).decodeToString())

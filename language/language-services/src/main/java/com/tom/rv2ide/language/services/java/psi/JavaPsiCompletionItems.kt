@@ -81,6 +81,32 @@ internal object JavaPsiCompletionItems {
         else -> true
       }
 
+  fun method(
+      method: PsiMethod,
+      declaringClass: PsiClass,
+      substitutor: PsiSubstitutor,
+      match: MatchLevel,
+      plusOverloads: Int = 0,
+      displayName: String = method.name,
+  ): CompletionItem {
+    val name = method.name
+    val parameters = method.parameterList.parameters
+    val labels = parameters.map {
+      val type = it.type
+      (substitutor.substitute(type) ?: type).presentableText
+    }
+    return item(displayName, CompletionItemKind.METHOD, labels.joinToString(", ", "$name(", ")"), match).apply {
+      overrideTypeText = method.returnType?.let { (substitutor.substitute(it) ?: it).presentableText }
+      data = MethodCompletionData(
+          name,
+          classInfo(declaringClass),
+          labels,
+          parameters.map { erasedTypeName(TypeConversionUtil.erasure(it.type)) },
+          plusOverloads,
+      )
+    }
+  }
+
   private fun classInfo(psiClass: PsiClass): ClassCompletionData {
     val name = psiClass.name.orEmpty()
     val qualifiedName = psiClass.qualifiedName ?: return ClassCompletionData(name)
@@ -113,24 +139,9 @@ internal object JavaPsiCompletionItems {
       signatures.add(method.getSignature(substitutor))
     }
 
-    fun item(prefix: String, addParentheses: Boolean): CompletionItem {
-      val name = method.name
-      val parameters = method.parameterList.parameters
-      val labels = parameters.map {
-        val type = it.type
-        (substitutor.substitute(type) ?: type).presentableText
-      }
-      return JavaPsiCompletionItems.item(name, CompletionItemKind.METHOD, labels.joinToString(", ", "$name(", ")"), match).apply {
-        overrideTypeText = method.returnType?.let { (substitutor.substitute(it) ?: it).presentableText }
-        data = MethodCompletionData(
-            name,
-            classInfo(declaringClass),
-            labels,
-            parameters.map { erasedTypeName(TypeConversionUtil.erasure(it.type)) },
-            signatures.size - 1,
-        )
-        if (addParentheses) insertCall(this, name, prefix, signatures.size > 1 || parameters.isNotEmpty())
-      }
-    }
+    fun item(prefix: String, addParentheses: Boolean): CompletionItem =
+        JavaPsiCompletionItems.method(method, declaringClass, substitutor, match, signatures.size - 1).apply {
+          if (addParentheses) insertCall(this, method.name, prefix, signatures.size > 1 || method.hasParameters())
+        }
   }
 }

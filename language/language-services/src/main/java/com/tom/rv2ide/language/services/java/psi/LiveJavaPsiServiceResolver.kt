@@ -115,15 +115,19 @@ internal class LiveJavaPsiServiceResolver(
       val offset = params.position.requireIndex()
       val imports = JavaPsiImportCompletion.collect(file, offset, recognizeKotlin, cancelChecker)
       if (imports != null) return@withCurrentJavaFile { imports.finish(module, recognizeKotlin, cancelChecker) }
+      val methodReference = JavaPsiMethodReferenceCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
+      if (methodReference != null) return@withCurrentJavaFile { methodReference }
       val member = JavaPsiMemberCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
       if (member != null) return@withCurrentJavaFile { member }
       val switchConstants = JavaPsiSwitchCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
       if (switchConstants != null) return@withCurrentJavaFile { switchConstants }
       val identifier = JavaPsiIdentifierCompletion.collect(file, offset, recognizeKotlin, cancelChecker)
-          ?: return@withCurrentJavaFile null
-      return@withCurrentJavaFile {
+      if (identifier != null) return@withCurrentJavaFile {
         identifier.finish(params.file, module, matchAllLowerCase, recognizeKotlin, cancelChecker)
       }
+      val overrides = JavaPsiOverrideCompletion.complete(file, offset, recognizeKotlin, cancelChecker)
+          ?: return@withCurrentJavaFile null
+      return@withCurrentJavaFile { overrides }
     }
     val result = finish?.invoke() ?: return null
     cancelChecker.abortIfCancelled()

@@ -146,8 +146,11 @@ class JavaPsiIdentifierCompletionCapabilityTest {
               switch (n) { case ca: break; case Integer.MAX_VALUE: break; }
               String text = "literal";
             }
-            Over
           }
+          class OverrideParent { public Object copy(Object value) { return value; } }
+          class OverrideChild extends OverrideParent {
+          }
+          class OverridePrefix extends OverrideParent { cop }
       """.trimIndent()
       openDocument(path, content, version = 1, revision = 61L)
       withRuntime(workspace) {
@@ -160,9 +163,20 @@ class JavaPsiIdentifierCompletionCapabilityTest {
         assertEquals(name, (candidate.data as ClassCompletionData).className)
         assertTrue(candidate.additionalEditHandler is ClassImportEditHandler)
 
-        for (marker in listOf("Over", "case ca", "\"literal")) {
+        for (marker in listOf("case ca", "\"literal")) {
           assertNull(marker, runAnalysis { JavaPsiServiceInterop.complete(params(path, content, marker), module, false) })
         }
+        val emptyBody = requireNotNull(runAnalysis {
+          JavaPsiServiceInterop.complete(params(path, content, "class OverrideChild extends OverrideParent {"), module, false)
+        })
+        val copy = emptyBody.items.single { it.ideLabel == "copy" }
+        assertEquals(CompletionItemKind.METHOD, copy.completionKind)
+        assertEquals(0, (copy.data as MethodCompletionData).plusOverloads)
+        assertTrue(copy.insertText.contains("super.copy(value)"))
+        val prefixBody = requireNotNull(runAnalysis {
+          JavaPsiServiceInterop.complete(params(path, content, "class OverridePrefix extends OverrideParent { cop"), module, false)
+        })
+        assertTrue(prefixBody.items.any { it.ideLabel == "copy" })
         val qualifiedLabel = params(path, content, "Integer.MAX_V")
         val members = requireNotNull(runAnalysis { JavaPsiServiceInterop.complete(qualifiedLabel, module, false) })
         assertTrue(members.items.any { it.ideLabel == "MAX_VALUE" })

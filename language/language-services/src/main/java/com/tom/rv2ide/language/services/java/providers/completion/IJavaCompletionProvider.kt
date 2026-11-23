@@ -85,9 +85,6 @@ abstract class IJavaCompletionProvider(
     compiler: JavaCompilerService,
     settings: IServerSettings,
 ) : BaseJavaServiceProvider(completingFile, compiler, settings) {
-  protected lateinit var filePackage: String
-  protected lateinit var fileImports: Set<String>
-
   companion object {
     @JvmStatic
     protected val log: Logger = LoggerFactory.getLogger(IJavaCompletionProvider::class.java)
@@ -99,9 +96,6 @@ abstract class IJavaCompletionProvider(
       partial: String,
       endsWithParen: Boolean,
   ): CompletionResult {
-    val root = task.root(file)
-    filePackage = root.`package`?.packageName?.toString() ?: ""
-    fileImports = root.imports.map { it.qualifiedIdentifier.toString() }.toSet()
     abortIfCancelled()
     abortCompletionIfCancelled()
     return doComplete(task, path, partial, endsWithParen)
