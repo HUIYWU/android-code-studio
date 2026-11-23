@@ -13,6 +13,11 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateConstructorP
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateToStringParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiToStringResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiToStringResultStatus
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateOverridesParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiImplementAbstractMethodsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiOverrideMethodsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiOverrideMethodsResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiOverridesResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiHoverTarget
 import com.tom.rv2ide.language.services.java.interop.JavaPsiProjectAccess
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceResolver
@@ -139,6 +144,40 @@ internal class LiveJavaPsiServiceResolver(
     val owner = classAt(file, start) ?: classAt(file, end)
         ?: return@withCurrentJavaFile JavaPsiToStringResult(JavaPsiToStringResultStatus.UNSUPPORTED, null)
     JavaPsiToStringGeneration.generate(content, index, owner, params)
+  }
+
+  override fun overrideMethods(
+      params: JavaPsiOverrideMethodsParams,
+  ): JavaPsiOverrideMethodsResult? = projectAccess.withCurrentJavaFile(
+      params.file,
+      params.documentVersion,
+      params.documentRevision,
+      params.cancelChecker,
+  ) { file ->
+    JavaPsiOverrideCompletion.overrideMethods(file, params)
+  }
+
+  override fun generateOverrides(
+      params: JavaPsiGenerateOverridesParams,
+  ): JavaPsiOverridesResult? = projectAccess.withCurrentJavaFile(
+      params.file,
+      params.documentVersion,
+      params.documentRevision,
+      params.cancelChecker,
+  ) { file ->
+    JavaPsiOverrideCompletion.generateOverrides(file, params)
+  }
+
+  override fun implementAbstractMethods(
+      params: JavaPsiImplementAbstractMethodsParams,
+  ): JavaPsiOverridesResult? {
+    val target = params.diagnostic
+    if (target.documentVersion < 0 || target.documentRevision < 0L) return null
+    return projectAccess.withCurrentJavaFile(
+        target.file, target.documentVersion, target.documentRevision, params.cancelChecker,
+    ) { file ->
+      JavaPsiOverrideCompletion.implementAbstractMethods(file, params)
+    }
   }
 
   private fun classAt(file: PsiJavaFile, offset: Int): PsiClass? {

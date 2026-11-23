@@ -1,6 +1,6 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
-import com.tom.rv2ide.language.services.interop.JavaDiagnosticsInterop
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment

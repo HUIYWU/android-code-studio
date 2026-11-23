@@ -1,7 +1,7 @@
 package com.tom.rv2ide.language.services.kotlin.backend.analysis
 
 import com.tom.rv2ide.app.BaseApplication
-import com.tom.rv2ide.language.services.interop.JavaDiagnosticsInterop
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsInterop
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Files
@@ -64,7 +64,7 @@ class JavaPsiWarningDiagnosticsTest {
         try {
           KotlinAnalysisTestSupport.withRuntime(workspace) { runtime ->
             KotlinAnalysisTestSupport.runAnalysis { runtime.onFileOpened(file) }
-            val initial = sharedDiagnostics(file)
+            val initial = sharedDiagnostics(file, 1, 1L)
             val staticAccessWarnings = initial.filter { it.code == "AccessStaticViaInstance" }
             assertEquals(2, staticAccessWarnings.size)
             assertTrue(staticAccessWarnings.all { it.severity == DiagnosticSeverity.WARNING })
@@ -86,7 +86,7 @@ class JavaPsiWarningDiagnosticsTest {
             val edited = content.replace("@SuppressWarnings(\"static-access\")", "")
             changeDocument(file, content, edited, version = 2, revision = 2L)
             KotlinAnalysisTestSupport.runAnalysis { runtime.onFileContentChanged(file) }
-            val afterEdit = sharedDiagnostics(file)
+            val afterEdit = sharedDiagnostics(file, 2, 2L)
             assertEquals(3, afterEdit.count { it.code == "AccessStaticViaInstance" })
             assertTrue(afterEdit.any { it.severity == DiagnosticSeverity.ERROR })
           }
@@ -99,8 +99,8 @@ class JavaPsiWarningDiagnosticsTest {
     }
   }
 
-  private fun sharedDiagnostics(file: java.nio.file.Path) =
-      when (val result = JavaDiagnosticsInterop.diagnostics(file, ICancelChecker.NOOP)) {
+  private fun sharedDiagnostics(file: java.nio.file.Path, version: Int, revision: Long) =
+      when (val result = JavaDiagnosticsInterop.diagnostics(file, ICancelChecker.NOOP, version, revision)) {
         is JavaDiagnosticsInterop.Result.Success -> result.diagnostics
         JavaDiagnosticsInterop.Result.Unavailable -> error("shared Java diagnostics unavailable")
         is JavaDiagnosticsInterop.Result.Failure -> throw result.error

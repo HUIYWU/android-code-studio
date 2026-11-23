@@ -17,9 +17,10 @@
 package com.tom.rv2ide.language.services.java.providers
 
 import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.language.compiler.javac.util.JavaDiagnosticUtils
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
+import com.tom.rv2ide.language.services.java.diagnostics.JavaAbstractMethodsDiagnostic
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode
-
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode.EMPTY_BLOCK
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode.UNUSED_THROWS
 import com.tom.rv2ide.language.services.java.visitors.DiagnosticVisitor
@@ -45,6 +46,7 @@ import openjdk.source.tree.MethodTree
 import openjdk.source.tree.VariableTree
 import openjdk.source.util.TreePath
 import openjdk.source.util.Trees
+import openjdk.tools.javac.tree.JCTree.JCClassDecl
 
 /**
  * Finds errors and warnings from a compilation task.
@@ -65,13 +67,19 @@ object DiagnosticsProvider {
    * @return The list of diagnostics retrieved from the task. Never null.
    */
   @JvmStatic
-  fun findDiagnostics(task: CompileTask, file: Path?): List<DiagnosticItem> {
+  fun findDiagnostics(
+      task: CompileTask,
+      file: Path?,
+      documentVersion: Int = -1,
+      documentRevision: Long = -1L,
+  ): List<DiagnosticItem> {
+    val sourcePath = file ?: return emptyList()
     val result = mutableListOf<DiagnosticItem>()
     var root: CompilationUnitTree? = null
     for (tree in task.roots) {
       abortIfCancelled()
       val path = Paths.get(tree.sourceFile.toUri())
-      if (isSameFile(path, file!!)) {
+      if (isSameFile(path, sourcePath)) {
         root = tree
         break
       }
@@ -84,7 +92,7 @@ object DiagnosticsProvider {
       // Can't do anything...
       return result
     }
-    addCompilerErrors(task, root, result)
+    addCompilerErrors(task, root, result, sourcePath, documentVersion, documentRevision)
     abortIfCancelled()
     addDiagnosticsByVisiting(task, root, result)
     abortIfCancelled()
@@ -141,6 +149,9 @@ object DiagnosticsProvider {
       task: CompileTask,
       root: CompilationUnitTree,
       result: MutableList<DiagnosticItem>,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
   ) {
     for (diagnostic in task.diagnostics) {
       if (diagnostic.source == null || diagnostic.source!!.toUri() != root.sourceFile.toUri()) {
@@ -149,7 +160,7 @@ object DiagnosticsProvider {
       if (diagnostic.startPosition == -1L || diagnostic.endPosition == -1L) {
         continue
       }
-      result.add(asDiagnosticItem(diagnostic, root.lineMap))
+      result.add(asDiagnosticItem(diagnostic, root.lineMap, file, documentVersion, documentRevision))
     }
   }
 
@@ -275,6 +286,9 @@ object DiagnosticsProvider {
   private fun asDiagnosticItem(
       diagnostic: Diagnostic<out JavaFileObject?>,
       lines: LineMap,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
   ): DiagnosticItem {
     abortIfCancelled()
     val result =
@@ -288,6 +302,18 @@ object DiagnosticsProvider {
     result.range.start.index = diagnostic.startPosition.toInt()
     result.range.end.index = diagnostic.endPosition.toInt()
     result.extra = diagnostic
+    if (diagnostic.code == DiagnosticCode.DOES_NOT_OVERRIDE_ABSTRACT.id) {
+      val tree = JavaDiagnosticUtils.asJCDiagnostic(diagnostic)?.tree as? JCClassDecl
+      val baseType = tree?.extending ?: tree?.implementing?.head
+      val baseTypeName = baseType?.type?.tsym?.getQualifiedName()?.toString() ?: baseType?.toString()
+      result.extra = JavaAbstractMethodsDiagnostic(
+          file.normalize(), documentVersion, documentRevision,
+          diagnostic.startPosition.toInt(), tree?.name?.isEmpty() == true,
+          tree?.name?.toString(), baseTypeName,
+          diagnostic.startPosition.toInt(), diagnostic.endPosition.toInt(),
+          JavaAbstractMethodsDiagnostic.Backend.JAVAC,
+      )
+    }
     return result
   }
 

@@ -18,7 +18,7 @@ package com.tom.rv2ide.language.services.java.diagnostics
 
 import android.os.Process
 import com.tom.rv2ide.common.logging.IdeLogConfig
-import com.tom.rv2ide.language.services.interop.JavaDiagnosticsInterop
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
@@ -201,7 +201,7 @@ internal class JavaDiagnosticsAnalyzer(
         } else {
           DiagnosticResult(
               file,
-              findDiagnostics(task, file).sortedBy { it.range },
+              findDiagnostics(task, file, documentVersion, documentRevision).sortedBy { it.range },
               documentVersion = documentVersion,
               documentRevision = documentRevision,
           )
@@ -255,7 +255,7 @@ internal class JavaDiagnosticsAnalyzer(
               return
             }
             if (JavaPreferences.isJavaKotlinRecognitionEnabled) {
-              when (val shared = JavaDiagnosticsInterop.diagnostics(file, cancelChecker)) {
+              when (val shared = JavaDiagnosticsInterop.diagnostics(file, cancelChecker, documentVersion, documentRevision)) {
                 is JavaDiagnosticsInterop.Result.Success -> {
                   if (shared.generation != resolverGeneration || JavaDiagnosticsInterop.currentGeneration() != shared.generation) {
                     DiagnosticResult.NO_UPDATE

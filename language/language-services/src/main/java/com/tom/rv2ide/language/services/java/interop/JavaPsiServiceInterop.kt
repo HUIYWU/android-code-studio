@@ -22,6 +22,14 @@ interface JavaPsiServiceResolver {
 
   fun generateToString(params: JavaPsiGenerateToStringParams): JavaPsiToStringResult? = null
 
+  fun overrideMethods(params: JavaPsiOverrideMethodsParams): JavaPsiOverrideMethodsResult? = null
+
+  fun generateOverrides(params: JavaPsiGenerateOverridesParams): JavaPsiOverridesResult? = null
+
+  fun implementAbstractMethods(
+      params: JavaPsiImplementAbstractMethodsParams,
+  ): JavaPsiOverridesResult? = null
+
   fun expandSelection(params: ExpandSelectionParams): Range?
 
   fun definition(params: DefinitionParams): JavaPsiDefinitionTarget?
@@ -106,6 +114,38 @@ object JavaPsiServiceInterop {
     val current = state.get()
     val resolver = current.resolver ?: return null
     val result = resolver.generateToString(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun overrideMethods(params: JavaPsiOverrideMethodsParams): JavaPsiOverrideMethodsResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.overrideMethods(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun generateOverrides(params: JavaPsiGenerateOverridesParams): JavaPsiOverridesResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.generateOverrides(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun implementAbstractMethods(
+      params: JavaPsiImplementAbstractMethodsParams,
+  ): JavaPsiOverridesResult? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.implementAbstractMethods(params)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }
