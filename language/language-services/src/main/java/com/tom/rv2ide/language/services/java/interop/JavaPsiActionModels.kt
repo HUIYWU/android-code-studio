@@ -83,3 +83,26 @@ data class JavaPsiAccessorsResult(
     @JvmField val status: JavaPsiAccessorsResultStatus,
     @JvmField val edit: JavaPsiTextEdit?,
 )
+
+class JavaPsiGenerateToStringParams(
+    @JvmField val file: Path,
+    @JvmField val selection: Range,
+    @JvmField val selectedFields: Set<String>,
+    @JvmField val documentVersion: Int,
+    @JvmField val documentRevision: Long,
+    @JvmField val indentationTabSize: Int,
+    @JvmField val useSoftTabs: Boolean,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+
+enum class JavaPsiToStringResultStatus {
+  GENERATED,
+  EMPTY_SELECTION,
+  METHOD_EXISTS,
+  UNSUPPORTED,
+}
+
+data class JavaPsiToStringResult(
+    @JvmField val status: JavaPsiToStringResultStatus,
+    @JvmField val edit: JavaPsiTextEdit?,
+)

@@ -10,6 +10,9 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateAccessorsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateConstructorParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateToStringParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiToStringResult
+import com.tom.rv2ide.language.services.java.interop.JavaPsiToStringResultStatus
 import com.tom.rv2ide.language.services.java.interop.JavaPsiHoverTarget
 import com.tom.rv2ide.language.services.java.interop.JavaPsiProjectAccess
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceResolver
@@ -119,6 +122,23 @@ internal class LiveJavaPsiServiceResolver(
     val owner = classAt(file, start) ?: classAt(file, end)
         ?: return@withCurrentJavaFile JavaPsiAccessorsResult(JavaPsiAccessorsResultStatus.UNSUPPORTED, null)
     JavaPsiAccessorsGeneration.generate(content, index, owner, params)
+  }
+
+  override fun generateToString(
+      params: JavaPsiGenerateToStringParams,
+  ): JavaPsiToStringResult? = projectAccess.withCurrentJavaFile(
+      params.file,
+      params.documentVersion,
+      params.documentRevision,
+      params.cancelChecker,
+  ) { file ->
+    val content = file.text
+    val index = LineIndex.from(content)
+    val start = index.lineColumnToIndex(params.selection.start.line, params.selection.start.column)
+    val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
+    val owner = classAt(file, start) ?: classAt(file, end)
+        ?: return@withCurrentJavaFile JavaPsiToStringResult(JavaPsiToStringResultStatus.UNSUPPORTED, null)
+    JavaPsiToStringGeneration.generate(content, index, owner, params)
   }
 
   private fun classAt(file: PsiJavaFile, offset: Int): PsiClass? {

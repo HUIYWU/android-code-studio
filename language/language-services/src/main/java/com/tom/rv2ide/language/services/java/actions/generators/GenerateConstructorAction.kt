@@ -56,8 +56,6 @@ class GenerateConstructorAction : FieldBasedAction() {
     private val log = LoggerFactory.getLogger(GenerateConstructorAction::class.java)
   }
 
-  override val requiresPsiFields: Boolean = true
-
   override fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData) {
     val editor = data[CodeEditor::class.java] ?: return
     val labels = result.fields.map { "${it.name}: ${it.typeText}" }

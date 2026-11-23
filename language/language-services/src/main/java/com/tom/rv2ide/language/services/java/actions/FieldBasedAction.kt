@@ -18,32 +18,22 @@
 package com.tom.rv2ide.language.services.java.actions
 
 import android.content.Context
-import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.actions.ActionData
 import com.tom.rv2ide.actions.hasRequiredData
 import com.tom.rv2ide.actions.markInvisible
 import com.tom.rv2ide.actions.newDialogBuilder
 import com.tom.rv2ide.actions.requirePath
-import com.tom.rv2ide.language.services.java.JavaCompilerProvider
-import com.tom.rv2ide.language.services.java.compiler.CompileTask
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFieldsResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
-import com.tom.rv2ide.language.services.java.visitors.FindTypeDeclarationAt
+import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
 import com.tom.rv2ide.resources.R
 import com.tom.rv2ide.utils.flashInfo
 import io.github.rosemoe.sora.widget.CodeEditor
-import java.nio.file.Path
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionException
-import jdkx.lang.model.element.Modifier.STATIC
-import openjdk.source.tree.ClassTree
-import openjdk.source.tree.Tree.Kind.VARIABLE
-import openjdk.source.tree.VariableTree
-import org.slf4j.LoggerFactory
 
 /**
  * Any action that has to work with fields in the current class can inherit this action.
@@ -52,12 +42,8 @@ import org.slf4j.LoggerFactory
  */
 abstract class FieldBasedAction : BaseJavaCodeAction() {
   companion object {
-
-    private val log = LoggerFactory.getLogger(FieldBasedAction::class.java)
     private object StaleFieldsResult
   }
-
-  protected open val requiresPsiFields: Boolean = false
 
   override fun prepare(data: ActionData) {
     super.prepare(data)
@@ -65,7 +51,7 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
     if (
         !visible ||
             !data.hasRequiredData(
-                com.tom.rv2ide.models.Range::class.java,
+                Range::class.java,
                 CodeEditor::class.java,
             ) ||
             IProjectManager.getInstance().getWorkspace() == null
@@ -75,141 +61,40 @@ abstract class FieldBasedAction : BaseJavaCodeAction() {
     }
 
     visible = true
-    enabled = !requiresPsiFields || JavaPsiServiceInterop.isAvailable()
+    enabled = JavaPsiServiceInterop.isAvailable()
   }
 
   override suspend fun execAction(data: ActionData): Any {
-    val range = data[com.tom.rv2ide.models.Range::class.java]!!
+    val range = data[Range::class.java]!!
     val file = data.requirePath()
-    val editor = data[CodeEditor::class.java]
-    val snapshot = FileManager.getActiveDocumentSnapshot(file)
-    val identity = data[com.tom.rv2ide.projects.models.DocumentSnapshotIdentity::class.java]
-    if (requiresPsiFields && (identity == null || snapshot == null ||
-            identity.file.normalize() != file.normalize() || identity.version != snapshot.version ||
-            identity.revision != snapshot.revision)) return StaleFieldsResult
-    if (editor != null && snapshot != null && JavaPsiServiceInterop.isAvailable()) {
-      val fields = JavaPsiServiceInterop.fields(
-          JavaPsiFieldsParams(
-              file,
-              range,
-              snapshot.version,
-              snapshot.revision,
-              ICancelChecker.NOOP,
-          ),
-      )
-      if (fields != null) return fields
-      val current = FileManager.getActiveDocumentSnapshot(file)
-      if (current == null || current.version != snapshot.version || current.revision != snapshot.revision) {
-        return StaleFieldsResult
-      }
-    }
-    if (requiresPsiFields) return StaleFieldsResult
-    val module =
-        IProjectManager.getInstance().getWorkspace()?.findModuleForFile(file, false) ?: return Any()
-
-    return JavaCompilerProvider.get(module).compile(file).get { task ->
-      val triple = findFields(task, file, range)
-      val type = triple.second
-      val fields = triple.third
-      val fieldNames = fields.map { "${it.name}: ${it.type}" } // Get the names
-
-      if (IdeLogConfig.shouldLogDebug()) {
-        log.debug("Found {} fields in class {}", fieldNames.size, type.simpleName)
-      }
-
-      return@get fieldNames
-    }
+    val identity = data[DocumentSnapshotIdentity::class.java] ?: return StaleFieldsResult
+    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return StaleFieldsResult
+    if (identity.file.normalize() != file.normalize() || identity.version != snapshot.version ||
+        identity.revision != snapshot.revision) return StaleFieldsResult
+    return JavaPsiServiceInterop.fields(
+        JavaPsiFieldsParams(
+            file,
+            range,
+            snapshot.version,
+            snapshot.revision,
+            ICancelChecker.NOOP,
+        ),
+    ) ?: StaleFieldsResult
   }
 
-  protected fun findFields(
-      task: CompileTask,
-      file: Path,
-      range: com.tom.rv2ide.models.Range,
-  ): Triple<FindTypeDeclarationAt, ClassTree, MutableList<VariableTree>> {
-    // 1-based line and column index
-    val startLine = range.start.line + 1
-    val startColumn = range.start.column + 1
-    val endLine = range.end.line + 1
-    val endColumn = range.end.column + 1
-    val fileRoot = task.root(file)
-    val lines = fileRoot.lineMap
-    val start = lines.getPosition(startLine.toLong(), startColumn.toLong())
-    val end = lines.getPosition(endLine.toLong(), endColumn.toLong())
-
-    if (start == (-1).toLong() || end == (-1).toLong()) {
-      throw CompletionException(
-          RuntimeException("Unable to find position for the given selection range")
-      )
-    }
-
-    val typeFinder = FindTypeDeclarationAt(task.task)
-    var type = typeFinder.scan(fileRoot, start)
-    if (type == null) {
-      type = typeFinder.scan(fileRoot, end)
-    }
-
-    if (type == null) {
-      throw CompletionException(
-          RuntimeException("Unable to find class declaration within cursor range")
-      )
-    }
-
-    val fields =
-        type.members
-            .filter { it.kind == VARIABLE }
-            .map { it as VariableTree }
-            .filter { !it.modifiers.flags.contains(STATIC) }
-            .toMutableList()
-    return Triple(typeFinder, type, fields)
-  }
-
-  @Suppress("UNCHECKED_CAST")
   override fun postExec(data: ActionData, result: Any) {
     if (result === StaleFieldsResult) return
-    if (result is JavaPsiFieldsResult) {
-      val snapshot = FileManager.getActiveDocumentSnapshot(result.file) ?: return
-      if (snapshot.version != result.documentVersion || snapshot.revision != result.documentRevision) return
-      if (result.fields.isEmpty()) {
-        flashInfo(data[Context::class.java]!!.getString(R.string.msg_no_fields_found))
-        return
-      }
-      onGetPsiFields(result, data)
-      return
-    }
-    if (result !is List<*>) {
-      if (IdeLogConfig.shouldLogError()) {
-        log.error("Unable to find fields in the current class")
-      }
-      return
-    }
-
-    if (result.isEmpty()) {
+    val fields = result as JavaPsiFieldsResult
+    val snapshot = FileManager.getActiveDocumentSnapshot(fields.file) ?: return
+    if (snapshot.version != fields.documentVersion || snapshot.revision != fields.documentRevision) return
+    if (fields.fields.isEmpty()) {
       flashInfo(data[Context::class.java]!!.getString(R.string.msg_no_fields_found))
       return
     }
-
-    onGetFields(result as List<String>, data)
+    onGetPsiFields(fields, data)
   }
 
-  /**
-   * Called when the fields of the current class are found. As this method is called inside
-   * [postExec], the current thread is the UI thread.
-   */
-  open fun onGetFields(fields: List<String>, data: ActionData) = Unit
-
-  protected open fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData) {
-    onGetFields(result.fields.map { "${it.name}: ${it.typeText}" }, data)
-  }
-
-  /**
-   * Shows the field selector dialog. Returns a [CompletableFuture] which is completed when the user
-   * confirms the selected fields.
-   */
-  protected fun showFieldSelector(
-      fields: List<String>,
-      data: ActionData,
-      listener: OnFieldsSelectedListener?,
-  ) = showFieldSelector(fields, data, fields, listener)
+  protected abstract fun onGetPsiFields(result: JavaPsiFieldsResult, data: ActionData)
 
   protected fun showFieldSelector(
       labels: List<String>,
