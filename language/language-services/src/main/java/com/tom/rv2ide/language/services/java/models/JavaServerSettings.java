@@ -21,7 +21,6 @@ import com.google.googlejavaformat.java.JavaFormatterOptions;
 import com.tom.rv2ide.lsp.util.PrefBasedServerSettings;
 import com.tom.rv2ide.managers.PreferenceManager;
 import com.tom.rv2ide.preferences.internal.JavaPreferences;
-import com.tom.rv2ide.utils.VMUtils;
 
 /**
  * Server settings for the java language server.
@@ -46,7 +45,7 @@ public class JavaServerSettings extends PrefBasedServerSettings {
 
   @Override
   public boolean diagnosticsEnabled() {
-    return VMUtils.isJvm() || JavaPreferences.INSTANCE.isJavaDiagnosticsEnabled();
+    return true;
   }
 
   public JavaFormatterOptions getFormatterOptions() {

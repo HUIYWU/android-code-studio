@@ -1,5 +1,6 @@
 package com.tom.rv2ide.language.services.java.diagnostics
 
+import com.tom.rv2ide.language.services.java.models.DiagnosticCode
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity
 import com.tom.rv2ide.lsp.models.LineIndex
@@ -21,6 +22,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectIn
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.JavaErrorCollector
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaCompilationError
@@ -34,8 +36,22 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiElementVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiEnumConstant
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiImplicitClass
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import org.jetbrains.kotlin.com.intellij.psi.PsiResourceListElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiMethod
+import org.jetbrains.kotlin.com.intellij.psi.PsiClassType
+import org.jetbrains.kotlin.com.intellij.psi.PsiLambdaExpression
+import org.jetbrains.kotlin.com.intellij.psi.PsiMethodReferenceExpression
+import org.jetbrains.kotlin.com.intellij.psi.PsiNewExpression
+import org.jetbrains.kotlin.com.intellij.psi.PsiTypeElement
+import org.jetbrains.kotlin.com.intellij.psi.PsiImportStatementBase
+import org.jetbrains.kotlin.com.intellij.psi.PsiAnnotation
+import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceList
+import org.jetbrains.kotlin.com.intellij.psi.PsiJavaCodeReferenceElement
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.kotlin.com.intellij.psi.util.TypeConversionUtil
 
 internal object JavaPsiDiagnosticsCollector {
   fun collect(
@@ -57,6 +73,7 @@ internal object JavaPsiDiagnosticsCollector {
         SuspiciousArrayMethodCallInspection(),
         SafeVarargsHasNoEffectInspection(),
         SafeVarargsOnNonReifiableTypeInspection(),
+        RedundantThrowsDeclarationLocalInspection(),
     )
     val inspectionRuns = inspections.map { inspection ->
       val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
@@ -88,13 +105,21 @@ internal object JavaPsiDiagnosticsCollector {
         if (SuppressionUtil.inspectionResultSuppressed(anchor, run.tool)) return@descriptorLoop
         val severity = descriptor.highlightType.toSeverity() ?: return@descriptorLoop
         val range = descriptor.absoluteRange()
-        result += DiagnosticItem(
+        val item = DiagnosticItem(
             message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
-            code = run.tool.shortName,
+            code = if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
+              DiagnosticCode.UNUSED_THROWS.id
+            } else {
+              run.tool.shortName
+            },
             range = Range(lineIndex.indexToPosition(range.startOffset), lineIndex.indexToPosition(range.endOffset)),
             source = "java-inspection",
             severity = severity,
         )
+        if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
+          unusedThrowsTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+        }
+        result += item
       }
     }
     return result.sortedWith(DiagnosticItem.START_COMPARATOR)
@@ -149,6 +174,9 @@ internal object JavaPsiDiagnosticsCollector {
         source = "java-codeserver",
         severity = error.highlightType().toSeverity(),
     ).also { item ->
+      unresolvedTypeTarget(error, file, documentVersion, documentRevision, startOffset, endOffset)?.let {
+        item.extra = it
+      }
       if (error.kind().key() == JavaAbstractMethodsDiagnostic.CODESERVER_KEY &&
           error.psi() is PsiClass && error.psi() !is PsiEnumConstant) {
         val target = error.psi() as PsiClass
@@ -159,8 +187,113 @@ internal object JavaPsiDiagnosticsCollector {
             (target as? PsiAnonymousClass)?.baseClassType?.resolve()?.qualifiedName,
             startOffset, endOffset, JavaAbstractMethodsDiagnostic.Backend.CODESERVER,
         )
+      } else if (error.kind().key() == JavaUnhandledExceptionDiagnostic.CODESERVER_KEY &&
+          error.psi() !is PsiResourceListElement) {
+        val errorElement = error.psi()
+        val method = if (errorElement is PsiMethod) errorElement
+        else PsiTreeUtil.getParentOfType(errorElement, PsiMethod::class.java, false)
+        var ancestor: PsiElement? = errorElement
+        var functionBoundary = false
+        while (ancestor != null && ancestor !== method) {
+          if (ancestor is PsiLambdaExpression || ancestor is PsiMethodReferenceExpression) {
+            functionBoundary = true
+            break
+          }
+          ancestor = ancestor.parent
+        }
+        val owner = method?.containingClass
+        val exceptionTypes = (error.context() as? Collection<*>)?.mapNotNull { it as? PsiClassType }.orEmpty()
+        val qualifiedNames = exceptionTypes.map { it.resolve()?.qualifiedName }.takeIf { names ->
+          names.isNotEmpty() && names.all { it != null }
+        }?.filterNotNull().orEmpty()
+        if (method != null && owner != null && owner !is PsiImplicitClass &&
+            errorElement !is PsiClass && errorElement !is PsiEnumConstant &&
+            errorElement !is PsiLambdaExpression && errorElement !is PsiMethodReferenceExpression &&
+            !functionBoundary && qualifiedNames.isNotEmpty()) {
+          val methodRange = requireNotNull(method.textRange)
+          val ownerRange = requireNotNull(owner.textRange)
+          item.extra = JavaUnhandledExceptionDiagnostic(
+              file.normalize(), documentVersion, documentRevision,
+              startOffset, endOffset, methodRange.startOffset, methodRange.endOffset,
+              ownerRange.startOffset, ownerRange.endOffset, owner.qualifiedName,
+              method.name, method.isConstructor,
+              method.parameterList.parameters.map { TypeConversionUtil.erasure(it.type).canonicalText },
+              qualifiedNames.distinct(),
+          )
+        }
       }
     }
+  }
+  private fun unresolvedTypeTarget(
+      error: JavaCompilationError<*, *>,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      highlightStart: Int,
+      highlightEnd: Int,
+  ): JavaUnresolvedTypeDiagnostic? {
+    if (error.kind().key() !in setOf(
+            JavaUnresolvedTypeDiagnostic.REFERENCE_UNRESOLVED_KEY,
+            JavaUnresolvedTypeDiagnostic.TYPE_UNKNOWN_CLASS_KEY,
+        )) return null
+    val psi = error.psi()
+    val reference = when {
+      psi is PsiTypeElement -> psi.innermostComponentReferenceElement
+      psi is PsiJavaCodeReferenceElement -> psi
+      else -> null
+    } ?: return null
+    if (reference.qualifier != null) return null
+    if (PsiTreeUtil.getParentOfType(reference, PsiImportStatementBase::class.java, false) != null) return null
+    val referenceList = PsiTreeUtil.getParentOfType(reference, PsiReferenceList::class.java, false)
+    if (referenceList != null && referenceList.role ==
+        org.jetbrains.kotlin.com.intellij.psi.PsiReferenceList.Role.THROWS_LIST) return null
+    val typeElement = PsiTreeUtil.getParentOfType(reference, PsiTypeElement::class.java, false)
+    val parent = reference.parent
+    val typeContext = typeElement?.innermostComponentReferenceElement === reference ||
+        referenceList != null || parent is PsiNewExpression && parent.classOrAnonymousClassReference === reference
+    if (!typeContext || parent is PsiAnnotation && parent.nameReferenceElement === reference) return null
+    val name = reference.referenceName ?: return null
+    val nameElement = reference.referenceNameElement ?: return null
+    if (name.isEmpty() || nameElement.text != name) return null
+    val range = nameElement.textRange
+    if (highlightStart > range.startOffset || highlightEnd < range.endOffset) return null
+    return JavaUnresolvedTypeDiagnostic(
+        file.normalize(), documentVersion, documentRevision,
+        highlightStart, highlightEnd, range.startOffset, range.endOffset, nameElement.text, name,
+    )
+  }
+
+  private fun unusedThrowsTarget(
+      anchor: PsiElement,
+      highlightRange: TextRange,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+  ): JavaUnusedThrowsDiagnostic? {
+    val reference = anchor as? PsiJavaCodeReferenceElement
+        ?: PsiTreeUtil.getParentOfType(anchor, PsiJavaCodeReferenceElement::class.java, false)
+        ?: return null
+    val referenceRange = reference.textRange
+    val throwsList = PsiTreeUtil.getParentOfType(reference, PsiReferenceList::class.java, false)
+        ?: return null
+    if (throwsList.role != PsiReferenceList.Role.THROWS_LIST ||
+        referenceRange.startOffset < highlightRange.startOffset ||
+        referenceRange.endOffset > highlightRange.endOffset) return null
+    val method = PsiTreeUtil.getParentOfType(reference, PsiMethod::class.java, false) ?: return null
+    val owner = method.containingClass ?: return null
+    val exception = reference.resolve() as? PsiClass ?: return null
+    val exceptionQualifiedName = exception.qualifiedName ?: return null
+    val methodRange = method.textRange
+    val ownerRange = owner.textRange
+    return JavaUnusedThrowsDiagnostic(
+        file.normalize(), documentVersion, documentRevision,
+        highlightRange.startOffset, highlightRange.endOffset,
+        methodRange.startOffset, methodRange.endOffset,
+        ownerRange.startOffset, ownerRange.endOffset, owner.qualifiedName,
+        method.name, method.isConstructor,
+        method.parameterList.parameters.map { TypeConversionUtil.erasure(it.type).canonicalText },
+        exceptionQualifiedName, referenceRange.startOffset, referenceRange.endOffset, reference.text,
+    )
   }
 
   private data class InspectionRun(

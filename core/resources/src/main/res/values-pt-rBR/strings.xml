@@ -358,8 +358,6 @@
   <string name="idepref_general_themeSelector_summary">Selecione um tema para o AndroidIDE (requer reinicialização).</string>
   <string name="idepref_general_projectConfig">Configuração do projeto</string>
   <string name="msg_app_launch_failed">Falha ao iniciar. Instale o aplicativo primeiro.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Habilitar diagnósticos</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(EXPERIMENTAL) Os arquivos de código-fonte Java serão analisados para detecção de erros.</string>
   <string name="title_reload_color_schemes">Recarregar esquema de cores</string>
   <string name="msg_dir_picker_failed">Falha ao iniciar o seletor de diretório: %1$s</string>
   <string name="msg_tooling_server_unavailable">Servidor de ferramentas da API indisponível. Verifique a saída de compilação e os logs da IDE para erros.</string>

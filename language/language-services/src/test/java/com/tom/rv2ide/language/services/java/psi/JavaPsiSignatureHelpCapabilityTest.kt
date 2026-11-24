@@ -20,7 +20,6 @@ import com.tom.rv2ide.lsp.models.ReferenceResult
 import com.tom.rv2ide.lsp.models.SignatureHelp
 import com.tom.rv2ide.lsp.models.SignatureHelpParams
 import com.tom.rv2ide.models.Range
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.ModuleProject
 import java.nio.file.Files
@@ -241,10 +240,8 @@ class JavaPsiSignatureHelpCapabilityTest {
             }
           }
       """.trimIndent()
-      val previousRecognition = JavaPreferences.isJavaKotlinRecognitionEnabled
+      openDocument(path, content, version = 3, revision = 211L)
       try {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = true
-        openDocument(path, content, version = 3, revision = 211L)
         withRuntime(workspace) { runtime ->
           runAnalysis { runtime.onFileOpened(path) }
           fun help(marker: String): SignatureHelp = runAnalysis {
@@ -271,13 +268,9 @@ class JavaPsiSignatureHelpCapabilityTest {
           assertEquals("pick(value: String)", active(direct))
           request.documentRevision = 210L
           assertNull(runAnalysis { JavaPsiServiceInterop.signatureHelp(request) })
-          JavaPreferences.isJavaKotlinRecognitionEnabled = false
-          val javaView = help(".pick(")
-          assertTrue(javaView.signatures.any { it.label == "pick(String value)" })
         }
       } finally {
         closeDocument(path)
-        JavaPreferences.isJavaKotlinRecognitionEnabled = previousRecognition
       }
     }
   }

@@ -359,8 +359,6 @@ Dernier projet ouvert : \n%s</string>
   <string name="idepref_general_themeSelector_summary">Sélectionner un thème pour AndroidIDE (redémarrage de l\'application nécessaire).</string>
   <string name="idepref_general_projectConfig">Project configuration</string>
   <string name="msg_app_launch_failed">Erreur de lancement. Installez l\'application d\'abord.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Diagnostics enabled</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(EXPERIMENTAL) Whether the Java source files should be analyzed for errors or not.</string>
   <string name="title_reload_color_schemes">Reload color schemes</string>
   <string name="msg_dir_picker_failed">Failed to start directory picker : %1$s</string>
   <string name="msg_tooling_server_unavailable">Tooling API server is unavailable. Check build output and IDE logs for errors.</string>

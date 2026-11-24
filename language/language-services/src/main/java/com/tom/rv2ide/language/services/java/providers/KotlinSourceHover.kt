@@ -4,14 +4,12 @@ import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.lsp.models.DefinitionParams
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MarkupContent
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.projects.FileManager
 
 object KotlinSourceHover {
   @JvmStatic
   fun find(params: DefinitionParams): MarkupContent? {
     params.cancelChecker.abortIfCancelled()
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled) return null
     val snapshot = FileManager.getActiveDocumentSnapshot(params.file) ?: return null
     if (
         params.documentVersion >= 0 && snapshot.version != params.documentVersion ||

@@ -59,7 +59,7 @@ internal object JavaPsiOverrideCompletion {
     val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
     val owner = classAt(file, start) ?: classAt(file, end)
     val methods = if (owner == null || owner.isAnnotationType || owner.rBrace == null) emptyList() else {
-      overrideCandidates(owner, params.recognizeKotlin, cancelChecker, excludeObjectMethods = true)
+      overrideCandidates(owner, cancelChecker, excludeObjectMethods = true)
           .map { candidate ->
             cancelChecker.abortIfCancelled()
             JavaPsiOverrideMethodInfo(candidate.id(), candidate.label())
@@ -69,7 +69,7 @@ internal object JavaPsiOverrideCompletion {
     return JavaPsiOverrideMethodsResult(
         params.file.normalize(), params.documentVersion, params.documentRevision, methods,
         params.selection.start.line, params.selection.start.column,
-        params.selection.end.line, params.selection.end.column, params.recognizeKotlin,
+        params.selection.end.line, params.selection.end.column,
     )
   }
 
@@ -87,7 +87,7 @@ internal object JavaPsiOverrideCompletion {
     val start = index.lineColumnToIndex(params.selection.start.line, params.selection.start.column)
     val end = index.lineColumnToIndex(params.selection.end.line, params.selection.end.column)
     val owner = classAt(file, start) ?: classAt(file, end) ?: return unsupported()
-    val candidates = overrideCandidates(owner, params.recognizeKotlin, cancelChecker, excludeObjectMethods = true)
+    val candidates = overrideCandidates(owner, cancelChecker, excludeObjectMethods = true)
     val selected = candidates.filter { it.id() in params.selectedMethodIds }
     if (selected.size != params.selectedMethodIds.size) return unsupported()
     return generateAtOwner(
@@ -105,7 +105,7 @@ internal object JavaPsiOverrideCompletion {
     if (owner.isAnnotationType || owner.isInterface || owner.isEnum || owner.isRecord ||
         owner.hasModifierProperty(PsiModifier.ABSTRACT)) return unsupported()
     val targetContext = if (owner is PsiAnonymousClass) owner.baseClassReference else owner.nameIdentifier ?: owner
-    val candidates = implementCandidates(owner, params.recognizeKotlin, targetContext, params.cancelChecker)
+    val candidates = implementCandidates(owner, targetContext, params.cancelChecker)
     if (candidates.isEmpty()) return JavaPsiOverridesResult(JavaPsiOverridesResultStatus.EMPTY_SELECTION, emptyList())
     return generateAtOwner(
         file, owner, diagnostic.file.normalize(), candidates, candidates.map { it.id() }.toSet(),
@@ -171,7 +171,6 @@ internal object JavaPsiOverrideCompletion {
 
   private fun overrideCandidates(
       owner: PsiClass,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
       excludeObjectMethods: Boolean = false,
   ): List<Candidate> {
@@ -184,7 +183,6 @@ internal object JavaPsiOverrideCompletion {
         val declaringClass = method.containingClass ?: continue
         if (method.isConstructor || declaringClass == owner || !PsiUtil.canBeOverridden(method)) continue
         if (excludeObjectMethods && declaringClass.qualifiedName == "java.lang.Object") continue
-        if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass)) continue
         if (!seen.add(signature)) continue
         candidates += Candidate(method, declaringClass, resolved.substitutor, signature.isRaw, MatchLevel.CASE_SENSITIVE_EQUAL)
       }
@@ -210,7 +208,6 @@ internal object JavaPsiOverrideCompletion {
 
   private fun implementCandidates(
       owner: PsiClass,
-      recognizeKotlin: Boolean,
       context: PsiElement,
       cancelChecker: ICancelChecker,
   ): List<Candidate> {
@@ -226,7 +223,6 @@ internal object JavaPsiOverrideCompletion {
           declaringClass.qualifiedName == "java.lang.Record" ||
           !PsiUtil.canBeOverridden(method) ||
           !PsiUtil.isAccessible(method, context, owner)) continue
-      if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass)) continue
       if (!seen.add(signature)) continue
       candidates += Candidate(
           method, declaringClass, resolved.substitutor, signature.isRaw, MatchLevel.CASE_SENSITIVE_EQUAL,
@@ -290,7 +286,6 @@ internal object JavaPsiOverrideCompletion {
   fun complete(
       file: PsiJavaFile,
       offset: Int,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): CompletionResult? {
     val context = contextAt(file, offset) ?: return null
@@ -304,7 +299,6 @@ internal object JavaPsiOverrideCompletion {
         val method = resolved.element as? PsiMethod ?: continue
         val declaringClass = method.containingClass ?: continue
         if (method.isConstructor || declaringClass == owner || !PsiUtil.canBeOverridden(method)) continue
-        if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass)) continue
         val match = CompletionItem.matchLevel(method.name, context.prefix)
         if (match == MatchLevel.NO_MATCH || !seen.add(signature)) continue
         candidates += Candidate(method, declaringClass, resolved.substitutor, signature.isRaw, match)

@@ -12,7 +12,6 @@ import com.tom.rv2ide.lsp.models.CompletionParams
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MethodCompletionData
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Files
 import java.nio.file.Path
@@ -148,33 +147,25 @@ class JavaPsiCompletionCapabilityTest {
             }
           }
       """.trimIndent()
-      val previous = JavaPreferences.isJavaKotlinRecognitionEnabled
-      try {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = true
-        openDocument(path, content, version = 1, revision = 51L)
-        withRuntime(workspace) {
-          val instance = complete(path, content, "api.").items
-          assertTrue(instance.map { it.ideLabel }.containsAll(listOf("pick", "getLabel", "decorated")))
-          assertFalse(instance.any { it.ideLabel in setOf("label", "hidden", "InteropOverloads", "TOKEN") })
-          assertEquals("getLabel()\$0", instance.single { it.ideLabel == "getLabel" }.insertText)
-          assertEquals(1, (instance.single { it.ideLabel == "pick" }.data as MethodCompletionData).plusOverloads)
-          val decorated = complete(path, content, "api.dec").items.single { it.ideLabel == "decorated" }
-          assertEquals("decorated(String, String)", decorated.detail)
-          assertEquals("decorated($0)", decorated.insertText)
-          val statics = complete(path, content, "InteropOverloads.").items
-          assertTrue(statics.map { it.ideLabel }.containsAll(listOf("Companion", "Nested", "TOKEN")))
-          assertFalse(statics.any { it.ideLabel == "decorated" })
-          val inner = complete(path, content, "api.new In").items.single()
-          assertEquals("Inner($0)", inner.insertText)
-          assertEquals("com.tom.rv2ide.testing.kotlinfixture.library.InteropOverloads\$Inner",
-              (inner.data as ClassCompletionData).flatName)
-          val facade = complete(path, content, "LibraryApiKt.library").items.single { it.ideLabel == "libraryExtension" }
-          assertEquals("libraryExtension(String)", facade.detail)
-          JavaPreferences.isJavaKotlinRecognitionEnabled = false
-          assertTrue(complete(path, content, "api.dec").items.isEmpty())
-        }
-      } finally {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = previous
+      openDocument(path, content, version = 1, revision = 51L)
+      withRuntime(workspace) {
+        val instance = complete(path, content, "api.").items
+        assertTrue(instance.map { it.ideLabel }.containsAll(listOf("pick", "getLabel", "decorated")))
+        assertFalse(instance.any { it.ideLabel in setOf("label", "hidden", "InteropOverloads", "TOKEN") })
+        assertEquals("getLabel()\$0", instance.single { it.ideLabel == "getLabel" }.insertText)
+        assertEquals(1, (instance.single { it.ideLabel == "pick" }.data as MethodCompletionData).plusOverloads)
+        val decorated = complete(path, content, "api.dec").items.single { it.ideLabel == "decorated" }
+        assertEquals("decorated(String, String)", decorated.detail)
+        assertEquals("decorated($0)", decorated.insertText)
+        val statics = complete(path, content, "InteropOverloads.").items
+        assertTrue(statics.map { it.ideLabel }.containsAll(listOf("Companion", "Nested", "TOKEN")))
+        assertFalse(statics.any { it.ideLabel == "decorated" })
+        val inner = complete(path, content, "api.new In").items.single()
+        assertEquals("Inner($0)", inner.insertText)
+        assertEquals("com.tom.rv2ide.testing.kotlinfixture.library.InteropOverloads\$Inner",
+            (inner.data as ClassCompletionData).flatName)
+        val facade = complete(path, content, "LibraryApiKt.library").items.single { it.ideLabel == "libraryExtension" }
+        assertEquals("libraryExtension(String)", facade.detail)
       }
     }
   }

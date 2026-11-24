@@ -24,7 +24,6 @@ internal object JavaPsiMethodReferenceCompletion {
   fun complete(
       file: PsiJavaFile,
       offset: Int,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): CompletionResult? {
     val context = contextAt(file, offset) ?: return null
@@ -41,12 +40,10 @@ internal object JavaPsiMethodReferenceCompletion {
     val owner = qualifierResult.containingClass ?: return CompletionResult.EMPTY
     if (reference.isConstructor) {
       if (!typeQualifier || qualifierType !is PsiClassType) return CompletionResult.EMPTY
-      if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(owner)) return CompletionResult.EMPTY
       val items = ArrayList<CompletionItem>()
       JavaPsiCompletionItems.keyword(items, "new", context.prefix)
       return CompletionResult(items)
     }
-    if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(owner)) return CompletionResult.EMPTY
     val ownerSubstitutor = qualifierResult.substitutor
 
     val groups = LinkedHashMap<String, JavaPsiCompletionItems.MethodGroup>()
@@ -57,7 +54,6 @@ internal object JavaPsiMethodReferenceCompletion {
       val isStatic = method.hasModifierProperty(PsiModifier.STATIC)
       if (!typeQualifier && isStatic) continue
       if (typeQualifier && isStatic && declaringClass.isInterface && declaringClass != owner) continue
-      if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass)) continue
       val match = groups[method.name]?.match ?: CompletionItem.matchLevel(method.name, context.prefix)
       if (match == MatchLevel.NO_MATCH || !PsiUtil.isAccessible(method, reference, owner)) continue
       val substitutor = TypeConversionUtil.getSuperClassSubstitutor(

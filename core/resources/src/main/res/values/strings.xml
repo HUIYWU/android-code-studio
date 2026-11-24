@@ -1022,10 +1022,8 @@ Failed: %2$d</string>
   <string name="idepref_general_themeSelector_summary">Select a theme for Android Code Studio (requires restart).</string>
   <string name="idepref_general_projectConfig">Project configuration</string>
   <string name="msg_app_launch_failed">Launch failed. Install the application first.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Diagnostics enabled</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(EXPERIMENTAL) Whether the Java source files should be analyzed for errors or not.</string>
-  <string name="idepref_java_kotlinRecognitionEnabled_title">Recognize Kotlin declarations from Java</string>
-  <string name="idepref_java_kotlinRecognitionEnabled_summary">Let Java language features—including completion, imports, navigation, signature help, and diagnostics—recognize JVM-visible declarations in Kotlin source files. This uses a lightweight JVM ABI model and may not match full Kotlin compiler semantics.</string>
+  <string name="idepref_java_modernDiagnosticsEnabled_title">Enable modern diagnostics</string>
+  <string name="idepref_java_modernDiagnosticsEnabled_summary">Analyze Java sources with the IntelliJ Java codeserver, including Java PSI inspections and compiler errors. Disable to use javac diagnostics instead.</string>
   <string name="title_reload_color_schemes">Reload color schemes</string>
   <string name="msg_dir_picker_failed">Failed to start directory picker : %1$s</string>
   <string name="msg_tooling_server_unavailable">Tooling API server is unavailable. Check build output and IDE logs for errors.</string>

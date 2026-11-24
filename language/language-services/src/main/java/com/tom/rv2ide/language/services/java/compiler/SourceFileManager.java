@@ -25,7 +25,6 @@ import com.blankj.utilcode.util.CloseUtils;
 import com.tom.rv2ide.javac.config.JavacConfigProvider;
 import com.tom.rv2ide.language.compiler.javac.fs.AndroidFsProviderImpl;
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider;
-import com.tom.rv2ide.preferences.internal.JavaPreferences;
 import com.tom.rv2ide.projects.android.AndroidModule;
 import com.tom.rv2ide.projects.ModuleProject;
 import com.tom.rv2ide.common.logging.IdeLogConfig;
@@ -109,13 +108,11 @@ public class SourceFileManager extends ForwardingJavaFileManager<JavacFileManage
     }
 
     final Set<File> classpaths = new java.util.LinkedHashSet<>(module.getCompileClasspaths());
-    if (JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()) {
-      // Compiled Kotlin output is the classpath adapter for Java diagnostics. Shared Kotlin PSI and
-      // Analysis remain the source authority for live semantic features; this output is only used
-      // when javac requires JVM class symbols for the current compilation environment.
-      classpaths.addAll(KotlinClassOutputProvider.findModuleCompileOutputs(module));
-      classpaths.addAll(KotlinClassOutputProvider.findDependencyCompileOutputs(module));
-    }
+    // Compiled Kotlin output is the classpath adapter for Java diagnostics. Shared Kotlin PSI and
+    // Analysis remain the source authority for live semantic features; this output is only used
+    // when javac requires JVM class symbols for the current compilation environment.
+    classpaths.addAll(KotlinClassOutputProvider.findModuleCompileOutputs(module));
+    classpaths.addAll(KotlinClassOutputProvider.findDependencyCompileOutputs(module));
     return classpaths;
   }
 

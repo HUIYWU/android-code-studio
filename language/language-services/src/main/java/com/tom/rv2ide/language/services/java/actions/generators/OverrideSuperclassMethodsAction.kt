@@ -35,7 +35,6 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
 import com.tom.rv2ide.models.Position
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.preferences.internal.EditorPreferences
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
@@ -80,11 +79,10 @@ class OverrideSuperclassMethodsAction : BaseJavaCodeAction() {
     val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return EmptyMethodsResult
     if (identity.file.normalize() != file.normalize() || identity.version != snapshot.version ||
         identity.revision != snapshot.revision) return EmptyMethodsResult
-    val recognizeKotlin = JavaPreferences.isJavaKotlinRecognitionEnabled
     val range = data[Range::class.java]!!
     return JavaPsiServiceInterop.overrideMethods(
         JavaPsiOverrideMethodsParams(
-            file, range, snapshot.version, snapshot.revision, recognizeKotlin, ICancelChecker.NOOP,
+            file, range, snapshot.version, snapshot.revision, ICancelChecker.NOOP,
         ),
     ) ?: EmptyMethodsResult
   }
@@ -134,7 +132,6 @@ class OverrideSuperclassMethodsAction : BaseJavaCodeAction() {
         selected,
         methods.documentVersion,
         methods.documentRevision,
-        methods.recognizeKotlin,
         EditorPreferences.tabSize,
         EditorPreferences.useSoftTab,
         ICancelChecker.NOOP,

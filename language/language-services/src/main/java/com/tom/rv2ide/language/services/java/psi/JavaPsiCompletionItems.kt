@@ -22,8 +22,6 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiTypeParameter
 import org.jetbrains.kotlin.com.intellij.psi.util.ClassUtil
 import org.jetbrains.kotlin.com.intellij.psi.util.MethodSignatureUtil
 import org.jetbrains.kotlin.com.intellij.psi.util.TypeConversionUtil
-import org.jetbrains.kotlin.psi.KtDeclaration
-import org.jetbrains.kotlin.psi.KtFile
 
 internal object JavaPsiCompletionItems {
   fun item(name: String, kind: CompletionItemKind, detail: String, match: MatchLevel) =
@@ -74,12 +72,6 @@ internal object JavaPsiCompletionItems {
       item.insertText = "$name()\$0"
     }
   }
-
-  fun isJavaOwner(owner: PsiClass): Boolean =
-      when (owner.navigationElement) {
-        is KtDeclaration, is KtFile -> false
-        else -> true
-      }
 
   fun method(
       method: PsiMethod,

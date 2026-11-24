@@ -47,9 +47,9 @@ import org.jetbrains.kotlin.com.intellij.psi.scope.util.PsiScopesUtil
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 
 internal object JavaPsiIdentifierCompletion {
-  fun collect(file: PsiJavaFile, offset: Int, recognizeKotlin: Boolean, cancelChecker: ICancelChecker): Candidates? {
+  fun collect(file: PsiJavaFile, offset: Int, cancelChecker: ICancelChecker): Candidates? {
     val context = contextAt(file, offset, cancelChecker) ?: return null
-    val processor = ScopeProcessor(context, recognizeKotlin, cancelChecker)
+    val processor = ScopeProcessor(context, cancelChecker)
     PsiScopesUtil.treeWalkUp(processor, context.place, file)
     for (group in processor.methods.values) {
       cancelChecker.abortIfCancelled()
@@ -126,13 +126,12 @@ internal object JavaPsiIdentifierCompletion {
         path: Path,
         module: ModuleProject?,
         matchAllLowerCase: Boolean,
-        recognizeKotlin: Boolean,
         cancelChecker: ICancelChecker,
     ): CompletionResult {
       val includeIndexedTypes = CompletionResult.TRIM_TO_MAX && items.size < CompletionResult.MAX_ITEMS &&
           (matchAllLowerCase || prefix.firstOrNull()?.isUpperCase() == true)
       val hasMoreIndexedTypes = includeIndexedTypes && JavaCompletionTypeIndex.addImportableItems(
-          items, path, imports, typeNames, module, prefix, recognizeKotlin, cancelChecker,
+          items, path, imports, typeNames, module, prefix, cancelChecker,
       )
       if (!typesOnly) {
         val snippets = JavaSnippetRepository.snippets
@@ -160,7 +159,6 @@ internal object JavaPsiIdentifierCompletion {
 
   private class ScopeProcessor(
       private val context: Context,
-      private val recognizeKotlin: Boolean,
       private val cancelChecker: ICancelChecker,
   ) : PsiScopeProcessor {
     val items = ArrayList<CompletionItem>()
@@ -214,8 +212,6 @@ internal object JavaPsiIdentifierCompletion {
     private fun accessible(member: PsiMember, owner: PsiClass?): Boolean =
         JavaResolveUtil.isAccessible(member, owner, member.modifierList, context.place, null, fileContext)
 
-    private fun acceptedOwner(owner: PsiClass): Boolean = recognizeKotlin || JavaPsiCompletionItems.isJavaOwner(owner)
-
     private fun addVariable(variable: PsiVariable) {
       val name = variable.name ?: return
       val match = match(name)
@@ -230,7 +226,7 @@ internal object JavaPsiIdentifierCompletion {
       val name = field.name
       val match = match(name)
       if (match == MatchLevel.NO_MATCH || name in variableNames ||
-          (staticScope && !field.hasModifierProperty(PsiModifier.STATIC)) || !acceptedOwner(owner) ||
+          (staticScope && !field.hasModifierProperty(PsiModifier.STATIC)) ||
           !accessible(field, owner)) return
       variableNames += name
       items += JavaPsiCompletionItems.field(field, owner, state.get(PsiSubstitutor.KEY) ?: PsiSubstitutor.EMPTY, match)
@@ -239,7 +235,7 @@ internal object JavaPsiIdentifierCompletion {
     private fun addType(type: PsiClass) {
       val name = type.name ?: return
       val match = match(name)
-      if (match == MatchLevel.NO_MATCH || name in typeNames || !acceptedOwner(type)) return
+      if (match == MatchLevel.NO_MATCH || name in typeNames) return
       if (type is PsiTypeParameter) {
         if (staticScope && type.owner is PsiClass) return
       } else if (!accessible(type, type.containingClass)) {
@@ -259,7 +255,7 @@ internal object JavaPsiIdentifierCompletion {
       if (match == MatchLevel.NO_MATCH || name.startsWith('<')) return
       val owner = method.containingClass ?: return
       val isStatic = method.hasModifierProperty(PsiModifier.STATIC)
-      if (staticScope && !isStatic || !acceptedOwner(owner) || !accessible(method, owner)) return
+      if (staticScope && !isStatic || !accessible(method, owner)) return
       if (isStatic && owner.isInterface) {
         val target = level ?: (fileContext as? PsiImportStaticStatement)?.resolveTargetClass()
         if (target == null || !owner.isEquivalentTo(target)) return

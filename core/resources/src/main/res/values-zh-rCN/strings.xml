@@ -477,10 +477,8 @@
   <string name="idepref_general_themeSelector_summary">选择 AndroidIDE 主题（需要重启）。</string>
   <string name="idepref_general_projectConfig">项目配置</string>
   <string name="msg_app_launch_failed">启动失败，请先安装应用。</string>
-  <string name="idepref_java_diagnosticEnabled_title">启用诊断</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">（实验性）是否应该分析 Java 源文件的错误。</string>
-  <string name="idepref_java_kotlinRecognitionEnabled_title">在 Java 中识别 Kotlin 声明</string>
-  <string name="idepref_java_kotlinRecognitionEnabled_summary">让 Java 的代码补全、导入建议、导航、签名辅助和诊断识别 Kotlin 源文件中对 JVM 可见的声明。此功能使用轻量级 JVM ABI 模型，语义可能与完整 Kotlin 编译器存在差异。</string>
+  <string name="idepref_java_modernDiagnosticsEnabled_title">启用新式诊断</string>
+  <string name="idepref_java_modernDiagnosticsEnabled_summary">使用 IntelliJ Java codeserver 分析 Java 源文件，包含 Java PSI 检查与编译错误诊断；关闭后改用 javac 诊断。</string>
   <string name="title_reload_color_schemes">重载配色方案</string>
   <string name="msg_dir_picker_failed">无法启动目录选取器：%1$s</string>
   <string name="msg_tooling_server_unavailable">Tooling API 服务器不可用。检查构建输出和 IDE 日志是否有错误。</string>

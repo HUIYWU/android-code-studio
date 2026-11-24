@@ -30,7 +30,6 @@ import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
 import com.tom.rv2ide.preferences.internal.GeneralPreferences
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.projects.IProjectManager
 import com.tom.rv2ide.resources.R.string
 import com.tom.rv2ide.services.builder.GradleBuildService
@@ -194,9 +193,6 @@ class EditorBuildEventListener : GradleBuildService.EventListener {
   }
 
   private fun refreshJavaKotlinClasspath() {
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled) {
-      return
-    }
     // Kotlin output directories can be created or replaced by Gradle after Java's file manager was
     // initialized. Their CLASS_PATH is fixed at file-manager creation, so clear both layers before
     // the post-build analysis to avoid source-stub/class-output transition diagnostics.

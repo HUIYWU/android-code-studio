@@ -29,7 +29,6 @@ import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider;
 
 import com.tom.rv2ide.language.services.java.models.CompilationRequest;
 import com.tom.rv2ide.language.services.java.models.ReparsePlan;
-import com.tom.rv2ide.preferences.internal.JavaPreferences;
 import com.tom.rv2ide.language.services.java.parser.ParseTask;
 import com.tom.rv2ide.language.services.java.parser.Parser;
 import com.tom.rv2ide.language.services.java.providers.completion.JavaCompletionTypeIndex;
@@ -138,7 +137,7 @@ public class JavaCompilerService implements CompilerProvider {
     final int bootClassPathCount = bootClasspathClasses.size();
     all.addAll(classPathClasses);
     all.addAll(bootClasspathClasses);
-    if (module != null && JavaPreferences.INSTANCE.isJavaKotlinRecognitionEnabled()) {
+    if (module != null) {
       final JavaPsiInterop.KotlinTopLevelTypesResult shared =
           JavaPsiInterop.kotlinTopLevelTypesSnapshot(module.getPath(), cancelChecker);
       if (shared.types != null) {

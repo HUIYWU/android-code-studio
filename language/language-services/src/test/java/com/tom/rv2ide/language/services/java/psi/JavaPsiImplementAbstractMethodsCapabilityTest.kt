@@ -62,7 +62,7 @@ class JavaPsiImplementAbstractMethodsCapabilityTest {
           }
           fun generate(target: JavaAbstractMethodsDiagnostic) = runAnalysis {
             JavaPsiServiceInterop.implementAbstractMethods(
-                JavaPsiImplementAbstractMethodsParams(target, false, 2, true, ICancelChecker.NOOP),
+                JavaPsiImplementAbstractMethodsParams(target, 2, true, ICancelChecker.NOOP),
             )
           }
 

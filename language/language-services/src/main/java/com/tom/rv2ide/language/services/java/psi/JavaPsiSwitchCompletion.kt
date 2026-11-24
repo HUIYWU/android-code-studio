@@ -20,7 +20,6 @@ internal object JavaPsiSwitchCompletion {
   fun complete(
       file: PsiJavaFile,
       offset: Int,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): CompletionResult? {
     if (offset !in 1..file.textLength) return null
@@ -55,7 +54,6 @@ internal object JavaPsiSwitchCompletion {
     val selectorType = label.enclosingSwitchBlock?.expression?.type as? PsiClassType ?: return null
     val enumClass = selectorType.resolve() ?: return null
     if (!enumClass.isEnum) return null
-    if (!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(enumClass)) return CompletionResult.EMPTY
 
     val items = ArrayList<CompletionItem>()
     for (field in enumClass.fields) {

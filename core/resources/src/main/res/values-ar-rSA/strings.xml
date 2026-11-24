@@ -358,8 +358,6 @@
   <string name="idepref_general_themeSelector_summary">اختر سمة لـ AndroidIDE (تتطلب إعادة التشغيل).</string>
   <string name="idepref_general_projectConfig">تهيئة المشروع</string>
   <string name="msg_app_launch_failed">فشل التشغيل. يجب تثبيت التطبيق أولاً.</string>
-  <string name="idepref_java_diagnosticEnabled_title">التشخيصات مفعلة</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(تجريبي) ما إذا ينبغي تحليل ملفات مصدر جافا بحثا عن أخطاء أم لا.</string>
   <string name="title_reload_color_schemes">إعادة تحميل أنظمة الألوان</string>
   <string name="msg_dir_picker_failed">فشل تشغيل مختار الملفات: %1$s</string>
   <string name="msg_tooling_server_unavailable">أداة خادم API غير متوفرة. تحقق من إخراج البناء وسجلات IDE للأخطاء.</string>

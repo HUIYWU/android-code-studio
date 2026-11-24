@@ -84,7 +84,7 @@ internal class JavaDiagnosticsAnalyzer(
     val modifiedAt = activeSnapshot?.modified ?: FileManager.getLastModified(file)
     val ledgerGeneration = ledger.generation()
     val sharedResolverGeneration = JavaDiagnosticsInterop.currentGeneration()
-    if (JavaPreferences.isJavaKotlinRecognitionEnabled && sharedResolverGeneration == null) {
+    if (JavaPreferences.isModernDiagnosticsEnabled && sharedResolverGeneration == null) {
       return DiagnosticResult.NO_UPDATE
     }
 
@@ -254,7 +254,7 @@ internal class JavaDiagnosticsAnalyzer(
               }
               return
             }
-            if (JavaPreferences.isJavaKotlinRecognitionEnabled) {
+            if (JavaPreferences.isModernDiagnosticsEnabled) {
               when (val shared = JavaDiagnosticsInterop.diagnostics(file, cancelChecker, documentVersion, documentRevision)) {
                 is JavaDiagnosticsInterop.Result.Success -> {
                   if (shared.generation != resolverGeneration || JavaDiagnosticsInterop.currentGeneration() != shared.generation) {

@@ -358,8 +358,6 @@
   <string name="idepref_general_themeSelector_summary">AndroidIDE için bir tema seçin (yeniden başlatma gerekir).</string>
   <string name="idepref_general_projectConfig">Proje yapılandırması</string>
   <string name="msg_app_launch_failed">Başlatma başarısız. Önce uygulamayı yükleyin.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Tanılamalar etkin</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(DENEYSEL) Java kaynak kodu dosyalarının hatalar için analiz edilip edilmeyeceğini seçin.</string>
   <string name="title_reload_color_schemes">Renk şemalarını yeniden yükle</string>
   <string name="msg_dir_picker_failed">Dizin seçici başlatılamadı: %1$s</string>
   <string name="msg_tooling_server_unavailable">Takım API sunucusu kullanım dışı. Hatalar için inşa çıktısını ve IDE günlüklerini kontrol edin.</string>

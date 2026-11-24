@@ -18,6 +18,8 @@ import com.tom.rv2ide.utils.ClassTrie
 import com.tom.rv2ide.utils.Environment
 import java.io.File
 import java.nio.file.Path
+import java.util.ArrayDeque
+import java.util.LinkedHashSet
 import java.util.PriorityQueue
 
 internal object JavaCompletionTypeIndex {
@@ -56,10 +58,34 @@ internal object JavaCompletionTypeIndex {
     yieldAll(BootClasspathProvider.getTopLevelClassTries(bootClasspaths(module)))
   }
 
+  fun qualifiedNames(
+      module: ModuleProject?,
+      simpleName: String,
+      cancelChecker: ICancelChecker,
+  ): List<String> {
+    val names = LinkedHashSet<String>()
+    for (trie in classTries(module)) {
+      val pending = ArrayDeque<ClassTrie.Node>()
+      pending.add(trie.root)
+      while (pending.isNotEmpty()) {
+        cancelChecker.abortIfCancelled()
+        val node = pending.removeLast()
+        if (node.isClass && node.name == simpleName) names += node.qualifiedName
+        node.children.values.forEach(pending::addLast)
+      }
+    }
+    if (module != null) {
+      for (name in kotlinTypes(module, cancelChecker)) {
+        cancelChecker.abortIfCancelled()
+        if (name.substringAfterLast('.') == simpleName) names += name
+      }
+    }
+    return names.toList()
+  }
+
   fun forEachImportChild(
       module: ModuleProject?,
       packageName: String,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
       accept: (name: String, qualifiedName: String, isType: Boolean) -> Unit,
   ) {
@@ -72,7 +98,7 @@ internal object JavaCompletionTypeIndex {
         if (packageName.isNotEmpty() || !child.isClass) accept(child.name, child.qualifiedName, child.isClass)
       }
     }
-    if (module == null || !recognizeKotlin) return
+    if (module == null) return
     val prefix = if (packageName.isEmpty()) "" else "$packageName."
     for (type in kotlinTypes(module, cancelChecker)) {
       cancelChecker.abortIfCancelled()
@@ -93,7 +119,6 @@ internal object JavaCompletionTypeIndex {
       visibleTypeNames: Set<String>,
       module: ModuleProject?,
       prefix: String,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): Boolean {
     val maxItems = CompletionResult.MAX_ITEMS
@@ -122,7 +147,7 @@ internal object JavaCompletionTypeIndex {
     }
 
     for (trie in classTries(module)) visit(trie.root)
-    if (module != null && recognizeKotlin) {
+    if (module != null) {
       for (name in kotlinTypes(module, cancelChecker)) {
         cancelChecker.abortIfCancelled()
         offer(name.substringAfterLast('.'), name)

@@ -26,7 +26,6 @@ internal object JavaPsiImportCompletion {
   fun collect(
       file: PsiJavaFile,
       offset: Int,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): Candidates? {
     val context = contextAt(file, offset, cancelChecker) ?: return null
@@ -37,9 +36,9 @@ internal object JavaPsiImportCompletion {
       if (owner != null) {
         val visible = generateSequence(owner) { it.containingClass }.all {
           cancelChecker.abortIfCancelled()
-          (recognizeKotlin || JavaPsiCompletionItems.isJavaOwner(it)) && PsiUtil.isAccessible(it, context.statement, null)
+          PsiUtil.isAccessible(it, context.statement, null)
         }
-        val items = if (visible) typeMembers(owner, context, recognizeKotlin, cancelChecker) else ArrayList()
+        val items = if (visible) typeMembers(owner, context, cancelChecker) else ArrayList()
         return Candidates(context.prefix, items)
       }
     }
@@ -53,8 +52,8 @@ internal object JavaPsiImportCompletion {
           val name = type.name ?: continue
           val match = CompletionItem.matchLevel(name, context.prefix)
           if (match == MatchLevel.NO_MATCH || entries[name] != null) continue
-          entries[name] = if ((recognizeKotlin || JavaPsiCompletionItems.isJavaOwner(type)) &&
-              PsiUtil.isAccessible(type, context.statement, null)) JavaPsiCompletionItems.type(type, name, match) else null
+          entries[name] = if (PsiUtil.isAccessible(type, context.statement, null))
+              JavaPsiCompletionItems.type(type, name, match) else null
         }
       }
       for (child in pkg.getSubPackages(scope)) {
@@ -124,7 +123,6 @@ internal object JavaPsiImportCompletion {
   private fun typeMembers(
       owner: PsiClass,
       context: Context,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): MutableList<CompletionItem> {
     val items = ArrayList<CompletionItem>()
@@ -135,8 +133,7 @@ internal object JavaPsiImportCompletion {
       val name = type.name ?: continue
       val match = CompletionItem.matchLevel(name, context.prefix)
       if (match == MatchLevel.NO_MATCH || context.isStatic && !type.hasModifierProperty(PsiModifier.STATIC) ||
-          !PsiUtil.isAccessible(type, context.statement, owner) ||
-          !recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(type) || !classNames.add(name)) continue
+          !PsiUtil.isAccessible(type, context.statement, owner) || !classNames.add(name)) continue
       items += JavaPsiCompletionItems.type(type, name, match)
     }
     if (!context.isStatic) return items
@@ -149,8 +146,7 @@ internal object JavaPsiImportCompletion {
       val match = CompletionItem.matchLevel(name, context.prefix)
       if (match == MatchLevel.NO_MATCH) continue
       val declaringClass = field.containingClass ?: continue
-      if ((!recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass)) ||
-          !PsiUtil.isAccessible(field, context.statement, owner) || !fieldNames.add(name)) continue
+      if (!PsiUtil.isAccessible(field, context.statement, owner) || !fieldNames.add(name)) continue
       items += JavaPsiCompletionItems.field(field, declaringClass, PsiSubstitutor.EMPTY, match)
     }
 
@@ -163,7 +159,6 @@ internal object JavaPsiImportCompletion {
       if (match == MatchLevel.NO_MATCH) continue
       val declaringClass = method.containingClass ?: continue
       if (declaringClass.isInterface && !declaringClass.isEquivalentTo(owner) ||
-          !recognizeKotlin && !JavaPsiCompletionItems.isJavaOwner(declaringClass) ||
           !PsiUtil.isAccessible(method, context.statement, owner)) continue
       methods.getOrPut(name) { JavaPsiCompletionItems.MethodGroup(method, declaringClass, PsiSubstitutor.EMPTY, match) }
           .add(method, PsiSubstitutor.EMPTY)
@@ -184,10 +179,10 @@ internal object JavaPsiImportCompletion {
       private val packageName: String = "",
       private val packageEntries: MutableMap<String, CompletionItem?>? = null,
   ) {
-    fun finish(module: ModuleProject?, recognizeKotlin: Boolean, cancelChecker: ICancelChecker): CompletionResult {
+    fun finish(module: ModuleProject?, cancelChecker: ICancelChecker): CompletionResult {
       val entries = packageEntries
       if (entries != null) {
-        JavaCompletionTypeIndex.forEachImportChild(module, packageName, recognizeKotlin, cancelChecker) { name, qualifiedName, isType ->
+        JavaCompletionTypeIndex.forEachImportChild(module, packageName, cancelChecker) { name, qualifiedName, isType ->
           if (name !in entries) {
             val match = CompletionItem.matchLevel(name, prefix)
             if (match != MatchLevel.NO_MATCH) {

@@ -21,15 +21,25 @@ import com.tom.rv2ide.actions.hasRequiredData
 import com.tom.rv2ide.actions.markInvisible
 import com.tom.rv2ide.actions.requireFile
 import com.tom.rv2ide.actions.requirePath
+import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.actions.BaseJavaCodeAction
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnhandledExceptionDiagnostic
+import com.tom.rv2ide.language.services.java.interop.JavaPsiAddUnhandledExceptionsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
+import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode
 import com.tom.rv2ide.language.services.java.rewrite.AddException
 import com.tom.rv2ide.language.services.java.utils.CodeActionUtils
 import com.tom.rv2ide.language.services.java.visitors.FindPathAt
 import com.tom.rv2ide.lsp.models.DiagnosticItem
+import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
 import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.resources.R
+import io.github.rosemoe.sora.widget.CodeEditor
+import java.nio.file.Path
 import jdkx.lang.model.element.ElementKind
 import jdkx.lang.model.element.ExecutableElement
 import jdkx.lang.model.element.TypeElement
@@ -56,21 +66,48 @@ class AddThrowsAction : BaseJavaCodeAction() {
 
   override fun prepare(data: ActionData) {
     super.prepare(data)
-
     if (!visible || !data.hasRequiredData(DiagnosticItem::class.java)) {
       markInvisible()
       return
     }
-
-    val diagnostic = data[DiagnosticItem::class.java]!!
-    if (diagnosticCode != diagnostic.code) {
-      markInvisible()
+    val item = data[DiagnosticItem::class.java]!!
+    val target = JavaUnhandledExceptionDiagnostic.from(item)
+    if (target != null) {
+      val identity = data[DocumentSnapshotIdentity::class.java]
+      val editor = data[CodeEditor::class.java]
+      val file = data.requirePath().normalize()
+      val snapshot = FileManager.getActiveDocumentSnapshot(file)
+      if (identity == null || editor == null || identity.file.normalize() != file ||
+          target.file.normalize() != file || snapshot == null || identity.version != target.documentVersion ||
+          identity.revision != target.documentRevision || snapshot.version != target.documentVersion ||
+          snapshot.revision != target.documentRevision) {
+        markInvisible()
+        return
+      }
+      enabled = JavaPsiServiceInterop.isAvailable()
       return
     }
+    if (item.source == JavaUnhandledExceptionDiagnostic.CODESERVER_SOURCE ||
+        item.code != diagnosticCode) markInvisible()
   }
 
   override suspend fun execAction(data: ActionData): Any {
-    val diagnostic = data[DiagnosticItem::class.java]!!
+    val item = data[DiagnosticItem::class.java] ?: return EmptyResult
+    if (item.source == JavaUnhandledExceptionDiagnostic.CODESERVER_SOURCE) {
+      val target = JavaUnhandledExceptionDiagnostic.from(item) ?: return EmptyResult
+      val identity = data[DocumentSnapshotIdentity::class.java] ?: return EmptyResult
+      val file = data.requirePath().normalize()
+      val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return EmptyResult
+      if (identity.file.normalize() != file || target.file.normalize() != file ||
+          identity.version != target.documentVersion || identity.revision != target.documentRevision ||
+          snapshot.version != target.documentVersion || snapshot.revision != target.documentRevision) return EmptyResult
+      val edits = JavaPsiServiceInterop.addUnhandledExceptions(
+          JavaPsiAddUnhandledExceptionsParams(target, ICancelChecker.NOOP),
+      ) ?: return EmptyResult
+      return PsiResult(file, target.documentVersion, target.documentRevision, edits)
+    }
+    if (item.code != diagnosticCode) return EmptyResult
+    val diagnostic = item
     val compiler =
         JavaCompilerProvider.get(
             IProjectManager.getInstance()
@@ -94,13 +131,54 @@ class AddThrowsAction : BaseJavaCodeAction() {
   }
 
   override fun postExec(data: ActionData, result: Any) {
-    if (result !is AddException) {
+    if (result is AddException) {
+      performCodeAction(data, result)
       return
     }
-
-    performCodeAction(data, result)
+    if (result !is PsiResult) return
+    val editor = data[CodeEditor::class.java] ?: return
+    val identity = data[DocumentSnapshotIdentity::class.java] ?: return
+    if (!isCurrent(editor, result, identity) || result.edits.isEmpty() || result.edits.any {
+          it.file.normalize() != result.file || it.documentVersion != result.version ||
+              it.documentRevision != result.revision || it.startLine != it.endLine ||
+              it.startColumn != it.endColumn
+        }) return
+    val text = editor.text
+    text.beginBatchEdit()
+    try {
+      for (edit in result.edits.sortedWith(
+          compareByDescending<JavaPsiTextEdit> { it.startLine }.thenByDescending { it.startColumn },
+      )) text.insert(edit.startLine, edit.startColumn, edit.newText)
+    } finally {
+      text.endBatchEdit()
+    }
+    editor.formatCodeAsync()
   }
 
+  private fun isCurrent(
+      editor: CodeEditor,
+      result: PsiResult,
+      identity: DocumentSnapshotIdentity,
+  ): Boolean {
+    if (editor.isReleased ||
+        (editor as? IEditor)?.file?.toPath()?.normalize() != result.file ||
+        identity.file.normalize() != result.file || identity.version != result.version ||
+        identity.revision != result.revision) return false
+    val arguments = editor.extraArguments
+    if (arguments.getInt(IEditor.KEY_DOCUMENT_VERSION, -1) != result.version ||
+        arguments.getLong(IEditor.KEY_DOCUMENT_REVISION, -1L) != result.revision) return false
+    val snapshot = FileManager.getActiveDocumentSnapshot(result.file) ?: return false
+    return snapshot.version == result.version && snapshot.revision == result.revision
+  }
+
+  private class PsiResult(
+      val file: Path,
+      val version: Int,
+      val revision: Long,
+      val edits: List<JavaPsiTextEdit>,
+  )
+
+  private object EmptyResult
 
   private fun findUnhandledExceptionType(
       task: com.tom.rv2ide.language.services.java.compiler.CompileTask,

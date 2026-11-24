@@ -358,8 +358,6 @@
   <string name="idepref_general_themeSelector_summary">Wählen Sie ein Theme für AndroidIDE aus (erfordert Neustart).</string>
   <string name="idepref_general_projectConfig">Projektkonfiguration</string>
   <string name="msg_app_launch_failed">Launch failed. Install the application first.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Diagnostik aktiviert</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(EXPERIMENTELL) Sollen die Java-Quellcodedateien auf Fehler analysiert werden oder nicht.</string>
   <string name="title_reload_color_schemes">Farbschemen neu laden</string>
   <string name="msg_dir_picker_failed">Fehler beim Starten der Verzeichnisauswahl : %1$s</string>
   <string name="msg_tooling_server_unavailable">Tooling API Server ist nicht verfügbar. Überprüfen Sie die Build-Ausgabe und IDE-Logs auf Fehler.</string>

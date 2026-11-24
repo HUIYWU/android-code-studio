@@ -97,7 +97,6 @@ android {
   }
   
   lint {
-    abortOnError = false
     disable.addAll(arrayOf("VectorPath", "NestedWeights", "ContentDescription", "SmallSp"))
   }
 

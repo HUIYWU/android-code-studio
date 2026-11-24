@@ -12,7 +12,6 @@ import com.tom.rv2ide.lsp.models.CompletionParams
 import com.tom.rv2ide.lsp.models.InsertTextFormat
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.MethodCompletionData
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Files
 import java.nio.file.Path
@@ -117,7 +116,7 @@ class JavaPsiImportCompletionCapabilityTest {
   }
 
   @Test
-  fun kotlinImportsHonorRecognitionAndTheActiveDocumentStamp() {
+  fun kotlinImportsHonorTheActiveDocumentStamp() {
     withWorkspace {
       val path = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java")
       val pkg = "com.tom.rv2ide.testing.kotlinfixture.library"
@@ -129,38 +128,29 @@ class JavaPsiImportCompletionCapabilityTest {
           import static $pkg.InteropOverloads.Nes;
           class JavaInterop {}
       """.trimIndent()
-      val previous = JavaPreferences.isJavaKotlinRecognitionEnabled
-      try {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = true
-        openDocument(path, content, version = 1, revision = 71L)
-        withRuntime(workspace) {
-          val module = requireNotNull(workspace.findModuleForFile(path))
-          fun complete(request: CompletionParams) = runAnalysis { JavaPsiServiceInterop.complete(request, module, false) }
+      openDocument(path, content, version = 1, revision = 71L)
+      withRuntime(workspace) {
+        val module = requireNotNull(workspace.findModuleForFile(path))
+        fun complete(request: CompletionParams) = runAnalysis { JavaPsiServiceInterop.complete(request, module, false) }
 
-          val type = requireNotNull(complete(params(path, content, "import $pkg.InteropO")))
-              .items.single { it.ideLabel == "InteropOverloads" }
-          assertEquals("$pkg.InteropOverloads", (type.data as ClassCompletionData).className)
-          val request = params(path, content, "InteropOverloads.TO")
-          assertTrue(requireNotNull(complete(request)).items.any { it.ideLabel == "TOKEN" })
-          val method = requireNotNull(complete(params(path, content, "LibraryApiKt.libraryEx")))
-              .items.single { it.ideLabel == "libraryExtension" }
-          assertEquals("libraryExtension", method.insertText)
-          val nested = requireNotNull(complete(params(path, content, "InteropOverloads.Nes")))
-              .items.single { it.ideLabel == "Nested" }
-          assertEquals("$pkg.InteropOverloads\$Nested", (nested.data as ClassCompletionData).flatName)
+        val type = requireNotNull(complete(params(path, content, "import $pkg.InteropO")))
+            .items.single { it.ideLabel == "InteropOverloads" }
+        assertEquals("$pkg.InteropOverloads", (type.data as ClassCompletionData).className)
+        assertTrue(requireNotNull(complete(params(path, content, "InteropOverloads.TO"))).items.any { it.ideLabel == "TOKEN" })
+        val method = requireNotNull(complete(params(path, content, "LibraryApiKt.libraryEx")))
+            .items.single { it.ideLabel == "libraryExtension" }
+        assertEquals("libraryExtension", method.insertText)
+        val nested = requireNotNull(complete(params(path, content, "InteropOverloads.Nes")))
+            .items.single { it.ideLabel == "Nested" }
+        assertEquals("$pkg.InteropOverloads\$Nested", (nested.data as ClassCompletionData).flatName)
 
-          JavaPreferences.isJavaKotlinRecognitionEnabled = false
-          assertTrue(requireNotNull(complete(request)).items.isEmpty())
-          val stale = params(path, content, "InteropOverloads.TO").apply { documentRevision = 70L }
-          assertNull(complete(stale))
-          val mismatched = params(path, content, "InteropOverloads.TO").apply { this.content = "" }
-          assertTrue(requireNotNull(complete(mismatched)).items.isEmpty())
-          val cancelled = params(path, content, "InteropOverloads.TO", ICancelChecker.CANCELLED)
-          val error = assertThrows(CompletionException::class.java) { complete(cancelled) }
-          assertTrue(error.cause is CancellationException)
-        }
-      } finally {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = previous
+        val stale = params(path, content, "InteropOverloads.TO").apply { documentRevision = 70L }
+        assertNull(complete(stale))
+        val mismatched = params(path, content, "InteropOverloads.TO").apply { this.content = "" }
+        assertTrue(requireNotNull(complete(mismatched)).items.isEmpty())
+        val cancelled = params(path, content, "InteropOverloads.TO", ICancelChecker.CANCELLED)
+        val error = assertThrows(CompletionException::class.java) { complete(cancelled) }
+        assertTrue(error.cause is CancellationException)
       }
     }
   }

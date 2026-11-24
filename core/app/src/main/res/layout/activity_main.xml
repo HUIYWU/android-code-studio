@@ -24,7 +24,7 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize">
         
-        <include layout="@layout/toolbar_title_with_hat" />
+        <include layout="@layout/toolbar_title" />
         
     </com.google.android.material.appbar.MaterialToolbar>
 

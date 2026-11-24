@@ -4,7 +4,6 @@ import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.lsp.models.DefinitionParams
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.models.Location
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
 import java.nio.file.Path
@@ -19,7 +18,6 @@ object KotlinSourceNavigation {
 
   @JvmStatic
   fun findTarget(params: DefinitionParams, cancelChecker: ICancelChecker): List<Location> {
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled) return emptyList()
     val position = params.position
     if (position.line < 0 || position.column < 0) return emptyList()
     return JavaPsiInterop.kotlinDefinition(

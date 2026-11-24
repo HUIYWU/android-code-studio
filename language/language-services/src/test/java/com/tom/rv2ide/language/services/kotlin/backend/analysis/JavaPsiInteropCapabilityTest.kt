@@ -17,7 +17,6 @@ import com.tom.rv2ide.language.services.interop.KotlinSourceResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.LiveAnalysisEnvironment
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.scheduler.AnalysisApiGuard
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaFileType
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
@@ -346,7 +345,6 @@ class JavaPsiInteropCapabilityTest {
   @Test
   fun kotlinSourceHoverStillUsesTheKotlinSemanticHoverBridge() {
     KotlinAnalysisTestSupport.withWorkspace {
-      val previousRecognition = JavaPreferences.isJavaKotlinRecognitionEnabled
       val javaPath = KotlinAnalysisTestSupport.fixturePath(
           "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaInterop.java",
       )
@@ -357,7 +355,6 @@ class JavaPsiInteropCapabilityTest {
           "app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/KotlinHoverCaller.java",
       )
       try {
-        JavaPreferences.isJavaKotlinRecognitionEnabled = true
         val javaContent = String(Files.readAllBytes(javaPath), Charsets.UTF_8)
         val kotlinContent = """
             package com.tom.rv2ide.testing.kotlinfixture.app
@@ -406,7 +403,6 @@ class JavaPsiInteropCapabilityTest {
         closeDocument(kotlinPath)
         closeDocument(callerPath)
         Files.deleteIfExists(callerPath)
-        JavaPreferences.isJavaKotlinRecognitionEnabled = previousRecognition
       }
     }
   }
@@ -1133,46 +1129,31 @@ class JavaPsiInteropCapabilityTest {
           )
       val module = requireNotNull(workspace.findModuleForFile(consumerFile, checkExistance = true))
       KotlinAnalysisTestSupport.withRuntime(workspace) {
-        val previous = JavaPreferences.isJavaKotlinRecognitionEnabled
         val prefix = "com.tom.rv2ide.testing.kotlinfixture"
-        try {
-          JavaPreferences.isJavaKotlinRecognitionEnabled = true
-          val enabled =
-              KotlinAnalysisTestSupport.runAnalysis {
-                JavaCompilerService(module).publicTopLevelTypes()
-              }
-          assertTrue(
-              "Java compiler must expose the module's own Kotlin types; hasAppConsumer=${enabled.contains("$prefix.app.AppConsumer")}",
-              enabled.contains("$prefix.app.AppConsumer"),
-          )
-          assertTrue(
-              "Java compiler must expose Kotlin types from compile dependencies; hasLibraryApi=${enabled.contains("$prefix.library.LibraryApi")}",
-              enabled.contains("$prefix.library.LibraryApi"),
-          )
-          assertTrue(
-              "Java compiler must expose Kotlin file facades from dependencies; hasTypeAliasesKt=${enabled.contains("$prefix.library.TypeAliasesKt")}",
-              enabled.contains("$prefix.library.TypeAliasesKt"),
-          )
-          assertFalse(
-              "Java compiler must not expose Kotlin typealiases; hasLibraryAlias=${enabled.contains("$prefix.library.LibraryAlias")}",
-              enabled.contains("$prefix.library.LibraryAlias"),
-          )
-          assertFalse(
-              "Java compiler must not expose private-only Kotlin facades; hasPrivateOnlyKt=${enabled.contains("$prefix.library.PrivateOnlyKt")}",
-              enabled.contains("$prefix.library.PrivateOnlyKt"),
-          )
-          JavaPreferences.isJavaKotlinRecognitionEnabled = false
-          val disabled =
-              KotlinAnalysisTestSupport.runAnalysis {
-                JavaCompilerService(module).publicTopLevelTypes()
-              }
-          assertFalse(
-              "Kotlin source types must disappear when recognition is disabled; hasLibraryApi=${disabled.contains("$prefix.library.LibraryApi")}",
-              disabled.contains("$prefix.library.LibraryApi"),
-          )
-        } finally {
-          JavaPreferences.isJavaKotlinRecognitionEnabled = previous
-        }
+        val enabled =
+            KotlinAnalysisTestSupport.runAnalysis {
+              JavaCompilerService(module).publicTopLevelTypes()
+            }
+        assertTrue(
+            "Java compiler must expose the module's own Kotlin types; hasAppConsumer=${enabled.contains("$prefix.app.AppConsumer")}",
+            enabled.contains("$prefix.app.AppConsumer"),
+        )
+        assertTrue(
+            "Java compiler must expose Kotlin types from compile dependencies; hasLibraryApi=${enabled.contains("$prefix.library.LibraryApi")}",
+            enabled.contains("$prefix.library.LibraryApi"),
+        )
+        assertTrue(
+            "Java compiler must expose Kotlin file facades from dependencies; hasTypeAliasesKt=${enabled.contains("$prefix.library.TypeAliasesKt")}",
+            enabled.contains("$prefix.library.TypeAliasesKt"),
+        )
+        assertFalse(
+            "Java compiler must not expose Kotlin typealiases; hasLibraryAlias=${enabled.contains("$prefix.library.LibraryAlias")}",
+            enabled.contains("$prefix.library.LibraryAlias"),
+        )
+        assertFalse(
+            "Java compiler must not expose private-only Kotlin facades; hasPrivateOnlyKt=${enabled.contains("$prefix.library.PrivateOnlyKt")}",
+            enabled.contains("$prefix.library.PrivateOnlyKt"),
+        )
       }
     }
   }
@@ -1359,23 +1340,17 @@ class JavaPsiInteropCapabilityTest {
       cancelChecker: ICancelChecker,
   ): com.tom.rv2ide.lsp.models.SignatureHelp? {
     val snapshot = requireNotNull(com.tom.rv2ide.projects.FileManager.getActiveDocumentSnapshot(file))
-    val previousRecognition = JavaPreferences.isJavaKotlinRecognitionEnabled
-    try {
-      JavaPreferences.isJavaKotlinRecognitionEnabled = true
-      return JavaPsiServiceInterop.signatureHelp(
-          com.tom.rv2ide.lsp.models.SignatureHelpParams(
-              file,
-              com.tom.rv2ide.lsp.models.LineIndex.from(snapshot.content).indexToPosition(offset),
-              snapshot.content,
-              cancelChecker,
-          ).apply {
-            documentVersion = snapshot.version
-            documentRevision = snapshot.revision
-          },
-      )
-    } finally {
-      JavaPreferences.isJavaKotlinRecognitionEnabled = previousRecognition
-    }
+    return JavaPsiServiceInterop.signatureHelp(
+        com.tom.rv2ide.lsp.models.SignatureHelpParams(
+            file,
+            com.tom.rv2ide.lsp.models.LineIndex.from(snapshot.content).indexToPosition(offset),
+            snapshot.content,
+            cancelChecker,
+        ).apply {
+          documentVersion = snapshot.version
+          documentRevision = snapshot.revision
+        },
+    )
   }
 }
 

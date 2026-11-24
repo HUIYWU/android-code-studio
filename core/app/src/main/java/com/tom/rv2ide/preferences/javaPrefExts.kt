@@ -18,7 +18,6 @@
 package com.tom.rv2ide.preferences
 
 import androidx.preference.Preference
-import com.tom.rv2ide.R
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.compiler.SourceFileManager
 import com.tom.rv2ide.language.services.java.kotlin.KotlinClassOutputProvider
@@ -36,8 +35,7 @@ internal class JavaCodeConfigurations(
 
   init {
     addPreference(GoogleCodeStyle())
-    addPreference(JavaDiagnosticsEnabled())
-    addPreference(JavaKotlinRecognitionEnabled())
+    addPreference(JavaModernDiagnosticsEnabled())
 
   }
 }
@@ -56,34 +54,22 @@ private class GoogleCodeStyle(
     )
 
 @Parcelize
-private class JavaDiagnosticsEnabled(
-    override val key: String = JavaPreferences.JAVA_DIAGNOSTICS_ENABLED,
-    override val title: Int = R.string.idepref_java_diagnosticEnabled_title,
-    override val summary: Int? = R.string.idepref_java_diagnosticsEnabled_summary,
+private class JavaModernDiagnosticsEnabled(
+    override val key: String = JavaPreferences.JAVA_MODERN_DIAGNOSTICS_ENABLED,
+    override val title: Int = string.idepref_java_modernDiagnosticsEnabled_title,
+    override val summary: Int? = string.idepref_java_modernDiagnosticsEnabled_summary,
     override val icon: Int? = drawable.ic_compilation_error,
 ) :
     SwitchPreference(
-        getValue = JavaPreferences::isJavaDiagnosticsEnabled::get,
-        setValue = JavaPreferences::isJavaDiagnosticsEnabled::set,
-    )
-
-@Parcelize
-private class JavaKotlinRecognitionEnabled(
-    override val key: String = JavaPreferences.JAVA_KOTLIN_RECOGNITION_ENABLED,
-    override val title: Int = string.idepref_java_kotlinRecognitionEnabled_title,
-    override val summary: Int? = string.idepref_java_kotlinRecognitionEnabled_summary,
-    override val icon: Int? = drawable.ic_compilation_error,
-) :
-    SwitchPreference(
-        getValue = JavaPreferences::isJavaKotlinRecognitionEnabled::get,
-        setValue = JavaPreferences::isJavaKotlinRecognitionEnabled::set,
+        getValue = JavaPreferences::isModernDiagnosticsEnabled::get,
+        setValue = JavaPreferences::isModernDiagnosticsEnabled::set,
     ) {
   override fun onPreferenceChanged(preference: Preference, newValue: Any?): Boolean {
-    val enabled = newValue as? Boolean ?: JavaPreferences.isJavaKotlinRecognitionEnabled
-    JavaPreferences.isJavaKotlinRecognitionEnabled = enabled
+    val enabled = newValue as? Boolean ?: JavaPreferences.isModernDiagnosticsEnabled
+    JavaPreferences.isModernDiagnosticsEnabled = enabled
 
     // CLASS_PATH is fixed when SourceFileManager is created. Recreate Java analysis state so the
-    // next request observes the newly enabled/disabled Kotlin source and class-output bridges.
+    // next request observes the selected diagnostics backend.
     JavaCompilerProvider.getInstance().destroy()
     SourceFileManager.clearCache()
     KotlinClassOutputProvider.clearCache()

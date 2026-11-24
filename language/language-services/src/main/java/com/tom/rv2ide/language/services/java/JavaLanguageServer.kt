@@ -53,7 +53,6 @@ import com.tom.rv2ide.language.services.java.diagnostics.DebounceTimer
 import com.tom.rv2ide.language.services.java.semantic.JavaModuleScope
 import com.tom.rv2ide.language.services.java.semantic.JavaModuleScopes
 import com.tom.rv2ide.lsp.api.CompletionCancellation
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.language.services.java.utils.CancelChecker.Companion.isCancelled
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.SharedAnalysisWorkspaceOwner
@@ -962,9 +961,6 @@ class JavaLanguageServer : ILanguageServer {
     }
   }
   private fun invalidateKotlinSourceDependents(kotlinFile: Path) {
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled) {
-      return
-    }
     diagnosticsAnalyzer.cancel()
     diagnosticsAnalyzer.clear()
     val workspace = getInstance().getWorkspace()

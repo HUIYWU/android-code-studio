@@ -358,8 +358,6 @@
   <string name="idepref_general_themeSelector_summary">Select a theme for AndroidIDE (requires restart).</string>
   <string name="idepref_general_projectConfig">Project configuration</string>
   <string name="msg_app_launch_failed">Launch failed. Install the application first.</string>
-  <string name="idepref_java_diagnosticEnabled_title">Diagnósticos habilitados</string>
-  <string name="idepref_java_diagnosticsEnabled_summary">(EXPERIMENTAL) Whether the Java source files should be analyzed for errors or not.</string>
   <string name="title_reload_color_schemes">Recargar esquemas de color</string>
   <string name="msg_dir_picker_failed">No se pudo iniciar el selector de directorios: %1$s</string>
   <string name="msg_tooling_server_unavailable">La herramienta de servidor API no está disponible. Compruebe la salida de compilación y los registros de IDE en busca de errores.</string>

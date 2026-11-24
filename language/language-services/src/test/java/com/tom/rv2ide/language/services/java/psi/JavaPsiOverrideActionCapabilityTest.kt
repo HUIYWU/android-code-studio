@@ -79,11 +79,10 @@ class JavaPsiOverrideActionCapabilityTest {
               source: String = content,
               version: Int = 1,
               revision: Long = 701L,
-              recognizeKotlin: Boolean = false,
               checker: ICancelChecker = ICancelChecker.NOOP,
           ) = runAnalysis {
             JavaPsiServiceInterop.overrideMethods(
-                JavaPsiOverrideMethodsParams(path, range(source, marker), version, revision, recognizeKotlin, checker),
+                JavaPsiOverrideMethodsParams(path, range(source, marker), version, revision, checker),
             )
           }
           val candidates = requireNotNull(methods("class Child extends Parent<String>"))
@@ -108,7 +107,7 @@ class JavaPsiOverrideActionCapabilityTest {
           ) = requireNotNull(runAnalysis {
             JavaPsiServiceInterop.generateOverrides(
                 JavaPsiGenerateOverridesParams(
-                    path, range(source, marker), ids, version, revision, candidates.recognizeKotlin,
+                    path, range(source, marker), ids, version, revision,
                     2, useSoftTabs, checker,
                 ),
             )
@@ -210,7 +209,7 @@ class JavaPsiOverrideActionCapabilityTest {
             JavaPsiServiceInterop.generateOverrides(
                 JavaPsiGenerateOverridesParams(
                     path, range(content, "class Child extends Parent<String>"), setOf(echo.id, convert.id),
-                    1, 701L, false, 2, true, ICancelChecker.NOOP,
+                    1, 701L, 2, true, ICancelChecker.NOOP,
                 ),
             )
           })
@@ -224,7 +223,7 @@ class JavaPsiOverrideActionCapabilityTest {
               JavaPsiServiceInterop.generateOverrides(
                   JavaPsiGenerateOverridesParams(
                       path, range(content, "class Child extends Parent<String>"), setOf(refreshedEcho.id),
-                      2, 702L, false, 2, true, ICancelChecker.CANCELLED,
+                      2, 702L, 2, true, ICancelChecker.CANCELLED,
                   ),
               )
             }

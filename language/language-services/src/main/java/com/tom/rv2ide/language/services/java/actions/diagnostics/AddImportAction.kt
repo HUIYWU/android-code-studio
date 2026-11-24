@@ -24,16 +24,26 @@ import com.tom.rv2ide.actions.newDialogBuilder
 import com.tom.rv2ide.actions.requireFile
 import com.tom.rv2ide.actions.requirePath
 import com.tom.rv2ide.common.logging.IdeLogConfig
+import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.language.compiler.javac.util.JavaDiagnosticUtils
 import com.tom.rv2ide.language.services.java.JavaCompilerProvider
 import com.tom.rv2ide.language.services.java.actions.BaseJavaCodeAction
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnresolvedTypeDiagnostic
+import com.tom.rv2ide.language.services.java.interop.JavaPsiImportCandidate
+import com.tom.rv2ide.language.services.java.interop.JavaPsiResolveImportCandidatesParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode
 import com.tom.rv2ide.language.services.java.rewrite.AddImport
 import com.tom.rv2ide.language.services.java.rewrite.Rewrite
 import com.tom.rv2ide.lsp.models.CodeActionItem
 import com.tom.rv2ide.lsp.models.DiagnosticItem
+import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
 import com.tom.rv2ide.resources.R
+import io.github.rosemoe.sora.widget.CodeEditor
+import java.nio.file.Path
 import jdkx.tools.Diagnostic
 import jdkx.tools.JavaFileObject
 import org.slf4j.LoggerFactory
@@ -61,6 +71,19 @@ class AddImportAction : BaseJavaCodeAction() {
     }
 
     val diagnostic = data.get(DiagnosticItem::class.java)!!
+    val target = JavaUnresolvedTypeDiagnostic.from(diagnostic)
+    if (target != null) {
+      val identity = data[DocumentSnapshotIdentity::class.java]
+      val editor = data[CodeEditor::class.java]
+      val file = data.requirePath().normalize()
+      if (identity == null || editor == null || target.file.normalize() != file ||
+          !isCurrent(editor, file, target.documentVersion, target.documentRevision, identity)) {
+        markInvisible()
+        return
+      }
+      enabled = JavaPsiServiceInterop.isAvailable()
+      return
+    }
     if (diagnosticCode != diagnostic.code || diagnostic.extra !is Diagnostic<*>) {
       markInvisible()
       return
@@ -93,10 +116,28 @@ class AddImportAction : BaseJavaCodeAction() {
   }
 
   override suspend fun execAction(data: ActionData): Any {
+    val item = data[DiagnosticItem::class.java] ?: return EmptyResult
+    val target = JavaUnresolvedTypeDiagnostic.from(item)
+    if (target != null) {
+      val identity = data[DocumentSnapshotIdentity::class.java] ?: return EmptyResult
+      val file = data.requirePath().normalize()
+      val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return EmptyResult
+      if (identity.file.normalize() != file || target.file.normalize() != file ||
+          identity.version != target.documentVersion || identity.revision != target.documentRevision ||
+          snapshot.version != target.documentVersion || snapshot.revision != target.documentRevision) return EmptyResult
+      val module = IProjectManager.getInstance().getWorkspace()?.findModuleForFile(data.requireFile(), false)
+      val candidates = JavaPsiServiceInterop.resolveImportCandidates(
+          JavaPsiResolveImportCandidatesParams(
+              target, module, ICancelChecker.NOOP,
+          ),
+      ) ?: return EmptyResult
+      return ImportResult(file, target.documentVersion, target.documentRevision, candidates)
+    }
+    if (item.code != diagnosticCode || item.extra !is Diagnostic<*>) return EmptyResult
     @Suppress("UNCHECKED_CAST")
     val diagnostic =
         JavaDiagnosticUtils.asUnwrapper(
-            data.get(DiagnosticItem::class.java)!!.extra as Diagnostic<out JavaFileObject>
+            item.extra as Diagnostic<out JavaFileObject>
         )!!
     val file = data.requireFile()
     val module =
@@ -105,39 +146,39 @@ class AddImportAction : BaseJavaCodeAction() {
               markInvisible()
               return Any()
             }
-
     val compiler = JavaCompilerProvider.get(module)
-
     val titles = mutableListOf<String>()
     val rewrites = mutableListOf<AddImport>()
     val simpleName = diagnostic.d.args[1]
     for (name in compiler.publicTopLevelTypes()) {
-      var klass = name
-      if (klass.contains('/')) {
-        klass = klass.replace('/', '.')
-      }
-
-      if (!klass.endsWith(".$simpleName")) {
-        continue
-      }
-
+      val klass = name.replace('/', '.')
+      if (!klass.endsWith(".$simpleName")) continue
       titles.add(klass)
       rewrites.add(AddImport(data.requirePath(), klass))
     }
-
-    if (rewrites.isEmpty()) {
-      return false
-    }
-
+    if (rewrites.isEmpty()) return false
     return Pair(titles, rewrites)
   }
 
   @Suppress("UNCHECKED_CAST")
   override fun postExec(data: ActionData, result: Any) {
-
-    if (result !is Pair<*, *>) {
+    if (result === EmptyResult) return
+    if (result is ImportResult) {
+      if (result.candidates.isEmpty()) return
+      if (result.candidates.size == 1) {
+        applyImportCandidate(data, result, result.candidates.single())
+        return
+      }
+      val builder = newDialogBuilder(data)
+      builder.setTitle(label)
+      builder.setItems(result.candidates.map { it.qualifiedName }.toTypedArray()) { dialog, which ->
+        dialog.dismiss()
+        applyImportCandidate(data, result, result.candidates[which])
+      }
+      builder.show()
       return
     }
+    if (result !is Pair<*, *>) return
 
     val file = data.requireFile()
     val module =
@@ -181,4 +222,51 @@ class AddImportAction : BaseJavaCodeAction() {
       }
     }
   }
+
+  private fun applyImportCandidate(
+      data: ActionData,
+      result: ImportResult,
+      candidate: JavaPsiImportCandidate,
+  ) {
+    val editor = data[CodeEditor::class.java] ?: return
+    val identity = data[DocumentSnapshotIdentity::class.java] ?: return
+    val edit = candidate.edit
+    if (!isCurrent(editor, result.file, result.version, result.revision, identity) ||
+        edit.file.normalize() != result.file ||
+        edit.documentVersion != result.version || edit.documentRevision != result.revision ||
+        edit.startLine != edit.endLine || edit.startColumn != edit.endColumn) return
+    val text = editor.text
+    text.beginBatchEdit()
+    try {
+      text.insert(edit.startLine, edit.startColumn, edit.newText)
+    } finally {
+      text.endBatchEdit()
+    }
+    editor.formatCodeAsync()
+  }
+
+  private fun isCurrent(
+      editor: CodeEditor,
+      file: Path,
+      version: Int,
+      revision: Long,
+      identity: DocumentSnapshotIdentity,
+  ): Boolean {
+    if (editor.isReleased || (editor as? IEditor)?.file?.toPath()?.normalize() != file ||
+        identity.file.normalize() != file || identity.version != version || identity.revision != revision) return false
+    val arguments = editor.extraArguments
+    if (arguments.getInt(IEditor.KEY_DOCUMENT_VERSION, -1) != version ||
+        arguments.getLong(IEditor.KEY_DOCUMENT_REVISION, -1L) != revision) return false
+    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return false
+    return snapshot.version == version && snapshot.revision == revision
+  }
+
+  private class ImportResult(
+      val file: Path,
+      val version: Int,
+      val revision: Long,
+      val candidates: List<JavaPsiImportCandidate>,
+  )
+
+  private object EmptyResult
 }

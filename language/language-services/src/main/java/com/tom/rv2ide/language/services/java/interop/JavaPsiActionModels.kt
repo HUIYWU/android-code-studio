@@ -1,8 +1,12 @@
 package com.tom.rv2ide.language.services.java.interop
 
 import com.tom.rv2ide.language.services.java.diagnostics.JavaAbstractMethodsDiagnostic
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnhandledExceptionDiagnostic
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnresolvedTypeDiagnostic
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnusedThrowsDiagnostic
 import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.ModuleProject
 import java.nio.file.Path
 
 class JavaPsiFieldsParams(
@@ -113,7 +117,6 @@ class JavaPsiOverrideMethodsParams(
     @JvmField val selection: Range,
     @JvmField val documentVersion: Int,
     @JvmField val documentRevision: Long,
-    @JvmField val recognizeKotlin: Boolean,
     @JvmField val cancelChecker: ICancelChecker,
 )
 
@@ -131,7 +134,6 @@ data class JavaPsiOverrideMethodsResult(
     @JvmField val selectionStartColumn: Int,
     @JvmField val selectionEndLine: Int,
     @JvmField val selectionEndColumn: Int,
-    @JvmField val recognizeKotlin: Boolean,
 )
 
 class JavaPsiGenerateOverridesParams(
@@ -140,7 +142,6 @@ class JavaPsiGenerateOverridesParams(
     @JvmField val selectedMethodIds: Set<String>,
     @JvmField val documentVersion: Int,
     @JvmField val documentRevision: Long,
-    @JvmField val recognizeKotlin: Boolean,
     @JvmField val indentationTabSize: Int,
     @JvmField val useSoftTabs: Boolean,
     @JvmField val cancelChecker: ICancelChecker,
@@ -148,9 +149,27 @@ class JavaPsiGenerateOverridesParams(
 
 class JavaPsiImplementAbstractMethodsParams internal constructor(
     internal val diagnostic: JavaAbstractMethodsDiagnostic,
-    @JvmField val recognizeKotlin: Boolean,
     @JvmField val indentationTabSize: Int,
     @JvmField val useSoftTabs: Boolean,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+class JavaPsiAddUnhandledExceptionsParams internal constructor(
+    internal val diagnostic: JavaUnhandledExceptionDiagnostic,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+class JavaPsiRemoveUnusedThrowsParams internal constructor(
+    internal val diagnostic: JavaUnusedThrowsDiagnostic,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+
+data class JavaPsiImportCandidate(
+    @JvmField val qualifiedName: String,
+    @JvmField val edit: JavaPsiTextEdit,
+)
+
+class JavaPsiResolveImportCandidatesParams internal constructor(
+    internal val diagnostic: JavaUnresolvedTypeDiagnostic,
+    @JvmField val module: ModuleProject?,
     @JvmField val cancelChecker: ICancelChecker,
 )
 

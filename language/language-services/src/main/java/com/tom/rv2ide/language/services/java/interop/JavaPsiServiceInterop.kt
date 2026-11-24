@@ -30,6 +30,18 @@ interface JavaPsiServiceResolver {
       params: JavaPsiImplementAbstractMethodsParams,
   ): JavaPsiOverridesResult? = null
 
+  fun addUnhandledExceptions(
+      params: JavaPsiAddUnhandledExceptionsParams,
+  ): List<JavaPsiTextEdit>? = null
+
+  fun removeUnusedThrows(
+      params: JavaPsiRemoveUnusedThrowsParams,
+  ): JavaPsiTextEdit? = null
+
+  fun resolveImportCandidates(
+      params: JavaPsiResolveImportCandidatesParams,
+  ): List<JavaPsiImportCandidate>? = null
+
   fun expandSelection(params: ExpandSelectionParams): Range?
 
   fun definition(params: DefinitionParams): JavaPsiDefinitionTarget?
@@ -146,6 +158,36 @@ object JavaPsiServiceInterop {
     val current = state.get()
     val resolver = current.resolver ?: return null
     val result = resolver.implementAbstractMethods(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun addUnhandledExceptions(params: JavaPsiAddUnhandledExceptionsParams): List<JavaPsiTextEdit>? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.addUnhandledExceptions(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun removeUnusedThrows(params: JavaPsiRemoveUnusedThrowsParams): JavaPsiTextEdit? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.removeUnusedThrows(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun resolveImportCandidates(params: JavaPsiResolveImportCandidatesParams): List<JavaPsiImportCandidate>? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.resolveImportCandidates(params)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }

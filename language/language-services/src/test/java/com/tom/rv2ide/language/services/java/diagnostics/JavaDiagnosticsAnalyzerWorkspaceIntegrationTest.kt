@@ -20,6 +20,7 @@ import com.tom.rv2ide.language.services.java.semantic.JavaModuleScopes
 import com.tom.rv2ide.lsp.models.DiagnosticResult
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.lsp.testing.LspWorkspaceTestSupport
+import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.utils.FileProvider
 
 import kotlin.io.path.readText
@@ -94,27 +95,33 @@ class JavaDiagnosticsAnalyzerWorkspaceIntegrationTest {
             .normalize()
     val contents = file.readText()
 
-    LspWorkspaceTestSupport.withWorkspace {
-      openDocument(file, contents, version = 23, revision = 41L)
-      val module = requireNotNull(workspace.findModuleForFile(file, checkExistance = true))
-      val session = JavaModuleScopes.forModule(module)
-      val analyzer = JavaDiagnosticsAnalyzer()
+    val modernDiagnosticsEnabled = JavaPreferences.isModernDiagnosticsEnabled
+    JavaPreferences.isModernDiagnosticsEnabled = false
+    try {
+      LspWorkspaceTestSupport.withWorkspace {
+        openDocument(file, contents, version = 23, revision = 41L)
+        val module = requireNotNull(workspace.findModuleForFile(file, checkExistance = true))
+        val session = JavaModuleScopes.forModule(module)
+        val analyzer = JavaDiagnosticsAnalyzer()
 
-      val lease = session.beginForegroundSemantic()
-      try {
-        val yielded = analyzer.analyze(file)
-        assertSame("interactive work must make speculative diagnostics yield", DiagnosticResult.NO_UPDATE, yielded)
-        assertTrue("one yielded analysis must request exactly one later retry", analyzer.consumeYieldRetry(yielded))
-        assertFalse("the yielded retry token is one-shot", analyzer.consumeYieldRetry(yielded))
-      } finally {
-        lease.close()
+        val lease = session.beginForegroundSemantic()
+        try {
+          val yielded = analyzer.analyze(file)
+          assertSame("interactive work must make speculative diagnostics yield", DiagnosticResult.NO_UPDATE, yielded)
+          assertTrue("one yielded analysis must request exactly one later retry", analyzer.consumeYieldRetry(yielded))
+          assertFalse("the yielded retry token is one-shot", analyzer.consumeYieldRetry(yielded))
+        } finally {
+          lease.close()
+        }
+
+        val analyzed = analyzer.analyze(file)
+        assertFalse("released interactive lease must let analyzer enter real analysis", analyzed === DiagnosticResult.NO_UPDATE)
+        assertEquals(file, analyzed.file)
+        assertEquals(23, analyzed.documentVersion)
+        assertEquals(41L, analyzed.documentRevision)
       }
-
-      val analyzed = analyzer.analyze(file)
-      assertFalse("released interactive lease must let analyzer enter real analysis", analyzed === DiagnosticResult.NO_UPDATE)
-      assertEquals(file, analyzed.file)
-      assertEquals(23, analyzed.documentVersion)
-      assertEquals(41L, analyzed.documentRevision)
+    } finally {
+      JavaPreferences.isModernDiagnosticsEnabled = modernDiagnosticsEnabled
     }
   }
 }

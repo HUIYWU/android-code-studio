@@ -31,7 +31,6 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.preferences.internal.EditorPreferences
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
@@ -82,7 +81,6 @@ class ImplementAbstractMethodsAction : BaseJavaCodeAction() {
     }
     val params = JavaPsiImplementAbstractMethodsParams(
         target,
-        JavaPreferences.isJavaKotlinRecognitionEnabled,
         EditorPreferences.tabSize,
         EditorPreferences.useSoftTab,
         ICancelChecker.NOOP,

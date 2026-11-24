@@ -2,7 +2,6 @@ package com.tom.rv2ide.language.services.java.psi
 
 import com.tom.rv2ide.language.services.java.psi.JavaPsiCompletionItems.MethodGroup
 import com.tom.rv2ide.language.services.java.psi.JavaPsiCompletionItems.insertCall
-import com.tom.rv2ide.language.services.java.psi.JavaPsiCompletionItems.isJavaOwner
 import com.tom.rv2ide.language.services.java.psi.JavaPsiCompletionItems.keyword
 import com.tom.rv2ide.lsp.models.CompletionItem
 import com.tom.rv2ide.lsp.models.CompletionResult
@@ -36,7 +35,6 @@ internal object JavaPsiMemberCompletion {
   fun complete(
       file: PsiJavaFile,
       offset: Int,
-      recognizeKotlin: Boolean,
       cancelChecker: ICancelChecker,
   ): CompletionResult? {
     if (offset !in 1..file.textLength) return null
@@ -57,7 +55,6 @@ internal object JavaPsiMemberCompletion {
     }
     val qualifierType = (type as? PsiClassType)?.resolveGenerics()
     val owner = target as? PsiClass ?: qualifierType?.element ?: return CompletionResult.EMPTY
-    if (!recognizeKotlin && !isJavaOwner(owner)) return CompletionResult.EMPTY
     val accessClass = if (qualifier is PsiSuperExpression) null else owner
     val substitutors = HashMap<PsiClass, PsiSubstitutor>()
     fun substitutor(declaringClass: PsiClass): PsiSubstitutor =
@@ -74,7 +71,6 @@ internal object JavaPsiMemberCompletion {
         if (method.isConstructor || method.hasModifierProperty(PsiModifier.STATIC) != staticContext) continue
         val declaringClass = method.containingClass ?: continue
         if (staticContext && declaringClass.isInterface && declaringClass != owner) continue
-        if (!recognizeKotlin && !isJavaOwner(declaringClass)) continue
         val name = method.name
         if (name.startsWith('<')) continue
         val match = methods[name]?.match ?: CompletionItem.matchLevel(name, context.prefix)
@@ -94,7 +90,7 @@ internal object JavaPsiMemberCompletion {
         val name = field.name
         if (!fieldNames.add(name) || field.hasModifierProperty(PsiModifier.STATIC) != staticContext) continue
         val match = CompletionItem.matchLevel(name, context.prefix)
-        if (match == MatchLevel.NO_MATCH || (!recognizeKotlin && !isJavaOwner(declaringClass)) ||
+        if (match == MatchLevel.NO_MATCH ||
             !PsiUtil.isAccessible(field, token, accessClass)) continue
         items += JavaPsiCompletionItems.field(field, declaringClass, substitutor(declaringClass), match)
       }
@@ -106,7 +102,7 @@ internal object JavaPsiMemberCompletion {
         val name = member.name ?: continue
         val match = CompletionItem.matchLevel(name, context.prefix)
         if (match == MatchLevel.NO_MATCH || !classNames.add(name)) continue
-        if (!recognizeKotlin && !isJavaOwner(member) || !PsiUtil.isAccessible(member, token, owner)) continue
+        if (!PsiUtil.isAccessible(member, token, owner)) continue
         if (context.construct && (member.hasModifierProperty(PsiModifier.STATIC) || member.isInterface ||
                 member.isEnum || member.isRecord)) continue
         items += JavaPsiCompletionItems.type(member, name, match).apply {

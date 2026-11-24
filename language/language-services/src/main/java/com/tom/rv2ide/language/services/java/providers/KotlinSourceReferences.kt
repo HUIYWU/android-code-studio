@@ -3,7 +3,6 @@ package com.tom.rv2ide.language.services.java.providers
 import com.tom.rv2ide.language.services.interop.JavaPsiInterop
 import com.tom.rv2ide.lsp.models.LineIndex
 import com.tom.rv2ide.lsp.models.ReferenceResult
-import com.tom.rv2ide.preferences.internal.JavaPreferences
 import com.tom.rv2ide.progress.ICancelChecker
 import com.tom.rv2ide.projects.FileManager
 import java.nio.file.Path
@@ -24,7 +23,6 @@ object KotlinSourceReferences {
       includeDeclaration: Boolean,
       cancelChecker: ICancelChecker,
   ): ReferenceResult? {
-    if (!JavaPreferences.isJavaKotlinRecognitionEnabled) return null
     if (zeroBasedLine < 0 || zeroBasedColumn < 0) return null
     val offset =
         LineIndex.from(FileManager.getDocumentContents(javaFile))

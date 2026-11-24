@@ -71,6 +71,9 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiTreeChangeListener
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaElementFinder
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.file.impl.JavaFileManager
+import org.jetbrains.kotlin.com.intellij.psi.search.PsiSearchHelper
+import org.jetbrains.kotlin.com.intellij.psi.search.searches.ReferencesSearch
+import org.jetbrains.kotlin.com.intellij.psi.stubs.StubIndex
 import org.jetbrains.kotlin.com.intellij.psi.SmartTypePointerManager
 import org.jetbrains.kotlin.com.intellij.psi.augment.PsiAugmentProvider
 import org.jetbrains.kotlin.com.intellij.psi.impl.RecordAugmentProvider
@@ -179,6 +182,8 @@ internal class LiveAnalysisServiceRegistrar(
     application.registerService(KotlinAnalysisPermissionOptions::class.java, AnalysisPermissionOptions::class.java)
     application.registerService(AsyncExecutionService::class.java, NoOpAsyncExecutionService::class.java)
     application.registerService(FileBasedIndex::class.java, LiveFileBasedIndex())
+    // Java inspections query this index when checking inherited methods for redundant throws.
+    application.registerService(StubIndex::class.java, LiveStubIndex())
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
         ImplicitClassSearch.EP_NAME.name,
@@ -217,6 +222,20 @@ internal class LiveAnalysisServiceRegistrar(
         System.identityHashCode(application),
         SuperMethodsSearch.EP_NAME.name,
         MethodSuperSearcher::class.java.name,
+    )
+    // The redundant-throws inspection resolves calls and catch coverage through this search EP.
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        ReferencesSearch.EP_NAME.name,
+        QueryExecutor::class.java,
+    )
+    application.extensionArea.getExtensionPoint(ReferencesSearch.EP_NAME)
+        .registerExtension(LiveJavaReferencesSearcher(), application)
+    KlsLogs.info(
+        "Kotlin Analysis Java search extension registered: application={}, point={}, executor={}",
+        System.identityHashCode(application),
+        ReferencesSearch.EP_NAME.name,
+        LiveJavaReferencesSearcher::class.java.name,
     )
     // TODO(ACS-ANALYSIS-EXPERIMENT): Validate record synthetic fields, accessors, and canonical constructors on device.
     application.extensionArea.getExtensionPoint(PsiAugmentProvider.EP_NAME)
@@ -277,12 +296,17 @@ internal class LiveAnalysisServiceRegistrar(
     project.registerService(ModuleManager::class.java, projectFileIndex.moduleManager)
     val projectFiles = LiveProjectFiles(projectContext, sourceRegistry)
     project.registerService(LiveProjectFiles::class.java, projectFiles)
+    // Redundant-throws inspection uses this service to bound and execute live reference searches.
+    project.registerService(PsiSearchHelper::class.java, LivePsiSearchHelper(projectFiles))
     val directInheritorsIndex = LiveJavaDirectInheritorsIndex(project, projectFiles, sourceRegistry)
     project.registerService(LiveJavaDirectInheritorsIndex::class.java, directInheritorsIndex)
     val fileBasedIndex = FileBasedIndex.getInstance() as LiveFileBasedIndex
     fileBasedIndex.bind(project, projectFiles)
+    val stubIndex = StubIndex.getInstance() as LiveStubIndex
+    stubIndex.bind(project, projectFiles)
     Disposer.register(project, Disposable {
       fileBasedIndex.unbind(project)
+      stubIndex.unbind(project)
       directInheritorsIndex.close()
       projectFiles.close()
     })
