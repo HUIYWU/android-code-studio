@@ -71,6 +71,8 @@ interface KotlinBackendConnection {
 
   fun sendNotification(method: String, params: JsonObject)
 
+  fun sendNotificationAsync(method: String, params: JsonObject) = sendNotification(method, params)
+
   fun sendNotificationOrThrow(method: String, params: JsonObject)
   fun notifyFileCreated(path: java.nio.file.Path) = Unit
   fun notifyFileRemoved(path: java.nio.file.Path) = Unit

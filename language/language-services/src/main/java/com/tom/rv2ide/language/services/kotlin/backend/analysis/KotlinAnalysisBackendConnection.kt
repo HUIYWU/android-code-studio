@@ -272,6 +272,17 @@ class KotlinAnalysisBackendConnection internal constructor(
     }
   }
 
+  override fun sendNotificationAsync(method: String, params: JsonObject) {
+    requestScheduler.submit(
+        kind = AnalysisRequestKind.INDEXING,
+        cancelChecker = ICancelChecker.NOOP,
+        mutationPaths = notificationMutationPaths(method, params),
+        action = {
+          if (isReady) handleNotification(method, params)
+        },
+    )
+  }
+
   override fun sendNotificationOrThrow(method: String, params: JsonObject) {
     val handled = executeOnAnalysisQueue(mutationPaths = notificationMutationPaths(method, params)) {
       if (!isReady) return@executeOnAnalysisQueue false

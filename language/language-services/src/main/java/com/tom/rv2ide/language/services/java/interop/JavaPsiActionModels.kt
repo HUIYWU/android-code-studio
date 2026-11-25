@@ -2,6 +2,8 @@ package com.tom.rv2ide.language.services.java.interop
 
 import com.tom.rv2ide.language.services.java.diagnostics.JavaAbstractMethodsDiagnostic
 import com.tom.rv2ide.language.services.java.diagnostics.JavaUnhandledExceptionDiagnostic
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUncheckedWarningDiagnostic
+import com.tom.rv2ide.language.services.java.diagnostics.JavaUnresolvedMethodDiagnostic
 import com.tom.rv2ide.language.services.java.diagnostics.JavaUnresolvedTypeDiagnostic
 import com.tom.rv2ide.language.services.java.diagnostics.JavaUnusedThrowsDiagnostic
 import com.tom.rv2ide.models.Range
@@ -159,6 +161,17 @@ class JavaPsiAddUnhandledExceptionsParams internal constructor(
 )
 class JavaPsiRemoveUnusedThrowsParams internal constructor(
     internal val diagnostic: JavaUnusedThrowsDiagnostic,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+class JavaPsiUnresolvedMethodParams internal constructor(
+    internal val diagnostic: JavaUnresolvedMethodDiagnostic,
+    @JvmField val indentationTabSize: Int,
+    @JvmField val useSoftTabs: Boolean,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+
+class JavaPsiSuppressUncheckedWarningParams internal constructor(
+    internal val diagnostic: JavaUncheckedWarningDiagnostic,
     @JvmField val cancelChecker: ICancelChecker,
 )
 

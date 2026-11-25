@@ -22,8 +22,10 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectIn
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.UncheckedWarningLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
+
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.JavaErrorCollector
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaCompilationError
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaErrorHighlightType
@@ -35,14 +37,18 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiClass
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiElementVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiEnumConstant
+import org.jetbrains.kotlin.com.intellij.psi.PsiField
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiImplicitClass
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
+import org.jetbrains.kotlin.com.intellij.psi.PsiLocalVariable
+import org.jetbrains.kotlin.com.intellij.psi.PsiParameter
 import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiResourceListElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiMethod
 import org.jetbrains.kotlin.com.intellij.psi.PsiClassType
 import org.jetbrains.kotlin.com.intellij.psi.PsiLambdaExpression
+import org.jetbrains.kotlin.com.intellij.psi.PsiMethodCallExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiMethodReferenceExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiNewExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiTypeElement
@@ -73,13 +79,15 @@ internal object JavaPsiDiagnosticsCollector {
         SuspiciousArrayMethodCallInspection(),
         SafeVarargsHasNoEffectInspection(),
         SafeVarargsOnNonReifiableTypeInspection(),
+        UncheckedWarningLocalInspection(),
         RedundantThrowsDeclarationLocalInspection(),
     )
     val inspectionRuns = inspections.map { inspection ->
       val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
       val session = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
-      val visitor = InspectionEngine.createVisitor(inspection, holder, true, session)
-      inspection.inspectionStarted(session, true)
+      val onTheFly = inspection !is UncheckedWarningLocalInspection
+      val visitor = InspectionEngine.createVisitor(inspection, holder, onTheFly, session)
+      inspection.inspectionStarted(session, onTheFly)
       InspectionRun(inspection, holder, session, visitor)
     }
     try {
@@ -91,8 +99,22 @@ internal object JavaPsiDiagnosticsCollector {
             val rawRange = requireNotNull(element.textRange)
             result += toSyntaxDiagnostic(element, rawRange, lineIndex)
           }
-          collector.processElement(element)
-          super.visitElement(element)
+           collector.processElement(element)
+           if (element is PsiMethodCallExpression) {
+             unresolvedMethodTarget(element, path, documentVersion, documentRevision)?.let { target ->
+               result += DiagnosticItem(
+                   message = "Cannot resolve method '${target.methodName}'",
+                   code = JavaUnresolvedMethodDiagnostic.CODE,
+                   range = Range(
+                       lineIndex.indexToPosition(target.highlightStart),
+                       lineIndex.indexToPosition(target.highlightEnd),
+                   ),
+                   source = JavaUnresolvedMethodDiagnostic.SOURCE,
+                   severity = DiagnosticSeverity.ERROR,
+               ).also { it.extra = target }
+             }
+           }
+           super.visitElement(element)
         }
       })
     } finally {
@@ -118,6 +140,9 @@ internal object JavaPsiDiagnosticsCollector {
         )
         if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
           unusedThrowsTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+        } else if (run.tool.shortName == JavaUncheckedWarningDiagnostic.INSPECTION_SHORT_NAME &&
+            severity == DiagnosticSeverity.WARNING) {
+          uncheckedWarningTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
         }
         result += item
       }
@@ -224,6 +249,29 @@ internal object JavaPsiDiagnosticsCollector {
       }
     }
   }
+  private fun unresolvedMethodTarget(
+      call: PsiMethodCallExpression,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+  ): JavaUnresolvedMethodDiagnostic? {
+    val reference = call.methodExpression
+    if (reference.qualifierExpression != null || reference.resolve() != null) return null
+    val nameElement = reference.referenceNameElement ?: return null
+    val callRange = call.textRange ?: return null
+    val owner = PsiTreeUtil.getParentOfType(call, PsiClass::class.java, false) ?: return null
+    val ownerRange = owner.textRange ?: return null
+    if (callRange.startOffset < ownerRange.startOffset || callRange.endOffset > ownerRange.endOffset) return null
+    val methodName = reference.referenceName ?: return null
+    if (methodName.isEmpty()) return null
+    val nameRange = nameElement.textRange
+    return JavaUnresolvedMethodDiagnostic(
+        file.normalize(), documentVersion, documentRevision,
+        nameRange.startOffset, nameRange.endOffset, callRange.startOffset, callRange.endOffset,
+        ownerRange.startOffset, ownerRange.endOffset, methodName,
+    )
+  }
+
   private fun unresolvedTypeTarget(
       error: JavaCompilationError<*, *>,
       file: Path,
@@ -261,6 +309,62 @@ internal object JavaPsiDiagnosticsCollector {
         file.normalize(), documentVersion, documentRevision,
         highlightStart, highlightEnd, range.startOffset, range.endOffset, nameElement.text, name,
     )
+  }
+
+  private fun uncheckedWarningTarget(
+      anchor: PsiElement,
+      highlightRange: TextRange,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+  ): JavaUncheckedWarningDiagnostic? {
+    val containingFile = anchor.containingFile as? PsiJavaFile ?: return null
+    val owner = uncheckedOwner(anchor, highlightRange) ?: return null
+    val ownerRange = owner.textRange ?: return null
+    if (highlightRange.startOffset < ownerRange.startOffset ||
+        highlightRange.endOffset > ownerRange.endOffset ||
+        ownerRange.startOffset < 0 || ownerRange.endOffset > containingFile.textLength) return null
+    val kind = when (owner) {
+      is PsiClass -> JavaUncheckedWarningDiagnostic.OwnerKind.CLASS
+      is PsiMethod -> if (owner.isConstructor) {
+        JavaUncheckedWarningDiagnostic.OwnerKind.CONSTRUCTOR
+      } else {
+        JavaUncheckedWarningDiagnostic.OwnerKind.METHOD
+      }
+      is PsiField -> JavaUncheckedWarningDiagnostic.OwnerKind.FIELD
+      is PsiParameter -> JavaUncheckedWarningDiagnostic.OwnerKind.PARAMETER
+      is PsiLocalVariable -> JavaUncheckedWarningDiagnostic.OwnerKind.LOCAL_VARIABLE
+      else -> return null
+    }
+    return JavaUncheckedWarningDiagnostic(
+        file.normalize(), documentVersion, documentRevision,
+        highlightRange.startOffset, highlightRange.endOffset,
+        ownerRange.startOffset, ownerRange.endOffset, kind,
+    )
+  }
+
+  private fun uncheckedOwner(
+      anchor: PsiElement,
+      highlightRange: TextRange,
+  ): PsiElement? {
+    val containingFile = anchor.containingFile as? PsiJavaFile ?: return null
+    fun find(start: PsiElement?): PsiElement? {
+      var current = start
+      while (current != null && current.containingFile === containingFile) {
+        when (current) {
+          is PsiField, is PsiParameter, is PsiLocalVariable, is PsiMethod, is PsiClass -> return current
+        }
+        current = current.parent
+      }
+      return null
+    }
+    val fileRange = containingFile.textRange
+    if (highlightRange.startOffset >= fileRange.startOffset && highlightRange.endOffset <= fileRange.endOffset) {
+      find(anchor)?.let { return it }
+    }
+    if (highlightRange.startOffset !in 0 until containingFile.textLength) return null
+    val element = containingFile.findElementAt(highlightRange.startOffset) ?: return null
+    return find(element)
   }
 
   private fun unusedThrowsTarget(

@@ -161,7 +161,7 @@ class KotlinDocumentSync(
       documentRevisions.remove(uri)
       val params =
           JsonObject().apply { add("textDocument", JsonObject().apply { addProperty("uri", uri) }) }
-      connection.sendNotification("textDocument/didClose", params)
+      connection.sendNotificationAsync("textDocument/didClose", params)
     }
   }
 

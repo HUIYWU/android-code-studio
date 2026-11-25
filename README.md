@@ -27,7 +27,6 @@
 ## Features
 
 - [x] Gradle support
-- [x] JDK 11 & JDK 17 available
 - [x] Terminal with essential packages
 - [x] API information for classes and their members (since, removed, deprecated)
 - [x] Log reader (real-time logs for your app)

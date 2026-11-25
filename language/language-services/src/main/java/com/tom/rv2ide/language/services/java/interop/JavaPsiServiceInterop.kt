@@ -38,6 +38,14 @@ interface JavaPsiServiceResolver {
       params: JavaPsiRemoveUnusedThrowsParams,
   ): JavaPsiTextEdit? = null
 
+  fun createMissingMethod(
+      params: JavaPsiUnresolvedMethodParams,
+  ): JavaPsiTextEdit? = null
+
+  fun suppressUncheckedWarning(
+      params: JavaPsiSuppressUncheckedWarningParams,
+  ): JavaPsiTextEdit? = null
+
   fun resolveImportCandidates(
       params: JavaPsiResolveImportCandidatesParams,
   ): List<JavaPsiImportCandidate>? = null
@@ -178,6 +186,26 @@ object JavaPsiServiceInterop {
     val current = state.get()
     val resolver = current.resolver ?: return null
     val result = resolver.removeUnusedThrows(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun createMissingMethod(params: JavaPsiUnresolvedMethodParams): JavaPsiTextEdit? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.createMissingMethod(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun suppressUncheckedWarning(params: JavaPsiSuppressUncheckedWarningParams): JavaPsiTextEdit? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.suppressUncheckedWarning(params)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }

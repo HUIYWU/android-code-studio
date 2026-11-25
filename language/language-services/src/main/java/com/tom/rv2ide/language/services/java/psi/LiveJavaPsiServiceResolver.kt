@@ -19,6 +19,8 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiAddUnhandledExceptio
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImportCandidate
 import com.tom.rv2ide.language.services.java.interop.JavaPsiResolveImportCandidatesParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiRemoveUnusedThrowsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiSuppressUncheckedWarningParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiUnresolvedMethodParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
 import com.tom.rv2ide.language.services.java.interop.JavaPsiOverrideMethodsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiOverrideMethodsResult
@@ -209,6 +211,26 @@ internal class LiveJavaPsiServiceResolver(
         target.file, target.documentVersion, target.documentRevision, params.cancelChecker,
     ) { file ->
       JavaPsiUnusedThrowsGeneration.generate(file, target, params.cancelChecker)
+    }
+  }
+
+  override fun createMissingMethod(params: JavaPsiUnresolvedMethodParams): JavaPsiTextEdit? {
+    val target = params.diagnostic
+    if (target.documentVersion < 0 || target.documentRevision < 0L) return null
+    return projectAccess.withCurrentJavaFile(
+        target.file, target.documentVersion, target.documentRevision, params.cancelChecker,
+    ) { file ->
+      JavaPsiMissingMethodGeneration.generate(file, target, params)
+    }
+  }
+
+  override fun suppressUncheckedWarning(params: JavaPsiSuppressUncheckedWarningParams): JavaPsiTextEdit? {
+    val target = params.diagnostic
+    if (target.documentVersion < 0 || target.documentRevision < 0L) return null
+    return projectAccess.withCurrentJavaFile(
+        target.file, target.documentVersion, target.documentRevision, params.cancelChecker,
+    ) { file ->
+      JavaPsiUncheckedWarningGeneration.generate(file, target, params.cancelChecker)
     }
   }
 
