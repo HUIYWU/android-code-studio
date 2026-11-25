@@ -493,7 +493,19 @@ Disposer.dispose(disposable)
     ApplicationManager.getApplication().runWriteAction {
       project.analysisWrite {
         val files = project.getService(LiveProjectFiles::class.java)
-        paths.forEach { files.invalidate(it) }
+        val beforeRevision = files.fileSetRevision
+        val removedSnapshots = paths.sumOf { files.invalidate(it) }
+        val java = paths.count { it.fileName?.toString()?.endsWith(".java", ignoreCase = true) == true }
+        val kotlin = paths.count {
+          it.fileName?.toString()?.endsWith(".kt", ignoreCase = true) == true ||
+              it.fileName?.toString()?.endsWith(".kts", ignoreCase = true) == true
+        }
+        val classFiles = paths.count { it.fileName?.toString()?.endsWith(".class", ignoreCase = true) == true }
+        KlsLogs.info(
+            "Java project file-set invalidation: paths={}, java={}, kotlin={}, classFiles={}, other={}, revisionBefore={}, revisionAfter={}, snapshotsRemoved={}",
+            paths.size, java, kotlin, classFiles, paths.size - java - kotlin - classFiles,
+            beforeRevision, files.fileSetRevision, removedSnapshots,
+        )
       }
     }
   }

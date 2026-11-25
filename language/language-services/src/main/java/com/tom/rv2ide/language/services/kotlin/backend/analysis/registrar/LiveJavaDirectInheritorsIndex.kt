@@ -47,6 +47,17 @@ internal class LiveJavaDirectInheritorsIndex(
       val bySuperName: MutableMap<String, MutableSet<Candidate>>,
   )
 
+  private class IndexStats {
+    var indexabilityChecks: Int = 0
+    var indexabilityUs: Long = 0L
+    var sourceFiles: Int = 0
+    var sourceCandidates: Int = 0
+    var sourceCollectUs: Long = 0L
+    var binaryFiles: Int = 0
+    var binaryCandidates: Int = 0
+    var binaryCollectUs: Long = 0L
+  }
+
   private data class Member(val outerName: String?, val innerName: String?)
   private val lock = Any()
   private var state: State? = null
@@ -81,33 +92,82 @@ internal class LiveJavaDirectInheritorsIndex(
       return current
     }
     val startedAt = System.nanoTime()
+    val activeStartedAt = System.nanoTime()
     val active = registry.virtualFilesSnapshot().filterValues { it.fileType == JavaFileType.INSTANCE }
+    val activeUs = (System.nanoTime() - activeStartedAt) / 1_000L
     if (current == null || current.fileSetRevision != fileSetRevision) {
       val byFile = HashMap<String, List<Candidate>>()
-      files.process(GlobalSearchScope.allScope(project), null, Processor { file ->
+      val processStats = LiveProjectFiles.ProcessStats()
+      val indexStats = IndexStats()
+      val processStartedAt = System.nanoTime()
+      files.processWithStats(GlobalSearchScope.allScope(project), Processor { file ->
         ProgressManager.checkCanceled()
-        if (isIndexable(file)) byFile[fileKey(file)] = collect(file)
+        val indexableStartedAt = System.nanoTime()
+        val indexable = isIndexable(file)
+        indexStats.indexabilityChecks++
+        indexStats.indexabilityUs += (System.nanoTime() - indexableStartedAt) / 1_000L
+        if (indexable) {
+          val collectStartedAt = System.nanoTime()
+          val values = collect(file)
+          if (file.fileType == JavaFileType.INSTANCE) indexStats.sourceFiles++ else indexStats.binaryFiles++
+          byFile[fileKey(file)] = values
+          if (file.fileType == JavaFileType.INSTANCE) indexStats.sourceCandidates += values.size
+          else indexStats.binaryCandidates += values.size
+          indexStats.sourceCollectUs += if (file.fileType == JavaFileType.INSTANCE) {
+            (System.nanoTime() - collectStartedAt) / 1_000L
+          } else 0L
+          indexStats.binaryCollectUs += if (file.fileType == JavaClassFileType.INSTANCE) {
+            (System.nanoTime() - collectStartedAt) / 1_000L
+          } else 0L
+        }
         true
-      })
+      }, processStats)
+      val processUs = (System.nanoTime() - processStartedAt) / 1_000L
       val rebuilt = State(fileSetRevision, mappingRevision, active, byFile, HashMap())
+      val mapStartedAt = System.nanoTime()
       byFile.values.forEach { values -> values.forEach { add(rebuilt, it) } }
+      val mapUs = (System.nanoTime() - mapStartedAt) / 1_000L
       state = rebuilt
       KlsLogs.info(
-          "Java direct inheritors index: action=rebuild, project={}, files={}, candidates={}, durationUs={}",
-          System.identityHashCode(project), byFile.size, byFile.values.sumOf { it.size },
-          (System.nanoTime() - startedAt) / 1_000L,
+          "Java direct inheritors index: action=rebuild, project={}, fileSetRevision={}, mappingRevision={}, files={}, candidates={}, durationUs={}, activeFiles={}, activeUs={}, processUs={}, mapUs={}, roots={}, snapshotHits={}, snapshotBuilds={}, snapshotBuildUs={}, entriesSeen={}, duplicateEntries={}, activeOverrides={}, missingVirtualFiles={}, scopeRejected={}, activeScopeRejected={}, processed={}, directories={}, javaSources={}, javaClasses={}, otherFiles={}, indexabilityChecks={}, indexabilityUs={}, sourceFiles={}, sourceCandidates={}, sourceCollectUs={}, binaryFiles={}, binaryCandidates={}, binaryCollectUs={}",
+          System.identityHashCode(project), fileSetRevision, mappingRevision, byFile.size, byFile.values.sumOf { it.size },
+          (System.nanoTime() - startedAt) / 1_000L, active.size, activeUs, processUs, mapUs,
+          processStats.roots, processStats.snapshotHits, processStats.snapshotBuilds,
+          processStats.snapshotBuildUs, processStats.entriesSeen, processStats.duplicateEntries,
+          processStats.activeOverrides,
+          processStats.missingVirtualFiles, processStats.scopeRejected, processStats.activeScopeRejected,
+          processStats.processed, processStats.directories, processStats.javaSources,
+          processStats.javaClasses, processStats.otherFiles, indexStats.indexabilityChecks,
+          indexStats.indexabilityUs, indexStats.sourceFiles, indexStats.sourceCandidates,
+          indexStats.sourceCollectUs, indexStats.binaryFiles, indexStats.binaryCandidates,
+          indexStats.binaryCollectUs,
       )
       return rebuilt
     }
     val changed = (current.active.keys + active.keys).filter { current.active[it] !== active[it] }
     val replacements = HashMap<String, List<Candidate>>()
+    val indexStats = IndexStats()
+    val collectStartedAt = System.nanoTime()
     for (path in changed) {
       ProgressManager.checkCanceled()
       val file = active[path] ?: if (Files.isRegularFile(path)) {
         requireNotNull(StandardFileSystems.local().findFileByPath(path.toString()))
       } else null
-      replacements[path.toString()] = if (file != null && isIndexable(file)) collect(file) else emptyList()
+      val indexableStartedAt = System.nanoTime()
+      val indexable = file != null && isIndexable(file)
+      indexStats.indexabilityChecks++
+      indexStats.indexabilityUs += (System.nanoTime() - indexableStartedAt) / 1_000L
+      val values = if (indexable) collect(file!!) else emptyList()
+      if (file?.fileType == JavaFileType.INSTANCE) {
+        indexStats.sourceFiles++
+        indexStats.sourceCandidates += values.size
+      } else if (file?.fileType == JavaClassFileType.INSTANCE) {
+        indexStats.binaryFiles++
+        indexStats.binaryCandidates += values.size
+      }
+      replacements[path.toString()] = values
     }
+    val collectUs = (System.nanoTime() - collectStartedAt) / 1_000L
     for ((key, values) in replacements) {
       current.byFile.remove(key)?.forEach { remove(current, it) }
       if (values.isNotEmpty()) current.byFile[key] = values
@@ -116,8 +176,11 @@ internal class LiveJavaDirectInheritorsIndex(
     current.active = active
     current.mappingRevision = mappingRevision
     KlsLogs.info(
-        "Java direct inheritors index: action=refresh, project={}, changedFiles={}, durationUs={}",
-        System.identityHashCode(project), changed.size, (System.nanoTime() - startedAt) / 1_000L,
+        "Java direct inheritors index: action=refresh, project={}, fileSetRevision={}, mappingRevision={}, changedFiles={}, durationUs={}, activeFiles={}, activeUs={}, collectUs={}, indexabilityChecks={}, indexabilityUs={}, sourceFiles={}, sourceCandidates={}, binaryFiles={}, binaryCandidates={}",
+        System.identityHashCode(project), fileSetRevision, mappingRevision, changed.size, (System.nanoTime() - startedAt) / 1_000L,
+        active.size, activeUs, collectUs, indexStats.indexabilityChecks, indexStats.indexabilityUs,
+        indexStats.sourceFiles, indexStats.sourceCandidates, indexStats.binaryFiles,
+        indexStats.binaryCandidates,
     )
     return current
   }

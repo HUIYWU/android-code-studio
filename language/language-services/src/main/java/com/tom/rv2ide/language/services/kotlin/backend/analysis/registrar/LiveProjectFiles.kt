@@ -2,6 +2,8 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.KotlinAnalysisProjectContext
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
+import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaClassFileType
+import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaFileType
 import org.jetbrains.kotlin.com.intellij.openapi.progress.ProgressManager
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.StandardFileSystems
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
@@ -18,6 +20,25 @@ internal class LiveProjectFiles(
     context: KotlinAnalysisProjectContext,
     private val registry: LiveSourceFileRegistry,
 ) : AutoCloseable {
+  internal class ProcessStats {
+    var roots: Int = 0
+    var snapshotHits: Int = 0
+    var snapshotBuilds: Int = 0
+    var snapshotBuildUs: Long = 0L
+    var entriesSeen: Int = 0
+    var duplicateEntries: Int = 0
+    var activeOverrides: Int = 0
+    var missingVirtualFiles: Int = 0
+    var scopeRejected: Int = 0
+    var directories: Int = 0
+    var javaSources: Int = 0
+    var javaClasses: Int = 0
+    var otherFiles: Int = 0
+    var activeFiles: Int = 0
+    var activeScopeRejected: Int = 0
+    var processed: Int = 0
+  }
+
   private data class Entry(val path: Path, val archiveEntry: String? = null) {
     fun virtualFile(): VirtualFile? = if (archiveEntry == null) {
       StandardFileSystems.local().findFileByPath(path.toString())
@@ -47,15 +68,20 @@ internal class LiveProjectFiles(
   val modificationStamp: Long
     get() = fileSetRevision + registry.fileMappingRevision
 
-  fun invalidate(path: Path? = null) {
-    synchronized(snapshots) {
+  fun invalidate(path: Path? = null): Int {
+    return synchronized(snapshots) {
       val normalized = path?.toAbsolutePath()?.normalize()
-      if (normalized == null) {
+      val removedSnapshots = if (normalized == null) {
+        val count = snapshots.size
         snapshots.clear()
+        count
       } else {
+        val removed = snapshots.keys.count { root -> root.startsWith(normalized) || normalized.startsWith(root) }
         snapshots.keys.removeAll { root -> root.startsWith(normalized) || normalized.startsWith(root) }
+        removed
       }
       revision.incrementAndGet()
+      removedSnapshots
     }
   }
 
@@ -63,26 +89,34 @@ internal class LiveProjectFiles(
       scope: GlobalSearchScope?,
       names: Set<String>?,
       processor: Processor<in VirtualFile>,
-  ): Boolean = process(scope, names, null, processor)
+  ): Boolean = process(scope, names, null, null, processor)
 
   fun processJavaFilesWithJvmName(
       scope: GlobalSearchScope,
       name: String,
       processor: Processor<in VirtualFile>,
-  ): Boolean = process(scope, null, name, processor)
+  ): Boolean = process(scope, null, name, null, processor)
+
+  internal fun processWithStats(
+      scope: GlobalSearchScope?,
+      processor: Processor<in VirtualFile>,
+      stats: ProcessStats,
+  ): Boolean = process(scope, null, null, stats, processor)
 
   private fun process(
       scope: GlobalSearchScope?,
       names: Set<String>?,
       javaJvmName: String?,
+      stats: ProcessStats?,
       processor: Processor<in VirtualFile>,
   ): Boolean {
     val active = registry.virtualFilesSnapshot()
     val seen = HashSet<Entry>()
     val roots = if (scope == null || scope.isSearchInLibraries()) contentRoots + libraryRoots else contentRoots
+    stats?.roots = roots.size
     for (root in roots) {
       ProgressManager.checkCanceled()
-      val snapshot = snapshot(root)
+      val snapshot = snapshot(root, stats)
       val groups = when {
         javaJvmName != null -> listOfNotNull(snapshot.javaByJvmName[javaJvmName])
         names != null -> names.mapNotNull(snapshot.byName::get)
@@ -91,10 +125,34 @@ internal class LiveProjectFiles(
       for (entries in groups) {
         for (entry in entries) {
           ProgressManager.checkCanceled()
-          if (!seen.add(entry)) continue
-          if (entry.archiveEntry == null && active.containsKey(entry.path)) continue
-          val file = entry.virtualFile() ?: continue
-          if ((scope == null || scope.contains(file)) && !processor.process(file)) return false
+          stats?.entriesSeen = stats?.entriesSeen?.plus(1) ?: 0
+          if (!seen.add(entry)) {
+            stats?.duplicateEntries = stats?.duplicateEntries?.plus(1) ?: 0
+            continue
+          }
+          if (entry.archiveEntry == null && active.containsKey(entry.path)) {
+            stats?.activeOverrides = stats?.activeOverrides?.plus(1) ?: 0
+            continue
+          }
+          val file = entry.virtualFile()
+          if (file == null) {
+            stats?.missingVirtualFiles = stats?.missingVirtualFiles?.plus(1) ?: 0
+            continue
+          }
+          stats?.let {
+            when {
+              file.isDirectory -> it.directories++
+              file.fileType == JavaFileType.INSTANCE -> it.javaSources++
+              file.fileType == JavaClassFileType.INSTANCE -> it.javaClasses++
+              else -> it.otherFiles++
+            }
+          }
+          if (scope != null && !scope.contains(file)) {
+            stats?.scopeRejected = stats?.scopeRejected?.plus(1) ?: 0
+            continue
+          }
+          stats?.processed = stats?.processed?.plus(1) ?: 0
+          if (!processor.process(file)) return false
         }
       }
     }
@@ -104,8 +162,21 @@ internal class LiveProjectFiles(
       if (javaJvmName != null && (!file.name.endsWith(".java", ignoreCase = true) ||
           JavaImplicitClassUtil.getJvmName(file.name) != javaJvmName)) continue
       if (!belongsToContent(path)) continue
-      val accepted = scope == null || scope.contains(file)
-      if (accepted && !processor.process(file)) return false
+      stats?.activeFiles = stats?.activeFiles?.plus(1) ?: 0
+      stats?.let {
+        when {
+          file.isDirectory -> it.directories++
+          file.fileType == JavaFileType.INSTANCE -> it.javaSources++
+          file.fileType == JavaClassFileType.INSTANCE -> it.javaClasses++
+          else -> it.otherFiles++
+        }
+      }
+      if (scope != null && !scope.contains(file)) {
+        stats?.activeScopeRejected = stats?.activeScopeRejected?.plus(1) ?: 0
+        continue
+      }
+      stats?.processed = stats?.processed?.plus(1) ?: 0
+      if (!processor.process(file)) return false
     }
     return true
   }
@@ -128,9 +199,18 @@ internal class LiveProjectFiles(
     }
   }
 
-  private fun snapshot(root: Path): Snapshot = synchronized(snapshots) {
+  private fun snapshot(root: Path, stats: ProcessStats? = null): Snapshot = synchronized(snapshots) {
     check(!closed) { "Analysis file set is closed" }
-    snapshots.getOrPut(root) { scan(root) }
+    snapshots[root]?.let {
+      stats?.snapshotHits = stats?.snapshotHits?.plus(1) ?: 0
+      return@synchronized it
+    }
+    stats?.snapshotBuilds = stats?.snapshotBuilds?.plus(1) ?: 0
+    val startedAt = System.nanoTime()
+    scan(root).also {
+      snapshots[root] = it
+      stats?.snapshotBuildUs = stats?.snapshotBuildUs?.plus((System.nanoTime() - startedAt) / 1_000L) ?: 0L
+    }
   }
 
   private fun scan(root: Path): Snapshot {
