@@ -20,7 +20,7 @@ internal class LiveProjectFiles(
     context: KotlinAnalysisProjectContext,
     private val registry: LiveSourceFileRegistry,
 ) : AutoCloseable {
-  internal class ProcessStats {
+  internal class ProcessStats(val timeFiles: Boolean = false) {
     var roots: Int = 0
     var snapshotHits: Int = 0
     var snapshotBuilds: Int = 0
@@ -37,13 +37,26 @@ internal class LiveProjectFiles(
     var activeFiles: Int = 0
     var activeScopeRejected: Int = 0
     var processed: Int = 0
+    var virtualFileNs: Long = 0L
+    var scopeNs: Long = 0L
+    var archiveFileHits: Int = 0
+    var virtualFileLookups: Int = 0
   }
 
   private data class Entry(val path: Path, val archiveEntry: String? = null) {
-    fun virtualFile(): VirtualFile? = if (archiveEntry == null) {
-      StandardFileSystems.local().findFileByPath(path.toString())
-    } else {
-      StandardFileSystems.jar().findFileByPath("$path!/$archiveEntry")
+    @Volatile private var archiveFile: VirtualFile? = null
+
+    fun virtualFile(stats: ProcessStats?): VirtualFile? {
+      if (archiveEntry == null) {
+        if (stats != null) stats.virtualFileLookups++
+        return StandardFileSystems.local().findFileByPath(path.toString())
+      }
+      archiveFile?.let {
+        if (stats != null) stats.archiveFileHits++
+        return it
+      }
+      if (stats != null) stats.virtualFileLookups++
+      return StandardFileSystems.jar().findFileByPath("$path!/$archiveEntry").also { archiveFile = it }
     }
   }
 
@@ -64,6 +77,11 @@ internal class LiveProjectFiles(
 
   val fileSetRevision: Long
     get() = revision.get()
+
+  val fileMappingRevision: Long
+    get() = registry.fileMappingRevision
+
+  fun activePath(file: VirtualFile): Path? = registry.pathForVirtualFile(file)
 
   val modificationStamp: Long
     get() = fileSetRevision + registry.fileMappingRevision
@@ -101,7 +119,8 @@ internal class LiveProjectFiles(
       scope: GlobalSearchScope?,
       processor: Processor<in VirtualFile>,
       stats: ProcessStats,
-  ): Boolean = process(scope, null, null, stats, processor)
+      names: Set<String>? = null,
+  ): Boolean = process(scope, names, null, stats, processor)
 
   private fun process(
       scope: GlobalSearchScope?,
@@ -110,6 +129,7 @@ internal class LiveProjectFiles(
       stats: ProcessStats?,
       processor: Processor<in VirtualFile>,
   ): Boolean {
+    val timeFiles = stats?.timeFiles == true
     val active = registry.virtualFilesSnapshot()
     val seen = HashSet<Entry>()
     val roots = if (scope == null || scope.isSearchInLibraries()) contentRoots + libraryRoots else contentRoots
@@ -134,7 +154,9 @@ internal class LiveProjectFiles(
             stats?.activeOverrides = stats?.activeOverrides?.plus(1) ?: 0
             continue
           }
-          val file = entry.virtualFile()
+          val virtualFileStartedAt = if (timeFiles) System.nanoTime() else 0L
+          val file = entry.virtualFile(stats)
+          if (timeFiles && stats != null) stats.virtualFileNs += System.nanoTime() - virtualFileStartedAt
           if (file == null) {
             stats?.missingVirtualFiles = stats?.missingVirtualFiles?.plus(1) ?: 0
             continue
@@ -147,7 +169,10 @@ internal class LiveProjectFiles(
               else -> it.otherFiles++
             }
           }
-          if (scope != null && !scope.contains(file)) {
+          val scopeStartedAt = if (timeFiles) System.nanoTime() else 0L
+          val inScope = scope == null || scope.contains(file)
+          if (timeFiles && stats != null) stats.scopeNs += System.nanoTime() - scopeStartedAt
+          if (!inScope) {
             stats?.scopeRejected = stats?.scopeRejected?.plus(1) ?: 0
             continue
           }
@@ -171,7 +196,10 @@ internal class LiveProjectFiles(
           else -> it.otherFiles++
         }
       }
-      if (scope != null && !scope.contains(file)) {
+      val scopeStartedAt = if (timeFiles) System.nanoTime() else 0L
+      val inScope = scope == null || scope.contains(file)
+      if (timeFiles && stats != null) stats.scopeNs += System.nanoTime() - scopeStartedAt
+      if (!inScope) {
         stats?.activeScopeRejected = stats?.activeScopeRejected?.plus(1) ?: 0
         continue
       }
@@ -181,12 +209,15 @@ internal class LiveProjectFiles(
     return true
   }
 
-  fun contains(file: VirtualFile): Boolean {
+  fun contains(file: VirtualFile, scope: GlobalSearchScope? = null): Boolean {
+    if (!file.isValid || (scope != null && !scope.contains(file))) return false
     val activePath = registry.pathForVirtualFile(file)
     if (activePath != null) return belongsToContent(activePath)
-    val path = file.path.substringBefore("!/")
-    val localPath = Path.of(path).toAbsolutePath().normalize()
-    return Files.exists(localPath) && (belongsToContent(localPath) || libraryRoots.any { localPath.startsWith(it) })
+    val archive = "!/" in file.path
+    val localPath = Path.of(file.path.substringBefore("!/")).toAbsolutePath().normalize()
+    if (!archive && registry.virtualFile(localPath) != null) return false
+    return Files.exists(localPath) && (belongsToContent(localPath) ||
+        ((scope == null || scope.isSearchInLibraries()) && libraryRoots.any { localPath.startsWith(it) }))
   }
 
   private fun belongsToContent(path: Path): Boolean = contentRoots.any { path.startsWith(it) }

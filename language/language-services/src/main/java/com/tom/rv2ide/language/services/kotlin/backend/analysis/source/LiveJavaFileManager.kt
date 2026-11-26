@@ -9,6 +9,8 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBacking
 import org.jetbrains.kotlin.analysis.api.platform.modification.KotlinModuleOutOfBlockModificationEvent
 import org.jetbrains.kotlin.analysis.api.platform.modification.publishModificationEvent
 import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaFileType
+import org.jetbrains.kotlin.com.intellij.lang.java.JavaLanguage
+import org.jetbrains.kotlin.com.intellij.psi.impl.PsiModificationTrackerImpl
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
@@ -34,8 +36,14 @@ import org.jetbrains.kotlin.resolve.jvm.KotlinCliJavaFileManager
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.function.Predicate
-
 private val liveJavaFileInvalidKey = Key.create<Boolean>("acs.kotlin.live.java.file.invalid")
+
+internal fun invalidateJavaPsiCaches(project: Project) {
+  (PsiModificationTracker.getInstance(project) as PsiModificationTrackerImpl)
+      .incLanguageModificationCount(JavaLanguage.INSTANCE)
+  PsiManager.getInstance(project).dropResolveCaches()
+  project.messageBus.syncPublisher(PsiModificationTracker.TOPIC).modificationCountChanged()
+}
 
 @OptIn(org.jetbrains.kotlin.analysis.api.KaExperimentalApi::class, org.jetbrains.kotlin.analysis.api.KaPlatformInterface::class)
 internal class LiveJavaFileManager(
@@ -97,8 +105,7 @@ internal class LiveJavaFileManager(
           psiManager.reloadFromDisk(diskFile)
           KlsLogs.info("Java live PSI disk reloaded: file={}, psi={}", normalized, System.identityHashCode(diskFile))
         }
-        psiManager.dropResolveCaches()
-        project.messageBus.syncPublisher(PsiModificationTracker.TOPIC).modificationCountChanged()
+        invalidateJavaPsiCaches(project)
         project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
       }
     }
@@ -239,8 +246,7 @@ internal class LiveJavaFileManager(
           registry.unregister(path)
         }
         if (paths.isNotEmpty()) {
-          PsiManager.getInstance(project).dropResolveCaches()
-          project.messageBus.syncPublisher(PsiModificationTracker.TOPIC).modificationCountChanged()
+          invalidateJavaPsiCaches(project)
           modules.forEach { project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(it)) }
         }
       }

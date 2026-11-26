@@ -102,7 +102,7 @@ internal object JavaPsiOverrideCompletion {
   ): JavaPsiOverridesResult {
     val diagnostic = params.diagnostic
     val owner = classAtDiagnostic(file, diagnostic) ?: return unsupported()
-    if (owner.isAnnotationType || owner.isInterface || owner.isEnum || owner.isRecord ||
+    if (owner.isAnnotationType || owner.isInterface || owner.isEnum ||
         owner.hasModifierProperty(PsiModifier.ABSTRACT)) return unsupported()
     val targetContext = if (owner is PsiAnonymousClass) owner.baseClassReference else owner.nameIdentifier ?: owner
     val candidates = implementCandidates(owner, targetContext, params.cancelChecker)

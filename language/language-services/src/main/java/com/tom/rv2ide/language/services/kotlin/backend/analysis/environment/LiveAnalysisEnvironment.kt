@@ -10,6 +10,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.binary.JvmClassI
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.JavaSourceIndex
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaDiagnosticsResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaFileManager
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.invalidateJavaPsiCaches
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaPsiResolver
 import com.tom.rv2ide.language.services.java.psi.LiveJavaPsiServiceResolver
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaResolveScopeManager
@@ -72,7 +73,6 @@ import org.jetbrains.kotlin.com.intellij.openapi.vfs.StandardFileSystems
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.impl.jar.CoreJarFileSystem
-import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
 import org.jetbrains.kotlin.com.intellij.util.io.URLUtil.JAR_SEPARATOR
 import org.jetbrains.kotlin.com.intellij.mock.MockProject
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
@@ -495,6 +495,7 @@ Disposer.dispose(disposable)
         val files = project.getService(LiveProjectFiles::class.java)
         val beforeRevision = files.fileSetRevision
         val removedSnapshots = paths.sumOf { files.invalidate(it) }
+        invalidateJavaPsiCaches(project)
         val java = paths.count { it.fileName?.toString()?.endsWith(".java", ignoreCase = true) == true }
         val kotlin = paths.count {
           it.fileName?.toString()?.endsWith(".kt", ignoreCase = true) == true ||

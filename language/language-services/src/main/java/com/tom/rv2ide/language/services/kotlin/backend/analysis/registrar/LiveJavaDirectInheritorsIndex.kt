@@ -37,6 +37,7 @@ internal class LiveJavaDirectInheritorsIndex(
       val memberNames: List<String>,
       val superNames: Set<String>,
       val anonymous: Boolean,
+      val className: String?,
   )
 
   private class State(
@@ -45,6 +46,7 @@ internal class LiveJavaDirectInheritorsIndex(
       var active: Map<Path, VirtualFile>,
       val byFile: MutableMap<String, List<Candidate>>,
       val bySuperName: MutableMap<String, MutableSet<Candidate>>,
+      val byClassName: MutableMap<String, MutableSet<Candidate>>,
   )
 
   private class IndexStats {
@@ -66,6 +68,19 @@ internal class LiveJavaDirectInheritorsIndex(
   fun candidates(name: String): List<Candidate> = synchronized(lock) {
     check(!closed) { "Analysis direct-inheritor index is closed" }
     refresh().bySuperName[name]?.toList().orEmpty()
+  }
+
+  fun classesByName(name: String): List<Candidate> = synchronized(lock) {
+    check(!closed) { "Analysis direct-inheritor index is closed" }
+    refresh().byClassName[name]?.toList().orEmpty()
+  }
+
+  fun classNames(scope: GlobalSearchScope?): List<String> = synchronized(lock) {
+    check(!closed) { "Analysis direct-inheritor index is closed" }
+    refresh().byClassName.entries.mapNotNull { (name, candidates) ->
+      ProgressManager.checkCanceled()
+      if (scope == null || candidates.any { scope.contains(it.file) }) name else null
+    }
   }
 
   fun materialize(candidate: Candidate, cache: MutableMap<VirtualFile, List<PsiClass>>): PsiClass {
@@ -123,7 +138,7 @@ internal class LiveJavaDirectInheritorsIndex(
         true
       }, processStats)
       val processUs = (System.nanoTime() - processStartedAt) / 1_000L
-      val rebuilt = State(fileSetRevision, mappingRevision, active, byFile, HashMap())
+      val rebuilt = State(fileSetRevision, mappingRevision, active, byFile, HashMap(), HashMap())
       val mapStartedAt = System.nanoTime()
       byFile.values.forEach { values -> values.forEach { add(rebuilt, it) } }
       val mapUs = (System.nanoTime() - mapStartedAt) / 1_000L
@@ -211,7 +226,7 @@ internal class LiveJavaDirectInheritorsIndex(
       if (klass.isEnum) names.add("Enum")
       if (klass.isRecord) names.add("Record")
       if (klass.isAnnotationType) names.add("Annotation")
-      Candidate(file, ordinal, emptyList(), names, klass is PsiAnonymousClass)
+      Candidate(file, ordinal, emptyList(), names, klass is PsiAnonymousClass, klass.name)
     }
   } else {
     collectBinary(file)
@@ -284,11 +299,12 @@ internal class LiveJavaDirectInheritorsIndex(
     }
     reader.superName?.let(::addSuper)
     reader.interfaces.forEach(::addSuper)
-    return listOf(Candidate(ownerFile, -1, memberNames, names, false))
+    return listOf(Candidate(ownerFile, -1, memberNames, names, false, memberNames.last()))
   }
 
   private fun add(target: State, candidate: Candidate) {
     candidate.superNames.forEach { name -> target.bySuperName.getOrPut(name) { linkedSetOf() }.add(candidate) }
+    candidate.className?.let { name -> target.byClassName.getOrPut(name) { linkedSetOf() }.add(candidate) }
   }
 
   private fun remove(target: State, candidate: Candidate) {
@@ -296,6 +312,12 @@ internal class LiveJavaDirectInheritorsIndex(
       target.bySuperName[name]?.let { values ->
         values.remove(candidate)
         if (values.isEmpty()) target.bySuperName.remove(name)
+      }
+    }
+    candidate.className?.let { name ->
+      target.byClassName[name]?.let { values ->
+        values.remove(candidate)
+        if (values.isEmpty()) target.byClassName.remove(name)
       }
     }
   }

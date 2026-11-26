@@ -4,5 +4,27 @@
     <applicationService
         serviceInterface="org.jetbrains.kotlin.analysis.decompiler.psi.BuiltinsVirtualFileProvider"
         serviceImplementation="org.jetbrains.kotlin.analysis.decompiler.psi.BuiltinsVirtualFileProviderCliImpl" />
+    <applicationService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.codeInsight.intention.QuickFixFactory"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.codeInsight.intention.impl.config.QuickFixFactoryImpl" />
+    <applicationService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.modcommand.ModCommandService"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.lang.impl.modcommand.ModCommandServiceImpl" />
+    <applicationService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.lang.cacheBuilder.CacheBuilderRegistry"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.lang.cacheBuilder.CacheBuilderRegistryImpl" />
+    <applicationService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.model.search.SearchService"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.model.search.impl.SearchServiceImpl" />
+    <projectService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.codeInspection.ex.EntryPointsManager"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.codeInspection.ex.EntryPointsManagerImpl" />
+    <projectService
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.uast.UastModificationTracker" />
+    <projectService
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.psi.impl.search.HighlightingCaches" />
+    <projectService
+        serviceInterface="org.jetbrains.kotlin.com.intellij.psi.search.PsiShortNamesCache"
+        serviceImplementation="org.jetbrains.kotlin.com.intellij.psi.impl.PsiShortNamesCacheImpl" />
   </extensions>
 </idea-plugin>

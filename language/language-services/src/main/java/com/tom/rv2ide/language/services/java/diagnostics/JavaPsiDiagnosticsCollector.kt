@@ -1,6 +1,8 @@
 package com.tom.rv2ide.language.services.java.diagnostics
 
+import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode
+import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.lsp.models.DiagnosticItem
 import com.tom.rv2ide.lsp.models.DiagnosticSeverity
 import com.tom.rv2ide.lsp.models.LineIndex
@@ -25,6 +27,12 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCal
 import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.UncheckedWarningLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
+import org.jetbrains.kotlin.com.intellij.codeInspection.deadCode.UnusedDeclarationInspectionBase
+import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
+import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
+import org.jetbrains.kotlin.com.intellij.psi.PsiPatternVariable
+import org.jetbrains.kotlin.com.intellij.psi.PsiResourceVariable
+import org.jetbrains.kotlin.com.intellij.psi.PsiTypeParameter
 
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.JavaErrorCollector
 import org.jetbrains.kotlin.com.intellij.java.codeserver.highlighting.errors.JavaCompilationError
@@ -67,13 +75,22 @@ internal object JavaPsiDiagnosticsCollector {
       documentRevision: Long,
       cancelChecker: ICancelChecker,
   ): List<DiagnosticItem> {
+    val trace = IdeLogConfig.shouldLogInfo()
+    val startedAt = if (trace) System.nanoTime() else 0L
+    var codeserverNs = 0L
+    var unresolvedMethodNs = 0L
+    var elements = 0
     val lineIndex = LineIndex.from(file.text)
     val result = ArrayList<DiagnosticItem>()
     val collector = JavaErrorCollector(file) { error ->
       cancelChecker.abortIfCancelled()
       result += toCompilationDiagnostic(error, lineIndex, path, documentVersion, documentRevision)
     }
+    val profile = InspectionProjectProfileManager.getInstance(file.project).currentProfile
+    val unused = profile.getUnwrappedTool(UnusedDeclarationInspectionBase.SHORT_NAME, file)
+        as UnusedDeclarationInspectionBase
     val inspections = listOf(
+        unused.sharedLocalInspectionTool,
         AccessStaticViaInstanceBase(),
         NumericOverflowInspection(),
         SuspiciousArrayMethodCallInspection(),
@@ -83,43 +100,108 @@ internal object JavaPsiDiagnosticsCollector {
         RedundantThrowsDeclarationLocalInspection(),
     )
     val inspectionRuns = inspections.map { inspection ->
+      val initStartedAt = if (trace) System.nanoTime() else 0L
       val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
       val session = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
       val onTheFly = inspection !is UncheckedWarningLocalInspection
       val visitor = InspectionEngine.createVisitor(inspection, holder, onTheFly, session)
       inspection.inspectionStarted(session, onTheFly)
-      InspectionRun(inspection, holder, session, visitor)
+      InspectionRun(inspection, holder, session, visitor).also {
+        if (trace) it.initNs = System.nanoTime() - initStartedAt
+      }
     }
+    val setupNs = if (trace) System.nanoTime() - startedAt else 0L
+    val walkStartedAt = if (trace) System.nanoTime() else 0L
+    var walked = false
     try {
       file.accept(object : PsiRecursiveElementWalkingVisitor() {
         override fun visitElement(element: PsiElement) {
           cancelChecker.abortIfCancelled()
-          inspectionRuns.forEach { run -> element.accept(run.visitor) }
+          if (trace) elements++
+          inspectionRuns.forEach { run ->
+            if (!trace) {
+              element.accept(run.visitor)
+            } else {
+              val method = if (run.tool is RedundantThrowsDeclarationLocalInspection) element as? PsiMethod else null
+              val problemsBefore = if (method != null) run.holder.results.size else 0
+              val visitorStartedAt = System.nanoTime()
+              var completed = false
+              try {
+                element.accept(run.visitor)
+                completed = true
+              } finally {
+                val elapsed = System.nanoTime() - visitorStartedAt
+                run.visitNs += elapsed
+                run.visits++
+                if (method != null) {
+                  KlsLogs.info(
+                      "Java inspect throws method perf: file={}, version={}, revision={}, method={}, offset={}, durationUs={}, addedProblems={}, completed={}",
+                      path, documentVersion, documentRevision, method.name, method.textRange.startOffset,
+                      elapsed / 1_000L, run.holder.results.size - problemsBefore, completed,
+                  )
+                }
+              }
+            }
+          }
           if (element is PsiErrorElement) {
             val rawRange = requireNotNull(element.textRange)
             result += toSyntaxDiagnostic(element, rawRange, lineIndex)
           }
-           collector.processElement(element)
-           if (element is PsiMethodCallExpression) {
-             unresolvedMethodTarget(element, path, documentVersion, documentRevision)?.let { target ->
-               result += DiagnosticItem(
-                   message = "Cannot resolve method '${target.methodName}'",
-                   code = JavaUnresolvedMethodDiagnostic.CODE,
-                   range = Range(
-                       lineIndex.indexToPosition(target.highlightStart),
-                       lineIndex.indexToPosition(target.highlightEnd),
-                   ),
-                   source = JavaUnresolvedMethodDiagnostic.SOURCE,
-                   severity = DiagnosticSeverity.ERROR,
-               ).also { it.extra = target }
-             }
-           }
-           super.visitElement(element)
+          val codeserverStartedAt = if (trace) System.nanoTime() else 0L
+          try {
+            collector.processElement(element)
+          } finally {
+            if (trace) codeserverNs += System.nanoTime() - codeserverStartedAt
+          }
+          if (element is PsiMethodCallExpression) {
+            val unresolvedStartedAt = if (trace) System.nanoTime() else 0L
+            try {
+              unresolvedMethodTarget(element, path, documentVersion, documentRevision)?.let { target ->
+                result += DiagnosticItem(
+                    message = "Cannot resolve method '${target.methodName}'",
+                    code = JavaUnresolvedMethodDiagnostic.CODE,
+                    range = Range(
+                        lineIndex.indexToPosition(target.highlightStart),
+                        lineIndex.indexToPosition(target.highlightEnd),
+                    ),
+                    source = JavaUnresolvedMethodDiagnostic.SOURCE,
+                    severity = DiagnosticSeverity.ERROR,
+                ).also { it.extra = target }
+              }
+            } finally {
+              if (trace) unresolvedMethodNs += System.nanoTime() - unresolvedStartedAt
+            }
+          }
+          super.visitElement(element)
         }
       })
+      walked = true
     } finally {
-      inspectionRuns.forEach { run -> run.tool.inspectionFinished(run.session, run.holder) }
+      val walkNs = if (trace) System.nanoTime() - walkStartedAt else 0L
+      inspectionRuns.forEach { run ->
+        val finishStartedAt = if (trace) System.nanoTime() else 0L
+        try {
+          run.tool.inspectionFinished(run.session, run.holder)
+        } finally {
+          if (trace) run.finishNs = System.nanoTime() - finishStartedAt
+        }
+      }
+      if (trace) {
+        inspectionRuns.forEach { run ->
+          KlsLogs.info(
+              "Java inspect tool perf: file={}, version={}, revision={}, tool={}, initUs={}, visits={}, visitUs={}, finishUs={}, problems={}, walked={}",
+              path, documentVersion, documentRevision, run.tool.shortName, run.initNs / 1_000L,
+              run.visits, run.visitNs / 1_000L, run.finishNs / 1_000L, run.holder.results.size, walked,
+          )
+        }
+        KlsLogs.info(
+            "Java inspect walk perf: file={}, version={}, revision={}, setupUs={}, walkUs={}, elements={}, visitorUs={}, codeserverUs={}, unresolvedMethodUs={}, walked={}",
+            path, documentVersion, documentRevision, setupNs / 1_000L, walkNs / 1_000L, elements,
+            inspectionRuns.sumOf { it.visitNs } / 1_000L, codeserverNs / 1_000L, unresolvedMethodNs / 1_000L, walked,
+        )
+      }
     }
+    val descriptorsStartedAt = if (trace) System.nanoTime() else 0L
     inspectionRuns.forEach { run ->
       run.holder.results.forEach descriptorLoop@{ descriptor ->
         cancelChecker.abortIfCancelled()
@@ -129,16 +211,18 @@ internal object JavaPsiDiagnosticsCollector {
         val range = descriptor.absoluteRange()
         val item = DiagnosticItem(
             message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
-            code = if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
-              DiagnosticCode.UNUSED_THROWS.id
-            } else {
-              run.tool.shortName
+            code = when (run.tool.shortName) {
+              JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME -> DiagnosticCode.UNUSED_THROWS.id
+              JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME -> JavaUnusedSymbolDiagnostic.CODE
+              else -> run.tool.shortName
             },
             range = Range(lineIndex.indexToPosition(range.startOffset), lineIndex.indexToPosition(range.endOffset)),
             source = "java-inspection",
             severity = severity,
         )
-        if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
+        if (run.tool.shortName == JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME) {
+          unusedSymbolTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+        } else if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
           unusedThrowsTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
         } else if (run.tool.shortName == JavaUncheckedWarningDiagnostic.INSPECTION_SHORT_NAME &&
             severity == DiagnosticSeverity.WARNING) {
@@ -147,7 +231,18 @@ internal object JavaPsiDiagnosticsCollector {
         result += item
       }
     }
-    return result.sortedWith(DiagnosticItem.START_COMPARATOR)
+    val descriptorsNs = if (trace) System.nanoTime() - descriptorsStartedAt else 0L
+    val sortStartedAt = if (trace) System.nanoTime() else 0L
+    val sorted = result.sortedWith(DiagnosticItem.START_COMPARATOR)
+    if (trace) {
+      val now = System.nanoTime()
+      KlsLogs.info(
+          "Java inspect collect perf: file={}, version={}, revision={}, totalUs={}, descriptorsUs={}, sortUs={}, diagnosticCount={}",
+          path, documentVersion, documentRevision, (now - startedAt) / 1_000L,
+          descriptorsNs / 1_000L, (now - sortStartedAt) / 1_000L, sorted.size,
+      )
+    }
+    return sorted
   }
 
   private fun toSyntaxDiagnostic(
@@ -367,6 +462,38 @@ internal object JavaPsiDiagnosticsCollector {
     return find(element)
   }
 
+  private fun unusedSymbolTarget(
+      anchor: PsiElement,
+      highlightRange: TextRange,
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+  ): JavaUnusedSymbolDiagnostic? {
+    val declaration = anchor as? PsiNameIdentifierOwner ?: anchor.parent as? PsiNameIdentifierOwner ?: return null
+    val nameIdentifier = declaration.nameIdentifier ?: return null
+    if (nameIdentifier.textRange != highlightRange) return null
+    val kind = when (declaration) {
+      is PsiPatternVariable -> JavaUnusedSymbolDiagnostic.DeclarationKind.PATTERN_VARIABLE
+      is PsiResourceVariable -> JavaUnusedSymbolDiagnostic.DeclarationKind.RESOURCE_VARIABLE
+      is PsiLocalVariable -> JavaUnusedSymbolDiagnostic.DeclarationKind.LOCAL_VARIABLE
+      is PsiParameter -> JavaUnusedSymbolDiagnostic.DeclarationKind.PARAMETER
+      is PsiEnumConstant -> JavaUnusedSymbolDiagnostic.DeclarationKind.ENUM_CONSTANT
+      is PsiField -> JavaUnusedSymbolDiagnostic.DeclarationKind.FIELD
+      is PsiMethod -> if (declaration.isConstructor) JavaUnusedSymbolDiagnostic.DeclarationKind.CONSTRUCTOR
+          else JavaUnusedSymbolDiagnostic.DeclarationKind.METHOD
+      is PsiTypeParameter -> JavaUnusedSymbolDiagnostic.DeclarationKind.TYPE_PARAMETER
+      is PsiClass -> JavaUnusedSymbolDiagnostic.DeclarationKind.CLASS
+      else -> return null
+    }
+    val declarationRange = declaration.textRange ?: return null
+    return JavaUnusedSymbolDiagnostic(
+        file.normalize(), documentVersion, documentRevision,
+        highlightRange.startOffset, highlightRange.endOffset,
+        declarationRange.startOffset, declarationRange.endOffset,
+        nameIdentifier.text, kind,
+    )
+  }
+
   private fun unusedThrowsTarget(
       anchor: PsiElement,
       highlightRange: TextRange,
@@ -405,7 +532,12 @@ internal object JavaPsiDiagnosticsCollector {
       val holder: ProblemsHolder,
       val session: LocalInspectionToolSession,
       val visitor: PsiElementVisitor,
-  )
+  ) {
+    var initNs = 0L
+    var visitNs = 0L
+    var finishNs = 0L
+    var visits = 0
+  }
 
   private fun ProblemDescriptor.absoluteRange(): TextRange {
     if (this is ProblemDescriptorBase) return requireNotNull(textRange)
