@@ -38,6 +38,10 @@ interface JavaPsiServiceResolver {
       params: JavaPsiRemoveUnusedThrowsParams,
   ): JavaPsiTextEdit? = null
 
+  fun removeUnusedImports(
+      params: JavaPsiRemoveUnusedImportsParams,
+  ): List<JavaPsiTextEdit>? = null
+
   fun createMissingMethod(
       params: JavaPsiUnresolvedMethodParams,
   ): JavaPsiTextEdit? = null
@@ -49,6 +53,10 @@ interface JavaPsiServiceResolver {
   fun resolveImportCandidates(
       params: JavaPsiResolveImportCandidatesParams,
   ): List<JavaPsiImportCandidate>? = null
+
+  fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? = null
+
+  fun generateImports(params: JavaPsiGenerateImportsParams): List<JavaPsiTextEdit>? = null
 
   fun expandSelection(params: ExpandSelectionParams): Range?
 
@@ -97,6 +105,14 @@ object JavaPsiServiceInterop {
 
   @JvmStatic
   fun isAvailable(): Boolean = state.get().resolver != null
+
+  @JvmStatic
+  fun currentGeneration(): Long? = state.get().let { if (it.resolver == null) null else it.generation }
+
+  @JvmStatic
+  fun isCurrentGeneration(generation: Long): Boolean = state.get().let {
+    it.resolver != null && it.generation == generation
+  }
 
   @JvmStatic
   fun fields(params: JavaPsiFieldsParams): JavaPsiFieldsResult? {
@@ -191,6 +207,16 @@ object JavaPsiServiceInterop {
   }
 
   @JvmStatic
+  fun removeUnusedImports(params: JavaPsiRemoveUnusedImportsParams): List<JavaPsiTextEdit>? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.removeUnusedImports(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
   fun createMissingMethod(params: JavaPsiUnresolvedMethodParams): JavaPsiTextEdit? {
     params.cancelChecker.abortIfCancelled()
     val current = state.get()
@@ -216,6 +242,26 @@ object JavaPsiServiceInterop {
     val current = state.get()
     val resolver = current.resolver ?: return null
     val result = resolver.resolveImportCandidates(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.fixImports(params)
+    params.cancelChecker.abortIfCancelled()
+    return if (state.get() === current) result else null
+  }
+
+  @JvmStatic
+  fun generateImports(params: JavaPsiGenerateImportsParams): List<JavaPsiTextEdit>? {
+    params.cancelChecker.abortIfCancelled()
+    val current = state.get()
+    val resolver = current.resolver ?: return null
+    val result = resolver.generateImports(params)
     params.cancelChecker.abortIfCancelled()
     return if (state.get() === current) result else null
   }

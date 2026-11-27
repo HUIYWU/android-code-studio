@@ -17,8 +17,12 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateOverridesPar
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImplementAbstractMethodsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiAddUnhandledExceptionsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImportCandidate
+import com.tom.rv2ide.language.services.java.interop.JavaPsiImportChoices
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFixImportsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateImportsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiResolveImportCandidatesParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiRemoveUnusedThrowsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiRemoveUnusedImportsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiSuppressUncheckedWarningParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiUnresolvedMethodParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
@@ -30,6 +34,7 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiProjectAccess
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceResolver
 import com.tom.rv2ide.language.services.java.providers.completion.JavaCompletionTypeIndex
 import com.tom.rv2ide.language.services.java.providers.definition.expandSelectionInJavaPsi
+import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.withJavaDiagnosticProgress
 import com.tom.rv2ide.lsp.models.CompletionParams
 import com.tom.rv2ide.lsp.models.CompletionResult
 import com.tom.rv2ide.lsp.models.DefinitionParams
@@ -48,15 +53,12 @@ import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.projects.ModuleProject
 import java.nio.file.Path
 import java.util.LinkedHashMap
-import org.jetbrains.kotlin.com.intellij.psi.JavaPsiFacade
 import org.jetbrains.kotlin.com.intellij.psi.JavaRecursiveElementVisitor
-import org.jetbrains.kotlin.com.intellij.psi.PsiAnnotation
 import org.jetbrains.kotlin.com.intellij.psi.PsiClass
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiEnumConstant
 import org.jetbrains.kotlin.com.intellij.psi.PsiField
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
-import org.jetbrains.kotlin.com.intellij.psi.PsiImportStaticStatement
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaCodeReferenceElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiMethod
 import org.jetbrains.kotlin.com.intellij.psi.PsiModifier
@@ -65,14 +67,11 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
 import org.jetbrains.kotlin.com.intellij.psi.PsiNewExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiParameter
-import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceList
-import org.jetbrains.kotlin.com.intellij.psi.PsiTypeElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiPolyVariantReference
 import org.jetbrains.kotlin.com.intellij.psi.PsiReference
 import org.jetbrains.kotlin.com.intellij.psi.PsiThisExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiSuperExpression
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
-import org.jetbrains.kotlin.com.intellij.psi.util.PsiUtil
 import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtFile
 
@@ -214,6 +213,17 @@ internal class LiveJavaPsiServiceResolver(
     }
   }
 
+  override fun removeUnusedImports(params: JavaPsiRemoveUnusedImportsParams): List<JavaPsiTextEdit>? {
+    if (params.documentVersion < 0 || params.documentRevision < 0L) return null
+    return projectAccess.withCurrentJavaFile(
+        params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
+    ) { file ->
+      withJavaDiagnosticProgress(params.cancelChecker) {
+        JavaPsiUnusedImportsGeneration.generate(file, params)
+      }
+    }
+  }
+
   override fun createMissingMethod(params: JavaPsiUnresolvedMethodParams): JavaPsiTextEdit? {
     val target = params.diagnostic
     if (target.documentVersion < 0 || target.documentRevision < 0L) return null
@@ -239,86 +249,47 @@ internal class LiveJavaPsiServiceResolver(
   ): List<JavaPsiImportCandidate>? {
     val target = params.diagnostic
     if (target.documentVersion < 0 || target.documentRevision < 0L) return null
+    val qualifiedNames = JavaCompletionTypeIndex.qualifiedNames(params.module, target.simpleName, params.cancelChecker)
     return projectAccess.withCurrentJavaFile(
         target.file, target.documentVersion, target.documentRevision, params.cancelChecker,
     ) { file ->
-      val index = LineIndex.from(file.text)
-      val nameElement = file.findElementAt(target.referenceStart) ?: return@withCurrentJavaFile null
-      val reference = PsiTreeUtil.getParentOfType(
-          nameElement, PsiJavaCodeReferenceElement::class.java, false,
-      ) ?: return@withCurrentJavaFile null
-      if (nameElement.textRange.startOffset != target.referenceStart ||
-          nameElement.textRange.endOffset != target.referenceEnd || nameElement.text != target.referenceText ||
-          reference.referenceName != target.simpleName || reference.qualifier != null) return@withCurrentJavaFile null
-      val referenceList = PsiTreeUtil.getParentOfType(reference, PsiReferenceList::class.java, false)
-      val typeElement = PsiTreeUtil.getParentOfType(reference, PsiTypeElement::class.java, false)
-      val parent = reference.parent
-      val typeContext = typeElement?.innermostComponentReferenceElement === reference ||
-          referenceList != null || parent is PsiNewExpression && parent.classOrAnonymousClassReference === reference
-      if (!typeContext || parent is PsiAnnotation && parent.nameReferenceElement === reference ||
-          referenceList?.role == PsiReferenceList.Role.THROWS_LIST) return@withCurrentJavaFile null
-      val imports = file.importList?.allImportStatements.orEmpty()
-      val importedNames = file.importList?.importStatements.orEmpty().mapNotNull { it.qualifiedName }.toSet()
-      val importedPackages = imports.filter { it.isOnDemand && it !is PsiImportStaticStatement }
-          .mapNotNull { it.importReference?.qualifiedName }.toSet()
-      val packageName = file.packageName
-      val resolveHelper = JavaPsiFacade.getInstance(file.project).resolveHelper
-      val candidates = JavaCompletionTypeIndex.qualifiedNames(
-          params.module, target.simpleName, params.cancelChecker,
-      ).asSequence().sorted().mapNotNull { qualifiedName ->
-        params.cancelChecker.abortIfCancelled()
-        val targetClass = JavaPsiFacade.getInstance(file.project).findClass(qualifiedName, file.resolveScope)
-            ?: return@mapNotNull null
-        if (targetClass.containingClass != null || !PsiUtil.isAccessible(targetClass, reference, null)) {
-          return@mapNotNull null
-        }
-        val visible = resolveHelper.resolveReferencedClass(target.simpleName, reference)
-        if (visible != null && !visible.isEquivalentTo(targetClass)) return@mapNotNull null
-        if (qualifiedName in importedNames ||
-            importedNames.any { it.substringAfterLast('.') == target.simpleName && it != qualifiedName }) {
-          return@mapNotNull null
-        }
-        val candidatePackage = qualifiedName.substringBeforeLast('.', "")
-        if (candidatePackage == packageName || candidatePackage == "java.lang" ||
-            candidatePackage in importedPackages) return@mapNotNull null
-        val (importOffset, importText) = importEdit(file, qualifiedName)
-        val position = index.indexToPosition(importOffset)
-        JavaPsiImportCandidate(
-            qualifiedName,
-            JavaPsiTextEdit(
-                target.file.normalize(), target.documentVersion, target.documentRevision,
-                position.line, position.column, position.line, position.column, importText,
-            ),
+      val reference = JavaPsiImports.reference(file, target) ?: return@withCurrentJavaFile null
+      withJavaDiagnosticProgress(params.cancelChecker) {
+        val candidates = JavaPsiImports.candidates(
+            file, target.simpleName, listOf(reference), qualifiedNames, params.cancelChecker,
         )
-      }.distinctBy { it.qualifiedName }.toList()
-      candidates
+        JavaPsiImports.candidatesWithEdits(file, target, candidates)
+      }
     }
   }
 
-  private fun importEdit(file: PsiJavaFile, qualifiedName: String): Pair<Int, String> {
-    val content = file.text
-    val newlineOffset = content.indexOfFirst { it == '\r' || it == '\n' }
-    val newline = when {
-      newlineOffset < 0 -> "\n"
-      content[newlineOffset] == '\r' && content.getOrNull(newlineOffset + 1) == '\n' -> "\r\n"
-      else -> content[newlineOffset].toString()
+  override fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? {
+    if (params.documentVersion < 0 || params.documentRevision < 0L) return null
+    val targets = projectAccess.withCurrentJavaFile(
+        params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
+    ) { file ->
+      withJavaDiagnosticProgress(params.cancelChecker) { JavaPsiImports.unresolvedTypes(file, params) }
+    } ?: return null
+    if (targets.isEmpty()) return emptyList()
+    val qualifiedNames = JavaCompletionTypeIndex.qualifiedNames(
+        params.module, targets.mapTo(LinkedHashSet()) { it.simpleName }, params.cancelChecker,
+    )
+    return projectAccess.withCurrentJavaFile(
+        params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
+    ) { file ->
+      withJavaDiagnosticProgress(params.cancelChecker) {
+        JavaPsiImports.choices(file, targets, qualifiedNames, params.cancelChecker)
+      }
     }
-    val importStatements = file.importList?.importStatements.orEmpty()
-    val before = importStatements.firstOrNull {
-      it.qualifiedName != null && qualifiedName < it.qualifiedName!!
+  }
+
+  override fun generateImports(params: JavaPsiGenerateImportsParams): List<JavaPsiTextEdit>? {
+    if (params.documentVersion < 0 || params.documentRevision < 0L) return null
+    return projectAccess.withCurrentJavaFile(
+        params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
+    ) { file ->
+      withJavaDiagnosticProgress(params.cancelChecker) { JavaPsiImports.generate(file, params) }
     }
-    if (before != null) return before.textRange.startOffset to "import $qualifiedName;$newline"
-    val lastOrdinary = importStatements.lastOrNull()
-    if (lastOrdinary != null) {
-      return lastOrdinary.textRange.endOffset to "${newline}import $qualifiedName;"
-    }
-    val firstStatic = file.importList?.allImportStatements?.firstOrNull()
-    if (firstStatic != null) return firstStatic.textRange.startOffset to "import $qualifiedName;$newline"
-    val packageStatement = file.packageStatement
-    if (packageStatement != null) {
-      return packageStatement.textRange.endOffset to "${newline}${newline}import $qualifiedName;"
-    }
-    return 0 to "import $qualifiedName;$newline$newline"
   }
 
   private fun classAt(file: PsiJavaFile, offset: Int): PsiClass? {

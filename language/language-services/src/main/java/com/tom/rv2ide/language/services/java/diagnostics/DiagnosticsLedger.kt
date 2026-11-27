@@ -94,6 +94,7 @@ internal class DiagnosticsLedger {
       resolverGeneration: Long? = null,
   ) {
     synchronized(entries) {
+      if (generationValue != generation) return
       entries[file.normalize()] = Entry(generation, stamp, epoch, resolverGeneration, analyzedAt, result)
     }
   }

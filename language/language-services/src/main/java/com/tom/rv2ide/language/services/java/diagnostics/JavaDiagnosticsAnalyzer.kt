@@ -100,7 +100,8 @@ internal class JavaDiagnosticsAnalyzer(
             cached.diagnostics.size,
         )
       }
-      if (ledger.generation() == ledgerGeneration) {
+      if (ledger.generation() == ledgerGeneration &&
+          JavaDiagnosticsInterop.currentGeneration() == sharedResolverGeneration) {
         return cached
       }
       return DiagnosticResult.NO_UPDATE
@@ -127,7 +128,8 @@ internal class JavaDiagnosticsAnalyzer(
         }
 
     val terminalResult =
-        if (ledger.generation() == ledgerGeneration) worker.result
+        if (ledger.generation() == ledgerGeneration &&
+            JavaDiagnosticsInterop.currentGeneration() == sharedResolverGeneration) worker.result
         else DiagnosticResult.NO_UPDATE
     return terminalResult.also { result ->
       analyzingWorker = null

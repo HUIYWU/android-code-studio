@@ -13,6 +13,7 @@ import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaF
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.invalidateJavaPsiCaches
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaPsiResolver
 import com.tom.rv2ide.language.services.java.psi.LiveJavaPsiServiceResolver
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.source.LiveJavaResolveScopeManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.ResolveScopeManager
 import org.jetbrains.kotlin.resolve.jvm.KotlinCliJavaFileManager
@@ -380,6 +381,7 @@ val allModules = modules +
           project,
           sourceRegistry,
           project.getService(JavaFileManager::class.java) as KotlinCliJavaFileManager,
+          onChanged = { JavaDiagnosticsInterop.sourceChanged(javaDiagnosticsResolver) },
       )
       project.picoContainer.unregisterComponent(JavaFileManager::class.java.name)
       project.registerService(JavaFileManager::class.java, javaFiles)

@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.util.concurrent.CancellationException
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
+import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
 import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
@@ -99,9 +100,10 @@ internal object JavaPsiDiagnosticsCollector {
         UncheckedWarningLocalInspection(),
         RedundantThrowsDeclarationLocalInspection(),
     )
+    val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
       val initStartedAt = if (trace) System.nanoTime() else 0L
-      val holder = ProblemsHolder(InspectionManager.getInstance(file.project), file, true)
+      val holder = ProblemsHolder(inspectionManager, file, true)
       val session = LocalInspectionToolSession(file, file.textRange, file.textRange, HighlightSeverity.INFORMATION)
       val onTheFly = inspection !is UncheckedWarningLocalInspection
       val visitor = InspectionEngine.createVisitor(inspection, holder, onTheFly, session)
@@ -203,33 +205,16 @@ internal object JavaPsiDiagnosticsCollector {
     }
     val descriptorsStartedAt = if (trace) System.nanoTime() else 0L
     inspectionRuns.forEach { run ->
-      run.holder.results.forEach descriptorLoop@{ descriptor ->
-        cancelChecker.abortIfCancelled()
-        val anchor = requireNotNull(descriptor.psiElement)
-        if (SuppressionUtil.inspectionResultSuppressed(anchor, run.tool)) return@descriptorLoop
-        val severity = descriptor.highlightType.toSeverity() ?: return@descriptorLoop
-        val range = descriptor.absoluteRange()
-        val item = DiagnosticItem(
-            message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
-            code = when (run.tool.shortName) {
-              JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME -> DiagnosticCode.UNUSED_THROWS.id
-              JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME -> JavaUnusedSymbolDiagnostic.CODE
-              else -> run.tool.shortName
-            },
-            range = Range(lineIndex.indexToPosition(range.startOffset), lineIndex.indexToPosition(range.endOffset)),
-            source = "java-inspection",
-            severity = severity,
+      run.holder.results.forEach { descriptor ->
+        addInspectionDiagnostic(
+            descriptor, run.tool, lineIndex, path, documentVersion, documentRevision, cancelChecker, result,
         )
-        if (run.tool.shortName == JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME) {
-          unusedSymbolTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
-        } else if (run.tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
-          unusedThrowsTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
-        } else if (run.tool.shortName == JavaUncheckedWarningDiagnostic.INSPECTION_SHORT_NAME &&
-            severity == DiagnosticSeverity.WARNING) {
-          uncheckedWarningTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
-        }
-        result += item
       }
+    }
+    JavaUnusedImportsInspection.inspect(file, cancelChecker) { inspection, descriptor ->
+      addInspectionDiagnostic(
+          descriptor, inspection, lineIndex, path, documentVersion, documentRevision, cancelChecker, result,
+      )
     }
     val descriptorsNs = if (trace) System.nanoTime() - descriptorsStartedAt else 0L
     val sortStartedAt = if (trace) System.nanoTime() else 0L
@@ -344,6 +329,7 @@ internal object JavaPsiDiagnosticsCollector {
       }
     }
   }
+
   private fun unresolvedMethodTarget(
       call: PsiMethodCallExpression,
       file: Path,
@@ -367,13 +353,14 @@ internal object JavaPsiDiagnosticsCollector {
     )
   }
 
-  private fun unresolvedTypeTarget(
+  internal fun unresolvedTypeTarget(
       error: JavaCompilationError<*, *>,
       file: Path,
       documentVersion: Int,
       documentRevision: Long,
       highlightStart: Int,
       highlightEnd: Int,
+      includeAnnotationsAndThrows: Boolean = false,
   ): JavaUnresolvedTypeDiagnostic? {
     if (error.kind().key() !in setOf(
             JavaUnresolvedTypeDiagnostic.REFERENCE_UNRESOLVED_KEY,
@@ -388,13 +375,14 @@ internal object JavaPsiDiagnosticsCollector {
     if (reference.qualifier != null) return null
     if (PsiTreeUtil.getParentOfType(reference, PsiImportStatementBase::class.java, false) != null) return null
     val referenceList = PsiTreeUtil.getParentOfType(reference, PsiReferenceList::class.java, false)
-    if (referenceList != null && referenceList.role ==
-        org.jetbrains.kotlin.com.intellij.psi.PsiReferenceList.Role.THROWS_LIST) return null
+    if (!includeAnnotationsAndThrows && referenceList?.role == PsiReferenceList.Role.THROWS_LIST) return null
     val typeElement = PsiTreeUtil.getParentOfType(reference, PsiTypeElement::class.java, false)
     val parent = reference.parent
+    val annotationName = parent is PsiAnnotation && parent.nameReferenceElement === reference
     val typeContext = typeElement?.innermostComponentReferenceElement === reference ||
-        referenceList != null || parent is PsiNewExpression && parent.classOrAnonymousClassReference === reference
-    if (!typeContext || parent is PsiAnnotation && parent.nameReferenceElement === reference) return null
+        referenceList != null || parent is PsiNewExpression && parent.classOrAnonymousClassReference === reference ||
+        includeAnnotationsAndThrows && annotationName
+    if (!typeContext || !includeAnnotationsAndThrows && annotationName) return null
     val name = reference.referenceName ?: return null
     val nameElement = reference.referenceNameElement ?: return null
     if (name.isEmpty() || nameElement.text != name) return null
@@ -525,6 +513,43 @@ internal object JavaPsiDiagnosticsCollector {
         method.parameterList.parameters.map { TypeConversionUtil.erasure(it.type).canonicalText },
         exceptionQualifiedName, referenceRange.startOffset, referenceRange.endOffset, reference.text,
     )
+  }
+
+  private fun addInspectionDiagnostic(
+      descriptor: ProblemDescriptor,
+      tool: InspectionProfileEntry,
+      lineIndex: LineIndex,
+      path: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      cancelChecker: ICancelChecker,
+      result: MutableList<DiagnosticItem>,
+  ) {
+    cancelChecker.abortIfCancelled()
+    val anchor = requireNotNull(descriptor.psiElement)
+    if (SuppressionUtil.inspectionResultSuppressed(anchor, tool)) return
+    val severity = descriptor.highlightType.toSeverity() ?: return
+    val range = descriptor.absoluteRange()
+    val item = DiagnosticItem(
+        message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
+        code = when (tool.shortName) {
+          JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME -> DiagnosticCode.UNUSED_THROWS.id
+          JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME -> JavaUnusedSymbolDiagnostic.CODE
+          else -> tool.shortName
+        },
+        range = Range(lineIndex.indexToPosition(range.startOffset), lineIndex.indexToPosition(range.endOffset)),
+        source = "java-inspection",
+        severity = severity,
+    )
+    if (tool.shortName == JavaUnusedSymbolDiagnostic.INSPECTION_SHORT_NAME) {
+      unusedSymbolTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+    } else if (tool.shortName == JavaUnusedThrowsDiagnostic.INSPECTION_SHORT_NAME) {
+      unusedThrowsTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+    } else if (tool.shortName == JavaUncheckedWarningDiagnostic.INSPECTION_SHORT_NAME &&
+        severity == DiagnosticSeverity.WARNING) {
+      uncheckedWarningTarget(anchor, range, path, documentVersion, documentRevision)?.let { item.extra = it }
+    }
+    result += item
   }
 
   private data class InspectionRun(

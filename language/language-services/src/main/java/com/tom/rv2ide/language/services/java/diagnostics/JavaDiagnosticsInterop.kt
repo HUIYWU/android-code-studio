@@ -6,7 +6,10 @@ import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicReference
+import org.greenrobot.eventbus.EventBus
 import org.slf4j.LoggerFactory
+
+class JavaDiagnosticsChangedEvent(val generation: Long)
 
 interface JavaDiagnosticsResolver {
   fun diagnostics(
@@ -38,6 +41,19 @@ object JavaDiagnosticsInterop {
       val current = state.get()
       if (current.resolver !== resolver) return
       if (state.compareAndSet(current, State(null, current.generation + 1L))) return
+    }
+  }
+
+  @JvmStatic
+  fun sourceChanged(resolver: JavaDiagnosticsResolver) {
+    while (true) {
+      val current = state.get()
+      if (current.resolver !== resolver) return
+      val next = State(resolver, current.generation + 1L)
+      if (state.compareAndSet(current, next)) {
+        EventBus.getDefault().post(JavaDiagnosticsChangedEvent(next.generation))
+        return
+      }
     }
   }
 

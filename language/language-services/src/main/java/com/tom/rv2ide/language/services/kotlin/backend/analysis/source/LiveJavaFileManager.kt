@@ -3,7 +3,6 @@ package com.tom.rv2ide.language.services.kotlin.backend.analysis.source
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisRead
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.environment.analysisWrite
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.LiveSourceFileRegistry
-import com.tom.rv2ide.language.services.kotlin.logging.KlsLogs
 import com.tom.rv2ide.projects.FileManager
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.live.liveBackingPath
 import org.jetbrains.kotlin.analysis.api.platform.modification.KotlinModuleOutOfBlockModificationEvent
@@ -12,6 +11,7 @@ import org.jetbrains.kotlin.com.intellij.ide.highlighter.JavaFileType
 import org.jetbrains.kotlin.com.intellij.lang.java.JavaLanguage
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiModificationTrackerImpl
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
+import org.jetbrains.kotlin.com.intellij.openapi.fileEditor.impl.LoadTextUtil
 import org.jetbrains.kotlin.com.intellij.openapi.project.Project
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile
 import org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFileManager
@@ -19,6 +19,9 @@ import org.jetbrains.kotlin.com.intellij.openapi.module.Module
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.openapi.util.Key
+import org.jetbrains.kotlin.com.intellij.openapi.util.text.StringUtil
+import org.jetbrains.kotlin.com.intellij.psi.AbstractFileViewProvider
+import org.jetbrains.kotlin.com.intellij.psi.impl.PsiToDocumentSynchronizer
 import org.jetbrains.kotlin.com.intellij.psi.PsiClass
 import org.jetbrains.kotlin.com.intellij.psi.PsiFileFactory
 import org.jetbrains.kotlin.com.intellij.psi.PsiJavaFile
@@ -39,10 +42,10 @@ import java.util.function.Predicate
 private val liveJavaFileInvalidKey = Key.create<Boolean>("acs.kotlin.live.java.file.invalid")
 
 internal fun invalidateJavaPsiCaches(project: Project) {
-  (PsiModificationTracker.getInstance(project) as PsiModificationTrackerImpl)
-      .incLanguageModificationCount(JavaLanguage.INSTANCE)
+  val tracker = PsiModificationTracker.getInstance(project) as PsiModificationTrackerImpl
+  tracker.incLanguageModificationCount(JavaLanguage.INSTANCE)
   PsiManager.getInstance(project).dropResolveCaches()
-  project.messageBus.syncPublisher(PsiModificationTracker.TOPIC).modificationCountChanged()
+  tracker.incCounter()
 }
 
 @OptIn(org.jetbrains.kotlin.analysis.api.KaExperimentalApi::class, org.jetbrains.kotlin.analysis.api.KaPlatformInterface::class)
@@ -50,6 +53,7 @@ internal class LiveJavaFileManager(
     private val project: Project,
     private val registry: LiveSourceFileRegistry,
     private val delegate: KotlinCliJavaFileManager,
+    private val onChanged: () -> Unit,
 ) : KotlinCliJavaFileManager by delegate, AutoCloseable {
   private data class Entry(
       val version: Int,
@@ -97,16 +101,22 @@ internal class LiveJavaFileManager(
           files[normalized] = Entry(snapshot.version, snapshot.revision, next, diskNames)
           index(next, add = true)
         }
-        val psiManager = PsiManager.getInstance(project)
-        // TODO(ACS-ANALYSIS-EXPERIMENT): Validate disk PSI coherence after saving and closing an active Java document.
         if (next == null && previous != null && Files.isRegularFile(normalized)) {
           val diskVirtualFile = requireNotNull(VirtualFileManager.getInstance().findFileByNioPath(normalized))
-          val diskFile = requireNotNull(psiManager.findFile(diskVirtualFile))
-          psiManager.reloadFromDisk(diskFile)
-          KlsLogs.info("Java live PSI disk reloaded: file={}, psi={}", normalized, System.identityHashCode(diskFile))
+          val diskFile = requireNotNull(PsiManager.getInstance(project).findFile(diskVirtualFile))
+          val provider = diskFile.viewProvider as AbstractFileViewProvider
+          val diskText = LoadTextUtil.loadText(provider.virtualFile)
+          val document = requireNotNull(provider.document)
+          if (!StringUtil.equals(document.immutableCharSequence, diskText)) {
+            PsiToDocumentSynchronizer.performAtomically(diskFile) {
+              document.setText(diskText)
+            }
+          }
+          provider.onContentReload()
         }
         invalidateJavaPsiCaches(project)
         project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(module))
+        onChanged()
       }
     }
   }
@@ -248,6 +258,7 @@ internal class LiveJavaFileManager(
         if (paths.isNotEmpty()) {
           invalidateJavaPsiCaches(project)
           modules.forEach { project.publishModificationEvent(KotlinModuleOutOfBlockModificationEvent(it)) }
+          onChanged()
         }
       }
     }

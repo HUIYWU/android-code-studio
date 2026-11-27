@@ -18,12 +18,25 @@
 package com.tom.rv2ide.language.services.java.actions.diagnostics
 
 import com.tom.rv2ide.actions.ActionData
+import com.tom.rv2ide.actions.markInvisible
 import com.tom.rv2ide.actions.requireContext
+import com.tom.rv2ide.actions.requireFile
 import com.tom.rv2ide.actions.requirePath
 import com.tom.rv2ide.common.logging.IdeLogConfig
 import com.tom.rv2ide.resources.R
 import com.tom.rv2ide.language.services.java.actions.BaseJavaCodeAction
 import com.tom.rv2ide.language.services.java.compiler.CompileTask
+import com.tom.rv2ide.editor.api.IEditor
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFixImportsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateImportsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiImportChoices
+import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
+import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
+import com.tom.rv2ide.preferences.internal.JavaPreferences
+import com.tom.rv2ide.progress.ICancelChecker
+import com.tom.rv2ide.projects.FileManager
+import com.tom.rv2ide.projects.IProjectManager
+import com.tom.rv2ide.projects.models.DocumentSnapshotIdentity
 import com.tom.rv2ide.language.services.java.models.DiagnosticCode
 import com.tom.rv2ide.language.services.java.utils.positionForImports
 import com.tom.rv2ide.lsp.models.CodeActionItem
@@ -34,6 +47,13 @@ import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.utils.DialogUtils
 import com.tom.rv2ide.utils.flashInfo
 import java.nio.file.Path
+import io.github.rosemoe.sora.widget.CodeEditor
+import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 
 /**
@@ -52,7 +72,21 @@ class AutoFixImportsAction : BaseJavaCodeAction() {
     private val log = LoggerFactory.getLogger(AutoFixImportsAction::class.java)
   }
 
-  override suspend fun execAction(data: ActionData): Result {
+  override fun prepare(data: ActionData) {
+    super.prepare(data)
+    if (!visible || !JavaPreferences.isModernDiagnosticsEnabled) return
+    val file = data.requirePath().normalize()
+    val identity = data[DocumentSnapshotIdentity::class.java]
+    val editor = data[CodeEditor::class.java]
+    if (identity == null || editor == null || !isCurrent(editor, file, identity)) {
+      markInvisible()
+      return
+    }
+    enabled = JavaPsiServiceInterop.isAvailable()
+  }
+
+  override suspend fun execAction(data: ActionData): Any {
+    if (JavaPreferences.isModernDiagnosticsEnabled) return fixImportsWithPsi(data)
     val path = data.requirePath()
     val compiler = data.requireCompiler()
     return compiler.compile(path).get { task ->
@@ -81,6 +115,28 @@ class AutoFixImportsAction : BaseJavaCodeAction() {
   }
 
   override fun postExec(data: ActionData, result: Any) {
+    if (result === EmptyResult) return
+    if (result === NoImportsResult) {
+      flashInfo(R.string.msg_no_unresolved_classes)
+      return
+    }
+    if (result is PsiResult) {
+      val editor = data[CodeEditor::class.java] ?: return
+      if (!JavaPsiServiceInterop.isCurrentGeneration(result.serviceGeneration) ||
+          !isCurrent(editor, result.file, result.identity) || result.edits.isEmpty() || result.edits.any {
+            it.file.normalize() != result.file || it.documentVersion != result.identity.version ||
+                it.documentRevision != result.identity.revision ||
+                it.startLine != it.endLine || it.startColumn != it.endColumn
+          }) return
+      val text = editor.text
+      text.beginBatchEdit()
+      try {
+        for (edit in result.edits) text.insert(edit.startLine, edit.startColumn, edit.newText)
+      } finally {
+        text.endBatchEdit()
+      }
+      return
+    }
     if (result !is Result) {
       if (IdeLogConfig.shouldLogError()) {
         log.error("Invalid result returned from execAction: {}", result)
@@ -206,6 +262,92 @@ class AutoFixImportsAction : BaseJavaCodeAction() {
   private fun getFileImports(task: CompileTask, file: Path): Set<String> {
     return task.root(file).imports.map { it.qualifiedIdentifier }.map { it.toString() }.toSet()
   }
+
+  private suspend fun fixImportsWithPsi(data: ActionData): Any {
+    val file = data.requirePath().normalize()
+    val identity = data[DocumentSnapshotIdentity::class.java] ?: return EmptyResult
+    if (!isCurrentSnapshot(file, identity)) return EmptyResult
+    val serviceGeneration = JavaPsiServiceInterop.currentGeneration() ?: return EmptyResult
+    val coroutineContext = currentCoroutineContext()
+    val checker = object : ICancelChecker.Default() {
+      override fun isCancelled(): Boolean {
+        if (super.isCancelled() || !coroutineContext.isActive) return true
+        val document = FileManager.getActiveDocument(file)
+        val stale = !JavaPsiServiceInterop.isCurrentGeneration(serviceGeneration) ||
+            document == null || synchronized(document) {
+              document.version != identity.version || document.revision != identity.revision
+            }
+        if (stale) cancel()
+        return stale
+      }
+    }
+    val module = IProjectManager.getInstance().getWorkspace()?.findModuleForFile(data.requireFile(), false)
+    val choices = JavaPsiServiceInterop.fixImports(
+        JavaPsiFixImportsParams(file, identity.version, identity.revision, module, checker),
+    ) ?: return EmptyResult
+    if (choices.isEmpty()) return NoImportsResult
+    val selected = LinkedHashMap<String, String>()
+    for (choice in choices) {
+      checker.abortIfCancelled()
+      val qualifiedName = if (choice.qualifiedNames.size == 1) choice.qualifiedNames.single() else {
+        withContext(Dispatchers.Main.immediate) {
+          val editor = data[CodeEditor::class.java] ?: return@withContext null
+          checker.abortIfCancelled()
+          if (!isCurrent(editor, file, identity)) return@withContext null
+          chooseImport(data, choice)
+        } ?: return EmptyResult
+      }
+      selected[choice.simpleName] = qualifiedName
+    }
+    checker.abortIfCancelled()
+    val edits = JavaPsiServiceInterop.generateImports(
+        JavaPsiGenerateImportsParams(file, identity.version, identity.revision, selected, checker),
+    ) ?: return EmptyResult
+    checker.abortIfCancelled()
+    return PsiResult(file, identity, serviceGeneration, edits)
+  }
+
+  private suspend fun chooseImport(data: ActionData, choice: JavaPsiImportChoices): String? =
+      suspendCancellableCoroutine { continuation ->
+        val context = data.requireContext()
+        val dialog = DialogUtils.newMaterialDialogBuilder(context)
+            .setCancelable(true)
+            .setTitle(context.getString(R.string.title_class_chooser, choice.simpleName))
+            .setItems(choice.qualifiedNames.toTypedArray()) { dialog, which ->
+              dialog.dismiss()
+              if (continuation.isActive) continuation.resume(choice.qualifiedNames[which])
+            }
+            .setOnCancelListener { if (continuation.isActive) continuation.resume(null) }
+            .create()
+        continuation.invokeOnCancellation {
+          android.os.Handler(android.os.Looper.getMainLooper()).post { dialog.dismiss() }
+        }
+        dialog.show()
+      }
+
+  private fun isCurrent(editor: CodeEditor, file: Path, identity: DocumentSnapshotIdentity): Boolean {
+    if (editor.isReleased || (editor as? IEditor)?.file?.toPath()?.normalize() != file) return false
+    val arguments = editor.extraArguments
+    if (arguments.getInt(IEditor.KEY_DOCUMENT_VERSION, -1) != identity.version ||
+        arguments.getLong(IEditor.KEY_DOCUMENT_REVISION, -1L) != identity.revision) return false
+    return isCurrentSnapshot(file, identity)
+  }
+
+  private fun isCurrentSnapshot(file: Path, identity: DocumentSnapshotIdentity): Boolean {
+    if (identity.file.normalize() != file || identity.version < 0 || identity.revision < 0L) return false
+    val snapshot = FileManager.getActiveDocumentSnapshot(file) ?: return false
+    return snapshot.version == identity.version && snapshot.revision == identity.revision
+  }
+
+  private class PsiResult(
+      val file: Path,
+      val identity: DocumentSnapshotIdentity,
+      val serviceGeneration: Long,
+      val edits: List<JavaPsiTextEdit>,
+  )
+
+  private object EmptyResult
+  private object NoImportsResult
 
   inner class Result(val fileImports: Set<String>, val classes: MutableMap<String, List<String>>)
 }

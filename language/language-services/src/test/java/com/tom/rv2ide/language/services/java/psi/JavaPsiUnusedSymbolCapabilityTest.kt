@@ -22,7 +22,11 @@ import org.jetbrains.kotlin.com.intellij.lang.java.JavaLanguage
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.util.Computable
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
+import org.jetbrains.kotlin.com.intellij.psi.PsiLiteralExpression
 import org.jetbrains.kotlin.com.intellij.psi.PsiModifier
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.resolve.reference.impl.JavaLangClassMemberReference
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.resolve.reference.impl.providers.JavaClassReference
+import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.com.intellij.uast.UastModificationTracker
 import org.jetbrains.uast.UastLanguagePlugin
 import java.nio.file.Files
@@ -136,6 +140,9 @@ class JavaPsiUnusedSymbolCapabilityTest {
       val path = fixturePath("app/src/main/java/com/tom/rv2ide/testing/kotlinfixture/app/JavaPsiPrivateUnused.java")
       val disk = "package com.tom.rv2ide.testing.kotlinfixture.app; public class JavaPsiPrivateUnused {}"
       val previousDisk = if (Files.exists(path)) Files.readAllBytes(path) else null
+      val reflectiveName = "com.tom.rv2ide.testing.kotlinfixture.app.JavaPsiPrivateUnused\$ReflectiveNested"
+      val reflectiveFieldName = "deadField"
+      val reflectiveMethodName = "deadMethod"
       val content = """
           package com.tom.rv2ide.testing.kotlinfixture.app;
           public class JavaPsiPrivateUnused implements java.io.Serializable {
@@ -150,6 +157,7 @@ class JavaPsiUnusedSymbolCapabilityTest {
             int packageField;
             private static class DeadNested {}
             private static class LiveNested {}
+            private static class ReflectiveNested {}
             @SuppressWarnings("unused") private static class SuppressedNested {}
             private static class ConstructorOwner {
               private ConstructorOwner() {}
@@ -167,11 +175,15 @@ class JavaPsiUnusedSymbolCapabilityTest {
             public void api(int publicParameter) {}
             protected void inherited(int protectedParameter) {}
             void packageApi(int packageParameter) {}
-            public void caller() {
+            public void caller() throws ClassNotFoundException {
               liveMethod(1, 2);
               recursive(1, 2);
               new LiveNested();
               new ConstructorOwner(1);
+              Class.forName("$reflectiveName");
+              ClassLoader.getSystemClassLoader().loadClass("$reflectiveName");
+              JavaPsiPrivateUnused.class.getDeclaredField("$reflectiveFieldName");
+              JavaPsiPrivateUnused.class.getDeclaredMethod("$reflectiveMethodName");
             }
             private void readObject(java.io.ObjectInputStream stream)
                 throws java.io.IOException, ClassNotFoundException {
@@ -201,6 +213,22 @@ class JavaPsiUnusedSymbolCapabilityTest {
                   val local = inspection.sharedLocalInspectionTool
                   assertTrue(local.LOCAL_VARIABLE && local.CLASS && local.FIELD && local.METHOD && local.PARAMETER)
                   assertEquals(PsiModifier.PRIVATE, local.parameterVisibility)
+                  val nested = requireNotNull(file.classes.single().findInnerClassByName("ReflectiveNested", false))
+                  val literals = PsiTreeUtil.findChildrenOfType(file, PsiLiteralExpression::class.java)
+                  val classLiterals = literals.filter { it.value == reflectiveName }
+                  assertEquals(2, classLiterals.size)
+                  classLiterals.forEach { classLiteral ->
+                    val classReference = classLiteral.references.filterIsInstance<JavaClassReference>()
+                        .single { it.rangeInElement.substring(classLiteral.text) == "ReflectiveNested" }
+                    assertEquals(nested, classReference.resolve())
+                  }
+                  val field = file.classes.single().fields.single { it.name == reflectiveFieldName }
+                  val method = file.classes.single().methods.single { it.name == reflectiveMethodName }
+                  val memberReferences = literals.flatMap { literal ->
+                    literal.references.filterIsInstance<JavaLangClassMemberReference>()
+                  }
+                  assertEquals(field, memberReferences.single { it.resolve() == field }.resolve())
+                  assertEquals(method, memberReferences.single { it.resolve() == method }.resolve())
                 }
               })
             }
@@ -210,12 +238,10 @@ class JavaPsiUnusedSymbolCapabilityTest {
             val items = diagnostics()
             val targets = items.map { requireNotNull(JavaUnusedSymbolDiagnostic.from(it)) }
             val expected = mapOf(
-                "deadField" to JavaUnusedSymbolDiagnostic.DeclarationKind.FIELD,
                 "writeOnlyField" to JavaUnusedSymbolDiagnostic.DeclarationKind.FIELD,
                 "readOnlyField" to JavaUnusedSymbolDiagnostic.DeclarationKind.FIELD,
                 "DeadNested" to JavaUnusedSymbolDiagnostic.DeclarationKind.CLASS,
                 "ConstructorOwner" to JavaUnusedSymbolDiagnostic.DeclarationKind.CONSTRUCTOR,
-                "deadMethod" to JavaUnusedSymbolDiagnostic.DeclarationKind.METHOD,
                 "UnusedType" to JavaUnusedSymbolDiagnostic.DeclarationKind.TYPE_PARAMETER,
                 "deadParameter" to JavaUnusedSymbolDiagnostic.DeclarationKind.PARAMETER,
                 "recursiveParameter" to JavaUnusedSymbolDiagnostic.DeclarationKind.PARAMETER,
@@ -230,12 +256,32 @@ class JavaPsiUnusedSymbolCapabilityTest {
               assertEquals(target.name, content.substring(target.highlightStart, target.highlightEnd))
               assertTrue(target.declarationStart <= target.highlightStart && target.declarationEnd >= target.highlightEnd)
             }
-            val updated = content.replace("liveMethod(1, 2);", "liveMethod(1, 2); System.out.println(deadField); deadMethod();")
+            val updated = content
+                .replace("Class.forName(\"$reflectiveName\");", "System.out.println(\"$reflectiveName\");")
+                .replace("ClassLoader.getSystemClassLoader().loadClass(\"$reflectiveName\");", "System.out.println(\"$reflectiveName\");")
+                .replace("JavaPsiPrivateUnused.class.getDeclaredField(\"$reflectiveFieldName\");", "System.out.println(\"$reflectiveFieldName\");")
+                .replace("JavaPsiPrivateUnused.class.getDeclaredMethod(\"$reflectiveMethodName\");", "System.out.println(\"$reflectiveMethodName\");")
             openDocument(path, updated, version = 2, revision = 1602L)
             environment.javaFiles.refresh(path)
             val refreshed = diagnostics(2, 1602L).map { requireNotNull(JavaUnusedSymbolDiagnostic.from(it)) }
-            assertEquals(expected.keys - setOf("deadField", "deadMethod"), refreshed.map { it.name }.toSet())
+            val refreshedExpected = expected +
+                ("deadField" to JavaUnusedSymbolDiagnostic.DeclarationKind.FIELD) +
+                ("deadMethod" to JavaUnusedSymbolDiagnostic.DeclarationKind.METHOD) +
+                ("ReflectiveNested" to JavaUnusedSymbolDiagnostic.DeclarationKind.CLASS)
+            assertEquals(refreshedExpected, refreshed.associate { it.name to it.declarationKind })
+            assertEquals(refreshedExpected.size, refreshed.size)
             assertTrue(refreshed.all { it.documentVersion == 2 && it.documentRevision == 1602L })
+            val directReference = updated
+                .replace("System.out.println(\"$reflectiveFieldName\");", "System.out.println(deadField);")
+                .replace("System.out.println(\"$reflectiveMethodName\");", "deadMethod();")
+            openDocument(path, directReference, version = 3, revision = 1603L)
+            environment.javaFiles.refresh(path)
+            val direct = diagnostics(3, 1603L).map { requireNotNull(JavaUnusedSymbolDiagnostic.from(it)) }
+            val directExpected = expected +
+                ("ReflectiveNested" to JavaUnusedSymbolDiagnostic.DeclarationKind.CLASS)
+            assertEquals(directExpected, direct.associate { it.name to it.declarationKind })
+            assertEquals(directExpected.size, direct.size)
+            assertTrue(direct.all { it.documentVersion == 3 && it.documentRevision == 1603L })
             assertEquals(null, environment.javaDiagnosticsResolver.diagnostics(path, ICancelChecker.NOOP, 1, 1601L))
             assertEquals(disk, Files.readAllBytes(path).decodeToString())
           } finally {

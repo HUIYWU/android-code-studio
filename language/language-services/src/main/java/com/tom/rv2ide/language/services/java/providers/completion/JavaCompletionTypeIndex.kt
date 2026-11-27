@@ -62,25 +62,35 @@ internal object JavaCompletionTypeIndex {
       module: ModuleProject?,
       simpleName: String,
       cancelChecker: ICancelChecker,
-  ): List<String> {
-    val names = LinkedHashSet<String>()
+  ): List<String> = qualifiedNames(module, setOf(simpleName), cancelChecker)[simpleName].orEmpty()
+
+  fun qualifiedNames(
+      module: ModuleProject?,
+      simpleNames: Set<String>,
+      cancelChecker: ICancelChecker,
+  ): Map<String, List<String>> {
+    if (simpleNames.isEmpty()) return emptyMap()
+    val names = LinkedHashMap<String, LinkedHashSet<String>>()
     for (trie in classTries(module)) {
       val pending = ArrayDeque<ClassTrie.Node>()
       pending.add(trie.root)
       while (pending.isNotEmpty()) {
         cancelChecker.abortIfCancelled()
         val node = pending.removeLast()
-        if (node.isClass && node.name == simpleName) names += node.qualifiedName
+        if (node.isClass && node.name in simpleNames) {
+          names.getOrPut(node.name) { LinkedHashSet() }.add(node.qualifiedName)
+        }
         node.children.values.forEach(pending::addLast)
       }
     }
     if (module != null) {
       for (name in kotlinTypes(module, cancelChecker)) {
         cancelChecker.abortIfCancelled()
-        if (name.substringAfterLast('.') == simpleName) names += name
+        val simpleName = name.substringAfterLast('.')
+        if (simpleName in simpleNames) names.getOrPut(simpleName) { LinkedHashSet() }.add(name)
       }
     }
-    return names.toList()
+    return names.mapValues { it.value.toList() }
   }
 
   fun forEachImportChild(

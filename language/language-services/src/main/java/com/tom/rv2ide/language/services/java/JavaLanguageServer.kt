@@ -43,6 +43,8 @@ import com.tom.rv2ide.language.services.java.providers.CompletionProvider
 import com.tom.rv2ide.language.services.java.providers.DefinitionProvider
 import com.tom.rv2ide.language.services.java.diagnostics.DiagnosticsAttempt
 import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsAnalyzer
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsChangedEvent
+import com.tom.rv2ide.language.services.java.diagnostics.JavaDiagnosticsInterop
 import com.tom.rv2ide.language.services.java.diagnostics.PublishDecision
 import com.tom.rv2ide.language.services.java.providers.JavaHoverProvider
 import com.tom.rv2ide.language.services.java.providers.JavaSelectionProvider
@@ -859,6 +861,18 @@ class JavaLanguageServer : ILanguageServer {
     timer.restart()
   }
 
+  @Subscribe(threadMode = ThreadMode.POSTING)
+  @Suppress("unused")
+  fun onJavaDiagnosticsChanged(event: JavaDiagnosticsChangedEvent) {
+    if (JavaDiagnosticsInterop.currentGeneration() != event.generation) return
+    diagnosticsAnalyzer.clear()
+    diagnosticsAnalyzer.cancel()
+    val current = selectedFile
+    if (current != null && DocumentUtils.isJavaFile(current) && FileManager.isActive(current)) {
+      scheduleDiagnostics()
+    }
+  }
+
   @Subscribe(threadMode = ThreadMode.ASYNC)
   @Suppress("unused")
   fun onContentChange(event: DocumentChangeEvent) {
@@ -1010,6 +1024,7 @@ class JavaLanguageServer : ILanguageServer {
     CoroutineScope(Dispatchers.Default).launch {
       try {
         maybeEvictIdleHeavyCompositeModules()
+        val resolverGeneration = JavaDiagnosticsInterop.currentGeneration()
         val attempt =
             diagnosticsAttemptOverride?.invoke(fileToAnalyze)
                 ?: run {
@@ -1049,10 +1064,9 @@ class JavaLanguageServer : ILanguageServer {
           PublishDecision.Action.PUBLISH -> Unit
         }
         withContext(Dispatchers.Main) {
-          if (selectedFile == fileToAnalyze) {
-            client?.publishDiagnostics(result)
-          } else if (IdeLogConfig.shouldLogInfo()) {
-            log.info("Analyze publish skipped because the target changed file={}", fileToAnalyze)
+          client?.publishDiagnostics(result) {
+            selectedFile == fileToAnalyze &&
+                JavaDiagnosticsInterop.currentGeneration() == resolverGeneration
           }
         }
       } finally {

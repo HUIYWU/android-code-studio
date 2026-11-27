@@ -163,6 +163,12 @@ class JavaPsiRemoveUnusedThrowsParams internal constructor(
     internal val diagnostic: JavaUnusedThrowsDiagnostic,
     @JvmField val cancelChecker: ICancelChecker,
 )
+class JavaPsiRemoveUnusedImportsParams(
+    @JvmField val file: Path,
+    @JvmField val documentVersion: Int,
+    @JvmField val documentRevision: Long,
+    @JvmField val cancelChecker: ICancelChecker,
+)
 class JavaPsiUnresolvedMethodParams internal constructor(
     internal val diagnostic: JavaUnresolvedMethodDiagnostic,
     @JvmField val indentationTabSize: Int,
@@ -179,10 +185,30 @@ data class JavaPsiImportCandidate(
     @JvmField val qualifiedName: String,
     @JvmField val edit: JavaPsiTextEdit,
 )
-
 class JavaPsiResolveImportCandidatesParams internal constructor(
     internal val diagnostic: JavaUnresolvedTypeDiagnostic,
     @JvmField val module: ModuleProject?,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+
+class JavaPsiFixImportsParams(
+    @JvmField val file: Path,
+    @JvmField val documentVersion: Int,
+    @JvmField val documentRevision: Long,
+    @JvmField val module: ModuleProject?,
+    @JvmField val cancelChecker: ICancelChecker,
+)
+
+data class JavaPsiImportChoices(
+    @JvmField val simpleName: String,
+    @JvmField val qualifiedNames: List<String>,
+)
+
+class JavaPsiGenerateImportsParams(
+    @JvmField val file: Path,
+    @JvmField val documentVersion: Int,
+    @JvmField val documentRevision: Long,
+    @JvmField val selectedImports: Map<String, String>,
     @JvmField val cancelChecker: ICancelChecker,
 )
 

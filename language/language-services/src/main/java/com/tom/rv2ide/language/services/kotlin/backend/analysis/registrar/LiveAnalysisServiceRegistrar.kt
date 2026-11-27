@@ -10,10 +10,18 @@ import org.jetbrains.kotlin.com.intellij.openapi.fileTypes.FileTypeExtensionPoin
 import org.jetbrains.kotlin.com.intellij.openapi.util.ClassExtensionPoint
 import org.jetbrains.kotlin.com.intellij.psi.impl.cache.impl.id.IdIndexer
 import org.jetbrains.kotlin.com.intellij.psi.impl.cache.impl.idCache.JavaIdIndexer
+import org.jetbrains.kotlin.com.intellij.psi.PsiReferenceContributor
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.resolve.reference.PsiReferenceContributorEP
 import org.jetbrains.kotlin.com.intellij.psi.search.UseScopeEnlarger
 import org.jetbrains.kotlin.com.intellij.psi.search.ScopeOptimizer
 import org.jetbrains.kotlin.com.intellij.lang.findUsages.FindUsagesProvider
 import org.jetbrains.kotlin.com.intellij.lang.java.JavaFindUsagesProvider
+import org.jetbrains.kotlin.com.intellij.lang.java.JavaLanguage
+import org.jetbrains.kotlin.com.intellij.psi.ElementManipulator
+import org.jetbrains.kotlin.com.intellij.psi.ElementManipulators
+import org.jetbrains.kotlin.com.intellij.psi.PsiLiteralExpression
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.resolve.reference.impl.JavaReflectionReferenceContributor
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.resolve.reference.impl.manipulators.StringLiteralManipulator
 import org.jetbrains.kotlin.com.intellij.psi.impl.cache.CacheManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.cache.impl.IndexCacheManagerImpl
 import org.jetbrains.kotlin.com.intellij.psi.impl.search.PsiSearchHelperImpl
@@ -41,9 +49,12 @@ import org.jetbrains.kotlin.com.intellij.codeInsight.highlighting.ReadWriteAcces
 import org.jetbrains.kotlin.com.intellij.openapi.extensions.DefaultPluginDescriptor
 import org.jetbrains.kotlin.com.intellij.openapi.extensions.PluginId
 import org.jetbrains.kotlin.com.intellij.lang.LanguageExtensionPoint
+import org.jetbrains.kotlin.com.intellij.psi.PsiNameHelper
+import org.jetbrains.kotlin.com.intellij.psi.impl.PsiNameHelperImpl
 import org.jetbrains.kotlin.com.intellij.psi.impl.PsiJavaModuleModificationTracker
 import org.jetbrains.kotlin.com.intellij.util.indexing.FileBasedIndex
 import org.jetbrains.kotlin.com.intellij.platform.backend.workspace.WorkspaceModel
+import org.jetbrains.kotlin.com.intellij.platform.indexing.BinaryFileSourceProvider
 
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPackagePartProviderFactory
 import com.tom.rv2ide.language.services.kotlin.backend.analysis.services.AnalysisPermissionOptions
@@ -181,23 +192,63 @@ internal class LiveAnalysisServiceRegistrar(
     )
     val idIndexerPoint = application.extensionArea
         .getExtensionPoint<FileTypeExtensionPoint<IdIndexer>>("org.jetbrains.kotlin.com.intellij.idIndexer")
-    val javaIndexerPlugin = DefaultPluginDescriptor(
+    val javaPlugin = DefaultPluginDescriptor(
         PluginId.getId("com.intellij.java"), JavaIdIndexer::class.java.classLoader,
     )
     if (idIndexerPoint.extensionList.none { it.filetype == "JAVA" }) {
       val indexer = FileTypeExtensionPoint<IdIndexer>("JAVA", JavaIdIndexer()).apply {
-        setPluginDescriptor(javaIndexerPlugin)
+        setPluginDescriptor(javaPlugin)
       }
-      idIndexerPoint.registerExtension(indexer, javaIndexerPlugin, application)
+      idIndexerPoint.registerExtension(indexer, javaPlugin, application)
     }
     // Replace the official CLASS bean with the fixed indexer; JAVA keeps JavaIdIndexer.
     val existingClassIndexers = idIndexerPoint.extensionList.filter { it.filetype == "CLASS" }
     if (existingClassIndexers.none { it.instance is LiveJavaClassIdIndexer }) {
       existingClassIndexers.forEach { idIndexerPoint.unregisterExtension(it) }
       val classIndexer = FileTypeExtensionPoint<IdIndexer>("CLASS", LiveJavaClassIdIndexer()).apply {
-        setPluginDescriptor(javaIndexerPlugin)
+        setPluginDescriptor(javaPlugin)
       }
-      idIndexerPoint.registerExtension(classIndexer, javaIndexerPlugin, application)
+      idIndexerPoint.registerExtension(classIndexer, javaPlugin, application)
+    }
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        BinaryFileSourceProvider.EP,
+        BinaryFileSourceProvider::class.java,
+    )
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        ElementManipulators.EP_NAME,
+        ClassExtensionPoint::class.java,
+    )
+    val literalClass = PsiLiteralExpression::class.java.name
+    val elementManipulatorPoint = application.extensionArea
+        .getExtensionPoint<ClassExtensionPoint<ElementManipulator<*>>>(ElementManipulators.EP_NAME)
+    if (elementManipulatorPoint.extensionList.none { it.psiElementClass == literalClass }) {
+      val literalManipulator = ClassExtensionPoint<ElementManipulator<*>>().apply {
+        psiElementClass = literalClass
+        implementationClass = StringLiteralManipulator::class.java.name
+        setPluginDescriptor(javaPlugin)
+      }
+      elementManipulatorPoint.registerExtension(literalManipulator, javaPlugin, application)
+    }
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        PsiReferenceContributor.EP_NAME,
+        PsiReferenceContributorEP::class.java,
+    )
+    val javaLanguageId = JavaLanguage.INSTANCE.id
+    val reflectionContributorClass = JavaReflectionReferenceContributor::class.java.name
+    val referenceContributorPoint = application.extensionArea.getExtensionPoint(PsiReferenceContributor.EP_NAME)
+    if (referenceContributorPoint.extensionList.none {
+          it is PsiReferenceContributorEP && it.language == javaLanguageId &&
+              it.implementationClass == reflectionContributorClass
+        }) {
+      val reflectionContributor = PsiReferenceContributorEP().apply {
+        language = javaLanguageId
+        implementationClass = reflectionContributorClass
+        setPluginDescriptor(javaPlugin)
+      }
+      referenceContributorPoint.registerExtension(reflectionContributor, javaPlugin, application)
     }
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
@@ -469,6 +520,7 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerProjectServices(project: MockProject) {
     PluginStructureProvider.registerProjectServices(project, PLUGIN_PATH)
+    project.registerService(PsiNameHelper::class.java, PsiNameHelperImpl(project))
     project.picoContainer.unregisterComponent(InspectionManager::class.java.name)
     project.registerService(InspectionManager::class.java, LiveInspectionManager(project))
     project.registerService(InspectionProjectProfileManager::class.java, LiveInspectionProfileManager::class.java)
