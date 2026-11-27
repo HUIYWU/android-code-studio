@@ -34,6 +34,9 @@ class JavaPsiAddImportCapabilityTest {
           package com.tom.rv2ide.testing.kotlinfixture.app;
           class JavaPsiAddImport {
             Date value;
+            TimerTask task = new TimerTask() {
+              @Override public void run() { }
+            };
             void unresolved() { missingCall(); }
           }
       """.trimIndent()
@@ -51,8 +54,12 @@ class JavaPsiAddImportCapabilityTest {
           }
 
           val allDiagnostics = diagnostics()
-          val target = requireNotNull(allDiagnostics.mapNotNull(JavaUnresolvedTypeDiagnostic::from)
-              .firstOrNull { it.simpleName == "Date" })
+          val typeTargets = allDiagnostics.mapNotNull(JavaUnresolvedTypeDiagnostic::from)
+          val target = requireNotNull(typeTargets.firstOrNull { it.simpleName == "Date" })
+          val anonymousStart = content.indexOf("new TimerTask") + "new ".length
+          val anonymousTarget = requireNotNull(typeTargets.firstOrNull {
+            it.simpleName == "TimerTask" && it.referenceStart == anonymousStart
+          })
           assertEquals(path.normalize(), target.file)
           assertEquals(1, target.documentVersion)
           assertEquals(1001L, target.documentRevision)
@@ -63,7 +70,13 @@ class JavaPsiAddImportCapabilityTest {
                 JavaPsiResolveImportCandidatesParams(target, module, ICancelChecker.NOOP),
             )
           })
+          val anonymousCandidates = requireNotNull(runAnalysis {
+            JavaPsiServiceInterop.resolveImportCandidates(
+                JavaPsiResolveImportCandidatesParams(anonymousTarget, module, ICancelChecker.NOOP),
+            )
+          })
           assertEquals(setOf("java.sql.Date", "java.util.Date"), candidates.map { it.qualifiedName }.toSet())
+          assertEquals(setOf("java.util.TimerTask"), anonymousCandidates.map { it.qualifiedName }.toSet())
           assertTrue(candidates.all {
             it.edit.file.normalize() == path.normalize() && it.edit.documentVersion == 1 &&
                 it.edit.documentRevision == 1001L && it.edit.startLine == it.edit.endLine &&

@@ -29,6 +29,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.Unchec
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.deadCode.UnusedDeclarationInspectionBase
+import org.jetbrains.kotlin.com.intellij.codeInspection.duplicateThrows.DuplicateThrowsInspection
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
 import org.jetbrains.kotlin.com.intellij.psi.PsiPatternVariable
@@ -99,6 +100,7 @@ internal object JavaPsiDiagnosticsCollector {
         SafeVarargsOnNonReifiableTypeInspection(),
         UncheckedWarningLocalInspection(),
         RedundantThrowsDeclarationLocalInspection(),
+        DuplicateThrowsInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
@@ -379,8 +381,9 @@ internal object JavaPsiDiagnosticsCollector {
     val typeElement = PsiTreeUtil.getParentOfType(reference, PsiTypeElement::class.java, false)
     val parent = reference.parent
     val annotationName = parent is PsiAnnotation && parent.nameReferenceElement === reference
+    val newExpression = PsiTreeUtil.getParentOfType(reference, PsiNewExpression::class.java, false)
     val typeContext = typeElement?.innermostComponentReferenceElement === reference ||
-        referenceList != null || parent is PsiNewExpression && parent.classOrAnonymousClassReference === reference ||
+        referenceList != null || newExpression?.classOrAnonymousClassReference === reference ||
         includeAnnotationsAndThrows && annotationName
     if (!typeContext || !includeAnnotationsAndThrows && annotationName) return null
     val name = reference.referenceName ?: return null

@@ -40,6 +40,58 @@ internal class LiveJavaPsiProjectAccess(
     return (visibleIndexed + active).map(Path::normalize).distinct()
   }
 
+  override fun nestedTypeNames(
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      simpleNames: Set<String>,
+      cancelChecker: ICancelChecker,
+  ): Map<String, List<String>>? = withCurrentJavaFile(
+      file, documentVersion, documentRevision, cancelChecker,
+  ) { current ->
+    val index = requireNotNull(environment.project.getService(
+        com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar.LiveJavaDirectInheritorsIndex::class.java,
+    ))
+    val materialized = HashMap<org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile, List<org.jetbrains.kotlin.com.intellij.psi.PsiClass>>()
+    val names = LinkedHashMap<String, MutableSet<String>>()
+    for (simpleName in simpleNames) {
+      cancelChecker.abortIfCancelled()
+      for (candidate in index.classesByName(simpleName)) {
+        cancelChecker.abortIfCancelled()
+        if (!current.resolveScope.contains(candidate.file)) continue
+        val klass = index.materialize(candidate, materialized)
+        if (klass.containingClass != null) {
+          klass.qualifiedName?.let { names.getOrPut(simpleName) { linkedSetOf() }.add(it) }
+        }
+      }
+    }
+    names.mapValues { it.value.toList() }
+  }
+
+  override fun staticMemberOwnerNames(
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      memberNames: Set<String>,
+      cancelChecker: ICancelChecker,
+  ): Map<String, List<String>>? = withCurrentJavaFile(
+      file, documentVersion, documentRevision, cancelChecker,
+  ) { current ->
+    val index = requireNotNull(environment.project.getService(
+        com.tom.rv2ide.language.services.kotlin.backend.analysis.registrar.LiveJavaDirectInheritorsIndex::class.java,
+    ))
+    val materialized = HashMap<org.jetbrains.kotlin.com.intellij.openapi.vfs.VirtualFile, List<org.jetbrains.kotlin.com.intellij.psi.PsiClass>>()
+    val names = LinkedHashMap<String, List<String>>()
+    for (memberName in memberNames) {
+      cancelChecker.abortIfCancelled()
+      names[memberName] = index.staticMemberOwners(memberName, current.resolveScope).mapNotNull { candidate ->
+        cancelChecker.abortIfCancelled()
+        index.materialize(candidate, materialized).qualifiedName
+      }.distinct()
+    }
+    names
+  }
+
   private fun activeJavaFilesFor(visibleModules: Set<String>): List<Path> =
       FileManager.getActiveDocumentFiles().filter { path ->
         path.toString().endsWith(".java") && environment.modulePathFor(path) in visibleModules

@@ -54,7 +54,7 @@ interface JavaPsiServiceResolver {
       params: JavaPsiResolveImportCandidatesParams,
   ): List<JavaPsiImportCandidate>? = null
 
-  fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? = null
+  fun fixImports(params: JavaPsiFixImportsParams): JavaPsiFixImportsResult? = null
 
   fun generateImports(params: JavaPsiGenerateImportsParams): List<JavaPsiTextEdit>? = null
 
@@ -247,7 +247,7 @@ object JavaPsiServiceInterop {
   }
 
   @JvmStatic
-  fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? {
+  fun fixImports(params: JavaPsiFixImportsParams): JavaPsiFixImportsResult? {
     params.cancelChecker.abortIfCancelled()
     val current = state.get()
     val resolver = current.resolver ?: return null

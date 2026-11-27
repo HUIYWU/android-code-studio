@@ -202,6 +202,12 @@ class JavaPsiFixImportsParams(
 data class JavaPsiImportChoices(
     @JvmField val simpleName: String,
     @JvmField val qualifiedNames: List<String>,
+    @JvmField val key: String = simpleName,
+)
+
+data class JavaPsiFixImportsResult(
+    @JvmField val types: List<JavaPsiImportChoices>,
+    @JvmField val staticMembers: List<JavaPsiStaticImportChoices>,
 )
 
 class JavaPsiGenerateImportsParams(
@@ -209,6 +215,7 @@ class JavaPsiGenerateImportsParams(
     @JvmField val documentVersion: Int,
     @JvmField val documentRevision: Long,
     @JvmField val selectedImports: Map<String, String>,
+    @JvmField val selectedStaticImports: Map<String, String>,
     @JvmField val cancelChecker: ICancelChecker,
 )
 

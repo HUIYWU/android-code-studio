@@ -30,6 +30,7 @@ import com.tom.rv2ide.editor.api.IEditor
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFixImportsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateImportsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImportChoices
+import com.tom.rv2ide.language.services.java.interop.JavaPsiStaticImportChoices
 import com.tom.rv2ide.language.services.java.interop.JavaPsiServiceInterop
 import com.tom.rv2ide.language.services.java.interop.JavaPsiTextEdit
 import com.tom.rv2ide.preferences.internal.JavaPreferences
@@ -285,9 +286,10 @@ class AutoFixImportsAction : BaseJavaCodeAction() {
     val choices = JavaPsiServiceInterop.fixImports(
         JavaPsiFixImportsParams(file, identity.version, identity.revision, module, checker),
     ) ?: return EmptyResult
-    if (choices.isEmpty()) return NoImportsResult
+    if (choices.types.isEmpty() && choices.staticMembers.isEmpty()) return NoImportsResult
     val selected = LinkedHashMap<String, String>()
-    for (choice in choices) {
+    val selectedStatic = LinkedHashMap<String, String>()
+    for (choice in choices.types) {
       checker.abortIfCancelled()
       val qualifiedName = if (choice.qualifiedNames.size == 1) choice.qualifiedNames.single() else {
         withContext(Dispatchers.Main.immediate) {
@@ -297,25 +299,45 @@ class AutoFixImportsAction : BaseJavaCodeAction() {
           chooseImport(data, choice)
         } ?: return EmptyResult
       }
-      selected[choice.simpleName] = qualifiedName
+      selected[choice.key] = qualifiedName
+    }
+    for (choice in choices.staticMembers) {
+      checker.abortIfCancelled()
+      val qualifiedName = if (choice.qualifiedNames.size == 1) choice.qualifiedNames.single() else {
+        withContext(Dispatchers.Main.immediate) {
+          val editor = data[CodeEditor::class.java] ?: return@withContext null
+          checker.abortIfCancelled()
+          if (!isCurrent(editor, file, identity)) return@withContext null
+          chooseStaticImport(data, choice)
+        } ?: return EmptyResult
+      }
+      selectedStatic[choice.key] = qualifiedName
     }
     checker.abortIfCancelled()
     val edits = JavaPsiServiceInterop.generateImports(
-        JavaPsiGenerateImportsParams(file, identity.version, identity.revision, selected, checker),
+        JavaPsiGenerateImportsParams(file, identity.version, identity.revision, selected, selectedStatic, checker),
     ) ?: return EmptyResult
     checker.abortIfCancelled()
     return PsiResult(file, identity, serviceGeneration, edits)
   }
 
-  private suspend fun chooseImport(data: ActionData, choice: JavaPsiImportChoices): String? =
+  private suspend fun chooseImport(data: ActionData, choice: JavaPsiImportChoices): String? = chooseImportItems(
+      data, choice.simpleName, choice.qualifiedNames,
+  )
+
+  private suspend fun chooseStaticImport(data: ActionData, choice: JavaPsiStaticImportChoices): String? = chooseImportItems(
+      data, choice.simpleName, choice.qualifiedNames,
+  )
+
+  private suspend fun chooseImportItems(data: ActionData, simpleName: String, qualifiedNames: List<String>): String? =
       suspendCancellableCoroutine { continuation ->
         val context = data.requireContext()
         val dialog = DialogUtils.newMaterialDialogBuilder(context)
             .setCancelable(true)
-            .setTitle(context.getString(R.string.title_class_chooser, choice.simpleName))
-            .setItems(choice.qualifiedNames.toTypedArray()) { dialog, which ->
+            .setTitle(context.getString(R.string.title_class_chooser, simpleName))
+            .setItems(qualifiedNames.toTypedArray()) { dialog, which ->
               dialog.dismiss()
-              if (continuation.isActive) continuation.resume(choice.qualifiedNames[which])
+              if (continuation.isActive) continuation.resume(qualifiedNames[which])
             }
             .setOnCancelListener { if (continuation.isActive) continuation.resume(null) }
             .create()

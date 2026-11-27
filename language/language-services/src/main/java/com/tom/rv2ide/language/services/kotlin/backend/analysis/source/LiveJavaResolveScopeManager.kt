@@ -20,7 +20,7 @@ internal class LiveJavaResolveScopeManager(
     private val delegate: ResolveScopeManager,
 ) : ResolveScopeManager() {
   override fun getResolveScope(element: PsiElement): GlobalSearchScope {
-    val file = element.containingFile?.viewProvider?.virtualFile ?: return delegate.getResolveScope(element)
+    val file = element.containingFile?.originalFile?.viewProvider?.virtualFile ?: return delegate.getResolveScope(element)
     return scopeFor(file) ?: delegate.getResolveScope(element)
   }
 

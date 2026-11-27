@@ -15,6 +15,7 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiClassOwner
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.PsiManager
+import org.jetbrains.kotlin.com.intellij.psi.PsiModifier
 import org.jetbrains.kotlin.com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import org.jetbrains.kotlin.com.intellij.psi.PsiTypeParameter
 import org.jetbrains.kotlin.com.intellij.psi.search.GlobalSearchScope
@@ -31,13 +32,14 @@ internal class LiveJavaDirectInheritorsIndex(
     private val files: LiveProjectFiles,
     private val registry: LiveSourceFileRegistry,
 ) : AutoCloseable {
-  data class Candidate(
+  class Candidate(
       val file: VirtualFile,
       val sourceOrdinal: Int,
       val memberNames: List<String>,
       val superNames: Set<String>,
       val anonymous: Boolean,
       val className: String?,
+      val staticMembers: Set<String> = emptySet(),
   )
 
   private class State(
@@ -47,6 +49,7 @@ internal class LiveJavaDirectInheritorsIndex(
       val byFile: MutableMap<String, List<Candidate>>,
       val bySuperName: MutableMap<String, MutableSet<Candidate>>,
       val byClassName: MutableMap<String, MutableSet<Candidate>>,
+      val byStaticMemberName: MutableMap<String, MutableSet<Candidate>>,
   )
 
   private class IndexStats {
@@ -73,6 +76,30 @@ internal class LiveJavaDirectInheritorsIndex(
   fun classesByName(name: String): List<Candidate> = synchronized(lock) {
     check(!closed) { "Analysis direct-inheritor index is closed" }
     refresh().byClassName[name]?.toList().orEmpty()
+  }
+
+  fun staticMemberOwners(name: String, scope: GlobalSearchScope?): List<Candidate> = synchronized(lock) {
+    check(!closed) { "Analysis direct-inheritor index is closed" }
+    val current = refresh()
+    val owners = LinkedHashSet<Candidate>()
+    val pending = ArrayDeque<String>()
+    current.byStaticMemberName[name].orEmpty().forEach { owner ->
+      if (scope == null || scope.contains(owner.file)) {
+        owners.add(owner)
+        owner.className?.let(pending::addLast)
+      }
+    }
+    val visitedNames = HashSet<String>()
+    while (pending.isNotEmpty()) {
+      ProgressManager.checkCanceled()
+      val superName = pending.removeFirst()
+      if (!visitedNames.add(superName)) continue
+      for (candidate in current.bySuperName[superName].orEmpty()) {
+        if (scope != null && !scope.contains(candidate.file)) continue
+        if (owners.add(candidate)) candidate.className?.let(pending::addLast)
+      }
+    }
+    owners.toList()
   }
 
   fun classNames(scope: GlobalSearchScope?): List<String> = synchronized(lock) {
@@ -138,7 +165,7 @@ internal class LiveJavaDirectInheritorsIndex(
         true
       }, processStats)
       val processUs = (System.nanoTime() - processStartedAt) / 1_000L
-      val rebuilt = State(fileSetRevision, mappingRevision, active, byFile, HashMap(), HashMap())
+      val rebuilt = State(fileSetRevision, mappingRevision, active, byFile, HashMap(), HashMap(), HashMap())
       val mapStartedAt = System.nanoTime()
       byFile.values.forEach { values -> values.forEach { add(rebuilt, it) } }
       val mapUs = (System.nanoTime() - mapStartedAt) / 1_000L
@@ -226,7 +253,21 @@ internal class LiveJavaDirectInheritorsIndex(
       if (klass.isEnum) names.add("Enum")
       if (klass.isRecord) names.add("Record")
       if (klass.isAnnotationType) names.add("Annotation")
-      Candidate(file, ordinal, emptyList(), names, klass is PsiAnonymousClass, klass.name)
+      val members = LinkedHashSet<String>()
+      if (klass.qualifiedName != null) {
+        for (method in klass.methods) {
+          ProgressManager.checkCanceled()
+          if (!method.isConstructor && method.hasModifierProperty(PsiModifier.STATIC) &&
+              !method.hasModifierProperty(PsiModifier.PRIVATE)) members.add(method.name)
+        }
+        for (field in klass.fields) {
+          ProgressManager.checkCanceled()
+          if (field.hasModifierProperty(PsiModifier.STATIC) && !field.hasModifierProperty(PsiModifier.PRIVATE)) {
+            members.add(field.name)
+          }
+        }
+      }
+      Candidate(file, ordinal, emptyList(), names, klass is PsiAnonymousClass, klass.name, if (members.isEmpty()) emptySet() else members)
     }
   } else {
     collectBinary(file)
@@ -248,6 +289,7 @@ internal class LiveJavaDirectInheritorsIndex(
     val reader = ClassReader(file.contentsToByteArray())
     if (reader.access and Opcodes.ACC_SYNTHETIC != 0) return emptyList()
     val members = HashMap<String, Member>()
+    val staticMembers = LinkedHashSet<String>()
     fun readNesting(classReader: ClassReader): Boolean {
       var enclosingClass = false
       classReader.accept(object : ClassVisitor(Opcodes.ASM9) {
@@ -257,6 +299,26 @@ internal class LiveJavaDirectInheritorsIndex(
 
         override fun visitInnerClass(name: String, outerName: String?, innerName: String?, access: Int) {
           members[name] = Member(outerName, innerName)
+        }
+
+        override fun visitMethod(
+            access: Int, name: String, descriptor: String, signature: String?, exceptions: Array<out String>?,
+        ): org.objectweb.asm.MethodVisitor? {
+          if (classReader === reader && access and Opcodes.ACC_STATIC != 0 &&
+              access and (Opcodes.ACC_PRIVATE or Opcodes.ACC_SYNTHETIC) == 0 && !name.startsWith("<")) {
+            staticMembers.add(name)
+          }
+          return null
+        }
+
+        override fun visitField(
+            access: Int, name: String, descriptor: String, signature: String?, value: Any?,
+        ): org.objectweb.asm.FieldVisitor? {
+          if (classReader === reader && access and Opcodes.ACC_STATIC != 0 &&
+              access and (Opcodes.ACC_PRIVATE or Opcodes.ACC_SYNTHETIC) == 0) {
+            staticMembers.add(name)
+          }
+          return null
         }
       }, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
       return enclosingClass
@@ -299,12 +361,13 @@ internal class LiveJavaDirectInheritorsIndex(
     }
     reader.superName?.let(::addSuper)
     reader.interfaces.forEach(::addSuper)
-    return listOf(Candidate(ownerFile, -1, memberNames, names, false, memberNames.last()))
+    return listOf(Candidate(ownerFile, -1, memberNames, names, false, memberNames.last(), if (staticMembers.isEmpty()) emptySet() else staticMembers))
   }
 
   private fun add(target: State, candidate: Candidate) {
     candidate.superNames.forEach { name -> target.bySuperName.getOrPut(name) { linkedSetOf() }.add(candidate) }
     candidate.className?.let { name -> target.byClassName.getOrPut(name) { linkedSetOf() }.add(candidate) }
+    candidate.staticMembers.forEach { name -> target.byStaticMemberName.getOrPut(name) { linkedSetOf() }.add(candidate) }
   }
 
   private fun remove(target: State, candidate: Candidate) {
@@ -318,6 +381,12 @@ internal class LiveJavaDirectInheritorsIndex(
       target.byClassName[name]?.let { values ->
         values.remove(candidate)
         if (values.isEmpty()) target.byClassName.remove(name)
+      }
+    }
+    candidate.staticMembers.forEach { name ->
+      target.byStaticMemberName[name]?.let { values ->
+        values.remove(candidate)
+        if (values.isEmpty()) target.byStaticMemberName.remove(name)
       }
     }
   }

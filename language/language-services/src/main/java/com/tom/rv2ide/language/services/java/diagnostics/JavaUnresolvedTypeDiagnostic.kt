@@ -13,6 +13,7 @@ internal data class JavaUnresolvedTypeDiagnostic(
     val referenceEnd: Int,
     val referenceText: String,
     val simpleName: String,
+    val qualifierSuffix: List<String> = emptyList(),
 ) {
   companion object {
     const val CODESERVER_SOURCE = "java-codeserver"

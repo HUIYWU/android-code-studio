@@ -22,6 +22,22 @@ interface JavaPsiProjectAccess {
 
   fun sourceFilesFor(file: Path): List<Path>
 
+  fun nestedTypeNames(
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      simpleNames: Set<String>,
+      cancelChecker: ICancelChecker,
+  ): Map<String, List<String>>?
+
+  fun staticMemberOwnerNames(
+      file: Path,
+      documentVersion: Int,
+      documentRevision: Long,
+      memberNames: Set<String>,
+      cancelChecker: ICancelChecker,
+  ): Map<String, List<String>>?
+
   fun <T> withJavaSourceFiles(
       requestFile: Path,
       requestedVersion: Int,

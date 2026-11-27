@@ -17,8 +17,8 @@ import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateOverridesPar
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImplementAbstractMethodsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiAddUnhandledExceptionsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiImportCandidate
-import com.tom.rv2ide.language.services.java.interop.JavaPsiImportChoices
 import com.tom.rv2ide.language.services.java.interop.JavaPsiFixImportsParams
+import com.tom.rv2ide.language.services.java.interop.JavaPsiFixImportsResult
 import com.tom.rv2ide.language.services.java.interop.JavaPsiGenerateImportsParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiResolveImportCandidatesParams
 import com.tom.rv2ide.language.services.java.interop.JavaPsiRemoveUnusedThrowsParams
@@ -263,22 +263,31 @@ internal class LiveJavaPsiServiceResolver(
     }
   }
 
-  override fun fixImports(params: JavaPsiFixImportsParams): List<JavaPsiImportChoices>? {
+  override fun fixImports(params: JavaPsiFixImportsParams): JavaPsiFixImportsResult? {
     if (params.documentVersion < 0 || params.documentRevision < 0L) return null
     val targets = projectAccess.withCurrentJavaFile(
         params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
     ) { file ->
-      withJavaDiagnosticProgress(params.cancelChecker) { JavaPsiImports.unresolvedTypes(file, params) }
+      withJavaDiagnosticProgress(params.cancelChecker) { JavaPsiImports.unresolved(file, params) }
     } ?: return null
-    if (targets.isEmpty()) return emptyList()
-    val qualifiedNames = JavaCompletionTypeIndex.qualifiedNames(
-        params.module, targets.mapTo(LinkedHashSet()) { it.simpleName }, params.cancelChecker,
-    )
+    if (targets.types.isEmpty() && targets.members.isEmpty()) {
+      return JavaPsiFixImportsResult(emptyList(), emptyList())
+    }
+    val typeNames = targets.types.mapTo(LinkedHashSet()) { it.simpleName }
+    val nestedNames = if (typeNames.isEmpty()) emptyMap() else projectAccess.nestedTypeNames(
+        params.file, params.documentVersion, params.documentRevision, typeNames, params.cancelChecker,
+    ) ?: return null
+    val topLevelNames = if (typeNames.isEmpty()) emptyMap() else
+      JavaCompletionTypeIndex.qualifiedNames(params.module, typeNames, params.cancelChecker)
+    val staticNames = targets.members.mapTo(LinkedHashSet()) { it.simpleName }
+    val staticOwners = if (staticNames.isEmpty()) emptyMap() else projectAccess.staticMemberOwnerNames(
+        params.file, params.documentVersion, params.documentRevision, staticNames, params.cancelChecker,
+    ) ?: return null
     return projectAccess.withCurrentJavaFile(
         params.file, params.documentVersion, params.documentRevision, params.cancelChecker,
     ) { file ->
       withJavaDiagnosticProgress(params.cancelChecker) {
-        JavaPsiImports.choices(file, targets, qualifiedNames, params.cancelChecker)
+        JavaPsiImports.choices(file, targets.types, targets.members, topLevelNames, nestedNames, staticOwners, params.cancelChecker)
       }
     }
   }
