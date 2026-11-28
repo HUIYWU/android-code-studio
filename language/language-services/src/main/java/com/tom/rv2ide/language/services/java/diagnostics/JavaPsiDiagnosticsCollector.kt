@@ -10,7 +10,9 @@ import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
+import org.jetbrains.kotlin.com.intellij.codeInspection.CapturingCleanerInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ClassGetClassInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.ComparatorResultComparisonInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.EndlessStreamInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
@@ -18,6 +20,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
 import org.jetbrains.kotlin.com.intellij.codeInspection.InvalidComparatorMethodReferenceInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
+import org.jetbrains.kotlin.com.intellij.codeInspection.MappingBeforeCountInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.OverwrittenKeyInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptor
@@ -26,12 +29,14 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
 import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantExplicitCloseInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantRecordConstructorInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousListRemoveInLoopInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousTernaryOperatorInVarargsCallInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.TrailingWhitespacesInTextBlockInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.UncheckedWarningLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
@@ -39,6 +44,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.deadCode.UnusedDeclarati
 import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.DeprecationInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.MarkedForRemovalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.duplicateThrows.DuplicateThrowsInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.enhancedSwitch.RedundantLabeledSwitchRuleCodeBlockInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.sillyAssignment.SillyAssignmentInspection
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
@@ -121,6 +127,12 @@ internal object JavaPsiDiagnosticsCollector {
         RedundantExplicitCloseInspection(),
         SillyAssignmentInspection(),
         OverwrittenKeyInspection(),
+        ComparatorResultComparisonInspection(),
+        MappingBeforeCountInspection(),
+        CapturingCleanerInspection(),
+        TrailingWhitespacesInTextBlockInspection(),
+        RedundantRecordConstructorInspection(),
+        RedundantLabeledSwitchRuleCodeBlockInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
