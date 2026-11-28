@@ -10,9 +10,11 @@ import com.tom.rv2ide.models.Range
 import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
+import org.jetbrains.kotlin.com.intellij.codeInspection.ClassGetClassInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
+import org.jetbrains.kotlin.com.intellij.codeInspection.InvalidComparatorMethodReferenceInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
 import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
@@ -29,6 +31,8 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.Unchec
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.deadCode.UnusedDeclarationInspectionBase
+import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.DeprecationInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.MarkedForRemovalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.duplicateThrows.DuplicateThrowsInspection
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
@@ -101,6 +105,10 @@ internal object JavaPsiDiagnosticsCollector {
         UncheckedWarningLocalInspection(),
         RedundantThrowsDeclarationLocalInspection(),
         DuplicateThrowsInspection(),
+        InvalidComparatorMethodReferenceInspection(),
+        ClassGetClassInspection(),
+        DeprecationInspection(),
+        MarkedForRemovalInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
@@ -531,7 +539,7 @@ internal object JavaPsiDiagnosticsCollector {
     cancelChecker.abortIfCancelled()
     val anchor = requireNotNull(descriptor.psiElement)
     if (SuppressionUtil.inspectionResultSuppressed(anchor, tool)) return
-    val severity = descriptor.highlightType.toSeverity() ?: return
+    val severity = descriptor.highlightType.toSeverity(tool) ?: return
     val range = descriptor.absoluteRange()
     val item = DiagnosticItem(
         message = ProblemDescriptorUtil.renderDescriptionMessage(descriptor, anchor),
@@ -576,8 +584,10 @@ internal object JavaPsiDiagnosticsCollector {
     return TextRange(start.startOffset + relative.startOffset, start.startOffset + relative.endOffset)
   }
 
-  private fun ProblemHighlightType.toSeverity(): DiagnosticSeverity? = when (this) {
+  private fun ProblemHighlightType.toSeverity(tool: InspectionProfileEntry): DiagnosticSeverity? = when (this) {
     ProblemHighlightType.POSSIBLE_PROBLEM -> null
+    ProblemHighlightType.GENERIC_ERROR_OR_WARNING ->
+      if (tool is MarkedForRemovalInspection) DiagnosticSeverity.ERROR else DiagnosticSeverity.WARNING
     ProblemHighlightType.ERROR,
     ProblemHighlightType.GENERIC_ERROR,
     -> DiagnosticSeverity.ERROR
