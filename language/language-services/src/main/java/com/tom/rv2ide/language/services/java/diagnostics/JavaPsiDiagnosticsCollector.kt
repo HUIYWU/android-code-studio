@@ -19,6 +19,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.InvalidComparatorMethodR
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionTool
 import org.jetbrains.kotlin.com.intellij.codeInspection.LocalInspectionToolSession
 import org.jetbrains.kotlin.com.intellij.codeInspection.NumericOverflowInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.OverwrittenKeyInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptor
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
@@ -38,6 +39,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.deadCode.UnusedDeclarati
 import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.DeprecationInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.MarkedForRemovalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.duplicateThrows.DuplicateThrowsInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.sillyAssignment.SillyAssignmentInspection
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
 import org.jetbrains.kotlin.com.intellij.psi.PsiPatternVariable
@@ -117,6 +119,8 @@ internal object JavaPsiDiagnosticsCollector {
         SuspiciousTernaryOperatorInVarargsCallInspection(),
         SuspiciousListRemoveInLoopInspection(),
         RedundantExplicitCloseInspection(),
+        SillyAssignmentInspection(),
+        OverwrittenKeyInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
