@@ -24,10 +24,12 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
+import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantExplicitCloseInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousListRemoveInLoopInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousTernaryOperatorInVarargsCallInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.UncheckedWarningLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
@@ -113,6 +115,8 @@ internal object JavaPsiDiagnosticsCollector {
         MarkedForRemovalInspection(),
         EndlessStreamInspection(),
         SuspiciousTernaryOperatorInVarargsCallInspection(),
+        SuspiciousListRemoveInLoopInspection(),
+        RedundantExplicitCloseInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
