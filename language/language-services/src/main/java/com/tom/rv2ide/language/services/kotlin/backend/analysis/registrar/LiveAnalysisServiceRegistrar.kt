@@ -143,6 +143,7 @@ import org.jetbrains.kotlin.com.intellij.psi.impl.BlockSupportImpl
 import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
 import org.jetbrains.kotlin.com.intellij.pom.PomModel
 import org.jetbrains.kotlin.com.intellij.pom.core.impl.PomModelImpl
+import org.jetbrains.kotlin.com.intellij.pom.java.LanguageFeatureProvider
 import org.jetbrains.kotlin.com.intellij.pom.tree.TreeAspect
 import org.jetbrains.kotlin.load.java.structure.impl.source.JavaElementSourceFactory
 import org.jetbrains.kotlin.scripting.definitions.ScriptConfigurationsProvider
@@ -173,6 +174,11 @@ internal class LiveAnalysisServiceRegistrar(
 
   override fun registerApplicationServices(application: MockApplication) {
     PluginStructureProvider.registerApplicationServices(application, PLUGIN_PATH)
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        LanguageFeatureProvider.EXTENSION_POINT_NAME,
+        LanguageFeatureProvider::class.java,
+    )
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
         UastLanguagePlugin.EP,

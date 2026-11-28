@@ -11,6 +11,7 @@ import com.tom.rv2ide.progress.ICancelChecker
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
 import org.jetbrains.kotlin.com.intellij.codeInspection.ClassGetClassInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.EndlessStreamInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionEngine
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionManager
 import org.jetbrains.kotlin.com.intellij.codeInspection.InspectionProfileEntry
@@ -27,6 +28,7 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectIn
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuppressionUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousArrayMethodCallInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.SuspiciousTernaryOperatorInVarargsCallInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.uncheckedWarnings.UncheckedWarningLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.unneededThrows.RedundantThrowsDeclarationLocalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.accessStaticViaInstance.AccessStaticViaInstanceBase
@@ -109,6 +111,8 @@ internal object JavaPsiDiagnosticsCollector {
         ClassGetClassInspection(),
         DeprecationInspection(),
         MarkedForRemovalInspection(),
+        EndlessStreamInspection(),
+        SuspiciousTernaryOperatorInVarargsCallInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
