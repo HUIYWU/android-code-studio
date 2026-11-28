@@ -138,8 +138,12 @@ import org.jetbrains.kotlin.com.intellij.psi.search.searches.ImplicitClassSearch
 import org.jetbrains.kotlin.com.intellij.psi.search.searches.SuperMethodsSearch
 import org.jetbrains.kotlin.com.intellij.util.QueryExecutor
 import org.jetbrains.kotlin.com.intellij.psi.impl.smartPointers.SmartTypePointerManagerImpl
+import org.jetbrains.kotlin.com.intellij.lang.ASTNode
+import org.jetbrains.kotlin.com.intellij.psi.PsiFile
 import org.jetbrains.kotlin.com.intellij.psi.codeStyle.CodeStyleManager
 import org.jetbrains.kotlin.com.intellij.psi.impl.BlockSupportImpl
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.codeStyle.IndentHelper
+import org.jetbrains.kotlin.com.intellij.psi.impl.source.tree.TreeCopyHandler
 import org.jetbrains.kotlin.com.intellij.psi.text.BlockSupport
 import org.jetbrains.kotlin.com.intellij.pom.PomModel
 import org.jetbrains.kotlin.com.intellij.pom.core.impl.PomModelImpl
@@ -179,6 +183,16 @@ internal class LiveAnalysisServiceRegistrar(
         LanguageFeatureProvider.EXTENSION_POINT_NAME,
         LanguageFeatureProvider::class.java,
     )
+    CoreApplicationEnvironment.registerExtensionPoint(
+        application.extensionArea,
+        TreeCopyHandler.EP_NAME,
+        TreeCopyHandler::class.java,
+    )
+    application.registerService(IndentHelper::class.java, object : IndentHelper() {
+      override fun getIndent(file: PsiFile, element: ASTNode): Int = -1
+
+      override fun getIndent(file: PsiFile, element: ASTNode, includeNonSpace: Boolean): Int = -1
+    })
     CoreApplicationEnvironment.registerExtensionPoint(
         application.extensionArea,
         UastLanguagePlugin.EP,

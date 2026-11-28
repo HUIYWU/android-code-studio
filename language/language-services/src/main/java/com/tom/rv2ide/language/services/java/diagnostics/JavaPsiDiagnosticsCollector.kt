@@ -28,7 +28,10 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorBase
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemDescriptorUtil
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemHighlightType
 import org.jetbrains.kotlin.com.intellij.codeInspection.ProblemsHolder
+import org.jetbrains.kotlin.com.intellij.codeInspection.ReadWriteStringCanBeUsedInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantComparatorComparingInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantExplicitCloseInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantFileCreationInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.RedundantRecordConstructorInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsHasNoEffectInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.SafeVarargsOnNonReifiableTypeInspection
@@ -45,6 +48,9 @@ import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.DeprecationI
 import org.jetbrains.kotlin.com.intellij.codeInspection.deprecation.MarkedForRemovalInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.duplicateThrows.DuplicateThrowsInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.enhancedSwitch.RedundantLabeledSwitchRuleCodeBlockInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.java18api.Java8ListSortInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.reflectiveAccess.JavaReflectionInvocationInspection
+import org.jetbrains.kotlin.com.intellij.codeInspection.reflectiveAccess.JavaReflectionMemberAccessInspection
 import org.jetbrains.kotlin.com.intellij.codeInspection.sillyAssignment.SillyAssignmentInspection
 import org.jetbrains.kotlin.com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import org.jetbrains.kotlin.com.intellij.psi.PsiNameIdentifierOwner
@@ -133,6 +139,12 @@ internal object JavaPsiDiagnosticsCollector {
         TrailingWhitespacesInTextBlockInspection(),
         RedundantRecordConstructorInspection(),
         RedundantLabeledSwitchRuleCodeBlockInspection(),
+        JavaReflectionMemberAccessInspection(),
+        JavaReflectionInvocationInspection(),
+        RedundantFileCreationInspection(),
+        ReadWriteStringCanBeUsedInspection(),
+        Java8ListSortInspection(),
+        RedundantComparatorComparingInspection(),
     )
     val inspectionManager = InspectionManager.getInstance(file.project)
     val inspectionRuns = inspections.map { inspection ->
